@@ -1,0 +1,21 @@
+version: "3.9"
+services:
+  mailservice:
+    build: .
+    image: gnr-async-mail-service:latest
+    environment:
+      - SMTP_HOST=smtp.gmail.com
+      - SMTP_PORT=587
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - FETCH_URL=${FETCH_URL}
+      - DB_PATH=/data/mail_service.db
+      - PORT=8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - maildata:/data
+    restart: unless-stopped
+
+volumes:
+  maildata:
