@@ -12,5 +12,5 @@ html_static_path = ["_static"]
 html_logo = "_static/logo.png"
 html_title = project
 napoleon_google_docstring = True
-intersphinx_mapping = {"python": ("https://docs.python.org/3", {}), "fastapi": ("https://fastapi.tiangolo.com", {})}
+intersphinx_mapping = {"python": ("https://docs.python.org/3", None), "fastapi": ("https://fastapi.tiangolo.com", None)}
 autodoc_default_options = {"members": True, "undoc-members": True, "show-inheritance": True}
