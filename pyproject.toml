@@ -1,0 +1,75 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gnr-async-mail-service"
+version = "0.1.0"
+description = "Asynchronous email dispatcher microservice with scheduling, rate limiting, attachments, and a FastAPI REST API."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [
+  {name = "Softwell S.r.l."},
+  {name = "Giovanni Porcari"}
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Framework :: FastAPI",
+  "Topic :: Communications :: Email",
+  "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+  "Topic :: Software Development :: Libraries :: Application Frameworks"
+]
+dependencies = [
+  "aiosmtplib>=2.0.0",
+  "aiohttp>=3.9.0",
+  "aiosqlite>=0.20.0",
+  "aioboto3>=12.0.0",
+  "fastapi>=0.115.0",
+  "uvicorn>=0.30.0",
+  "prometheus-client>=0.20.0",
+  "pydantic>=2.8.0"
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.3.2",
+  "pytest-asyncio>=0.23.7",
+  "httpx>=0.27.0"
+]
+dev = [
+  "flake8>=7.1.2"
+]
+docs = [
+  "sphinx>=7.3.7",
+  "sphinx-rtd-theme>=2.0.0"
+]
+
+[project.urls]
+Documentation = "https://gnr-async-mail-service.readthedocs.io/en/latest/"
+
+[tool.hatch.build.targets.wheel]
+packages = ["async_mail_service"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "async_mail_service",
+  "docs",
+  "tests",
+  "README.md",
+  "LICENSE",
+  "requirements.txt",
+  "main.py",
+  "config.ini",
+  "docker-compose.yml",
+  "Dockerfile",
+  "verify_structure.py"
+]
