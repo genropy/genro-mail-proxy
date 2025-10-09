@@ -129,6 +129,7 @@ class StubSMTP:
         self.sent = []
         self.should_fail = False
         self.closed = False
+        self.last_from_addr = None
 
     async def connect(self):
         return None
@@ -136,9 +137,10 @@ class StubSMTP:
     async def login(self, *_args, **_kwargs):
         return None
 
-    async def send_message(self, message):
+    async def send_message(self, message, from_addr=None, to_addrs=None, mail_options=None, rcpt_options=None):
         if self.should_fail:
             raise RuntimeError("send failure")
+        self.last_from_addr = from_addr
         self.sent.append(message)
 
     async def noop(self):
@@ -296,6 +298,49 @@ async def test_handle_command_send_message_success():
 
     queued = await core._result_queue.get()
     assert queued["status"] == "sent"
+
+
+@pytest.mark.asyncio
+async def test_handle_command_send_message_with_optional_headers(monkeypatch):
+    core = make_core()
+    await core.persistence.add_account({"id": "acc", "host": "smtp", "port": 25})
+
+    captured = {}
+
+    async def fake_send(msg, msg_id, account_id):
+        captured["msg"] = msg
+        captured["msg_id"] = msg_id
+        captured["account_id"] = account_id
+        return {"status": "sent", "timestamp": "now", "account": account_id}
+
+    monkeypatch.setattr(core, "_send_with_limits", fake_send)
+
+    payload = {
+        "id": "msg-headers",
+        "account_id": "acc",
+        "from": "sender@example.com",
+        "to": "dest@example.com",
+        "cc": ["cc1@example.com", "cc2@example.com"],
+        "bcc": "hidden@example.com",
+        "reply_to": "reply@example.com",
+        "return_path": "bounce@example.com",
+        "message_id": "<custom-id@example.com>",
+        "headers": {"X-Test": "value"},
+        "subject": "Test headers",
+        "body": "Body",
+    }
+
+    result = await core.handle_command("sendMessage", payload)
+    assert result["ok"] is True
+    assert result["result"]["status"] == "sent"
+
+    msg = captured["msg"]
+    assert msg["Cc"] == "cc1@example.com, cc2@example.com"
+    assert msg["Bcc"] == "hidden@example.com"
+    assert msg["Reply-To"] == "reply@example.com"
+    assert msg["Message-ID"] == "<custom-id@example.com>"
+    assert msg["Return-Path"] == "bounce@example.com"
+    assert msg["X-Test"] == "value"
 
 
 @pytest.mark.asyncio
@@ -512,8 +557,10 @@ async def test_send_with_limits_defers_when_rate_limited():
 async def test_send_with_limits_success_flow(monkeypatch):
     core = make_core()
     msg = EmailMessage()
+    msg["From"] = "sender@example.com"
     msg["To"] = "friend@example.com"
     msg["Subject"] = "Hello"
+    msg["Return-Path"] = "bounce@example.com"
 
     await core._send_with_limits(msg, "msg2", None)
     event = await core._result_queue.get()
@@ -521,6 +568,7 @@ async def test_send_with_limits_success_flow(monkeypatch):
     assert core.metrics.sent_accounts == ["default"]
     assert "msg2" not in core.persistence.pending
     assert core.rate_limiter.logged == ["default"]
+    assert core.pool.smtp.last_from_addr == "bounce@example.com"
     await core._flush_delivery_reports()
     assert core.fetcher.reports[-1]["status"] == "sent"
 

@@ -191,12 +191,41 @@ class AsyncMailCore:
         return self.default_host, self.default_port, self.default_user, self.default_password, {"id": "default", "use_tls": self.default_use_tls}
 
     async def _build_email(self, data: Dict[str, Any]) -> EmailMessage:
+        def _format_addresses(value: Any) -> str | None:
+            if not value:
+                return None
+            if isinstance(value, str):
+                items = [part.strip() for part in value.split(",") if part.strip()]
+                return ", ".join(items) if items else None
+            if isinstance(value, (list, tuple, set)):
+                items = [str(addr).strip() for addr in value if addr]
+                return ", ".join(items) if items else None
+            return str(value)
+
         msg = EmailMessage()
         msg["From"] = data["from"]
         msg["To"] = data["to"]
         msg["Subject"] = data["subject"]
+        if cc_value := _format_addresses(data.get("cc")):
+            msg["Cc"] = cc_value
+        if bcc_value := _format_addresses(data.get("bcc")):
+            msg["Bcc"] = bcc_value
+        if reply_to := data.get("reply_to"):
+            msg["Reply-To"] = reply_to
+        if message_id := data.get("message_id"):
+            msg["Message-ID"] = message_id
+        if return_path := data.get("return_path"):
+            msg["Return-Path"] = return_path
         subtype = "html" if data.get("content_type", "plain") == "html" else "plain"
         msg.set_content(data.get("body", ""), subtype=subtype)
+        for header, value in (data.get("headers") or {}).items():
+            if value is None:
+                continue
+            value_str = str(value)
+            if header in msg:
+                msg.replace_header(header, value_str)
+            else:
+                msg[header] = value_str
 
         for att in data.get("attachments", []) or []:
             filename = att.get("filename", "file.bin")
@@ -316,7 +345,8 @@ class AsyncMailCore:
             await self.persistence.add_pending(msg_id, msg.get("To"), msg.get("Subject", ""))
         try:
             smtp = await self.pool.get_connection(host, port, user, password, use_tls=use_tls)
-            await smtp.send_message(msg)
+            envelope_from = msg.get("Return-Path") or msg.get("From")
+            await smtp.send_message(msg, from_addr=envelope_from)
             await self.persistence.remove_pending(msg_id or "")
             await self.rate_limiter.log_send(acc["id"] if account_id else "default")
             self.metrics.inc_sent(acc["id"] if account_id else "default")

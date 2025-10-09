@@ -1,4 +1,4 @@
-from typing import Optional, Dict, Any, List, Literal
+from typing import Optional, Dict, Any, List, Literal, Union
 
 from fastapi import FastAPI, HTTPException, APIRouter
 from fastapi.responses import Response
@@ -49,9 +49,15 @@ class SendMessagePayload(BaseModel):
     account_id: Optional[str] = None
     from_: str = Field(alias="from")
     to: str
+    cc: Optional[Union[List[str], str]] = None
+    bcc: Optional[Union[List[str], str]] = None
+    reply_to: Optional[str] = None
+    return_path: Optional[str] = None
     subject: str
     body: str
     content_type: Optional[str] = Field(default="plain")
+    headers: Optional[Dict[str, Any]] = None
+    message_id: Optional[str] = None
     attachments: Optional[List[AttachmentPayload]] = None
 
 
