@@ -1,6 +1,5 @@
 
 import os, sys
-from datetime import datetime
 sys.path.insert(0, os.path.abspath('..'))
 project = "gnr-async-mail-service"
 author = "Softwell S.r.l. & Giovanni Porcari"

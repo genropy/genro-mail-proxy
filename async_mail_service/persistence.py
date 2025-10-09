@@ -1,5 +1,5 @@
 import aiosqlite
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 class Persistence:
     def __init__(self, db_path: str = "/data/mail_service.db"):

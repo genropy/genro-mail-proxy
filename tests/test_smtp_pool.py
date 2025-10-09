@@ -1,5 +1,3 @@
-from unittest.mock import AsyncMock
-
 import pytest
 
 from async_mail_service.smtp_pool import SMTPPool

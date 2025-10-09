@@ -5,4 +5,4 @@ Authors:
 - Softwell S.r.l.
 - Giovanni Porcari
 """
-from .core import AsyncMailCore
+
