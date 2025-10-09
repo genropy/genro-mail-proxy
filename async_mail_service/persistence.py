@@ -1,11 +1,17 @@
+"""SQLite backed persistence used by the mail dispatcher."""
+
 import aiosqlite
 from typing import List, Dict, Any
 
 class Persistence:
+    """Helper class responsible for reading and writing service state."""
+
     def __init__(self, db_path: str = "/data/mail_service.db"):
+        """Persist data to the given database path (``:memory:`` allowed)."""
         self.db_path = db_path or ":memory:"
 
     async def init_db(self) -> None:
+        """Create the database schema if it is not already present."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS accounts (
@@ -66,6 +72,7 @@ class Persistence:
 
     # Accounts CRUD
     async def add_account(self, acc: Dict[str, Any]) -> None:
+        """Insert or overwrite an SMTP account definition."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """INSERT OR REPLACE INTO accounts
@@ -85,6 +92,7 @@ class Persistence:
             await db.commit()
 
     async def list_accounts(self) -> List[Dict[str, Any]]:
+        """Return all known SMTP accounts."""
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
                 "SELECT id, host, port, user, ttl, limit_per_minute, limit_per_hour, limit_per_day, limit_behavior, use_tls, created_at FROM accounts"
@@ -98,11 +106,13 @@ class Persistence:
                 return result
 
     async def delete_account(self, account_id: str) -> None:
+        """Remove a previously stored SMTP account."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("DELETE FROM accounts WHERE id=?", (account_id,))
             await db.commit()
 
     async def get_account(self, account_id: str) -> Dict[str, Any]:
+        """Fetch a single SMTP account or raise if it does not exist."""
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("SELECT * FROM accounts WHERE id=?", (account_id,)) as cur:
                 row = await cur.fetchone()
@@ -116,6 +126,7 @@ class Persistence:
 
     # Pending
     async def add_pending(self, msg_id: str, to_addr: str, subject: str) -> None:
+        """Track a message currently in-flight."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 "INSERT OR REPLACE INTO pending_messages (id, to_addr, subject) VALUES (?, ?, ?)",
@@ -124,11 +135,13 @@ class Persistence:
             await db.commit()
 
     async def remove_pending(self, msg_id: str) -> None:
+        """Remove a message from the pending queue."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("DELETE FROM pending_messages WHERE id=?", (msg_id,))
             await db.commit()
 
     async def list_pending(self) -> List[Dict[str, Any]]:
+        """Return pending messages along with their metadata."""
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("SELECT * FROM pending_messages") as cur:
                 rows = await cur.fetchall()
@@ -137,6 +150,7 @@ class Persistence:
 
     # Deferred
     async def set_deferred(self, msg_id: str, account_id: str, deferred_until: int) -> None:
+        """Store information about a deferred message."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 "INSERT OR REPLACE INTO deferred_messages (id, account_id, deferred_until) VALUES (?, ?, ?)",
@@ -145,6 +159,7 @@ class Persistence:
             await db.commit()
 
     async def get_deferred_until(self, msg_id: str, account_id: str) -> int | None:
+        """Return the defer-until timestamp for a message if present."""
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
                 "SELECT deferred_until FROM deferred_messages WHERE id=? AND account_id=?",
@@ -154,11 +169,13 @@ class Persistence:
                 return int(row[0]) if row else None
 
     async def clear_deferred(self, msg_id: str) -> None:
+        """Remove any deferred entry for the given message."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("DELETE FROM deferred_messages WHERE id=?", (msg_id,))
             await db.commit()
 
     async def list_deferred(self) -> List[Dict[str, Any]]:
+        """Return all messages currently deferred by the rate limiter."""
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("SELECT * FROM deferred_messages") as cur:
                 rows = await cur.fetchall()
@@ -167,11 +184,13 @@ class Persistence:
 
     # Send log (for rate limits)
     async def log_send(self, account_id: str, timestamp: int) -> None:
+        """Record a delivery event for rate limiting purposes."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("INSERT INTO send_log (account_id, timestamp) VALUES (?, ?)", (account_id, timestamp))
             await db.commit()
 
     async def count_sends_since(self, account_id: str, since_ts: int) -> int:
+        """Count messages sent after ``since_ts`` for the given account."""
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("SELECT COUNT(*) FROM send_log WHERE account_id=? AND timestamp > ?", (account_id, since_ts)) as cur:
                 row = await cur.fetchone()
@@ -179,6 +198,7 @@ class Persistence:
 
     # Scheduler rules
     async def list_rules(self) -> List[Dict[str, Any]]:
+        """Return scheduling rules ordered by priority."""
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
                 "SELECT id, name, enabled, priority, days, start_hour, end_hour, cross_midnight, interval_minutes "
@@ -196,6 +216,7 @@ class Persistence:
                 return result
 
     async def add_rule(self, rule: Dict[str, Any]) -> Dict[str, Any]:
+        """Insert a new scheduling rule and return the stored representation."""
         days = ",".join(str(int(d)) for d in rule.get("days", []))
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(

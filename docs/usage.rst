@@ -2,11 +2,35 @@
 Usage
 =====
 
+Configuration
+-------------
+
+The service loads settings from ``config.ini`` (or the path provided by ``ASYNC_MAIL_CONFIG``)
+and environment variables. Main sections/keys::
+
+  [smtp]        host, port, user, password, use_tls
+  [fetch]       url (endpoint that exposes pending messages)
+  [storage]     db_path
+  [server]      host, port, api_token, sync_token
+
+``api_token`` secures the FastAPI endpoints: every HTTP request must include
+``X-API-Token: <value>``. ``sync_token`` is available for future Genropy-to-proxy
+handshakes.
+
+
 Endpoints
 ---------
 
 - GET /status
-- POST /command
+- POST /commands/run-now
+- POST /commands/suspend
+- POST /commands/activate
+- POST /commands/send-message
+- POST /commands/add-messages
+- POST /commands/rules
+- GET /commands/rules
+- PATCH /commands/rules/{rule_id}
+- DELETE /commands/rules/{rule_id}
 - POST /account
 - GET /accounts
 - DELETE /account/{id}
@@ -21,13 +45,18 @@ Run now:
 
 .. code-block:: bash
 
-   curl -X POST http://localhost:8000/command -H "Content-Type: application/json" -d '{"cmd":"run now"}'
+   curl -X POST http://localhost:8000/commands/run-now \
+        -H "Content-Type: application/json" \
+        -H "X-API-Token: my-secret-token"
 
 Add account:
 
 .. code-block:: bash
 
-   curl -X POST http://localhost:8000/account -H "Content-Type: application/json" -d '{
+   curl -X POST http://localhost:8000/account \
+        -H "Content-Type: application/json" \
+        -H "X-API-Token: my-secret-token" \
+        -d '{
      "id":"gmail","host":"smtp.gmail.com","port":587,
      "user":"you@gmail.com","password":"***",
      "limit_per_minute":30,"limit_per_hour":500,"limit_per_day":1000
@@ -39,5 +68,14 @@ Python (httpx)
 .. code-block:: python
 
    import httpx
-   r = httpx.post("http://localhost:8000/command", json={"cmd":"run now"})
+
+   client = httpx.Client(base_url="http://localhost:8000",
+                         headers={"X-API-Token": "my-secret-token"})
+
+   r = client.post("/commands/send-message", json={
+       "from": "sender@example.com",
+       "to": ["dest@example.com"],
+       "subject": "Hi",
+       "body": "Hello world"
+   })
    print(r.json())

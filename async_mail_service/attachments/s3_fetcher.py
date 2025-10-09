@@ -1,9 +1,12 @@
+"""Fetch attachments stored on S3."""
+
 from typing import Dict, Any, Optional
 import aioboto3
 from .base import AttachmentFetcherBase
 
 class S3AttachmentFetcher(AttachmentFetcherBase):
     async def fetch(self, att: Dict[str, Any]) -> Optional[bytes]:
+        """Download the requested S3 object."""
         info = att.get("s3")
         if not info:
             return None

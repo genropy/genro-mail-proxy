@@ -1,12 +1,18 @@
+"""Rate limiter that relies on persisted send logs."""
+
 import time
 from typing import Optional, Dict, Any
 from .persistence import Persistence
 
 class RateLimiter:
+    """Simple sliding-window limiter built on top of :class:`Persistence`."""
+
     def __init__(self, persistence: Persistence):
+        """Store the persistence helper used to read and write counters."""
         self.persistence = persistence
 
     async def check_and_plan(self, account: Dict[str, Any]) -> Optional[int]:
+        """Return a timestamp until which the message must be deferred."""
         account_id = account["id"]
         now = int(time.time())
 
@@ -35,4 +41,5 @@ class RateLimiter:
         return None
 
     async def log_send(self, account_id: str) -> None:
+        """Persist the fact that a message has been sent right now."""
         await self.persistence.log_send(account_id, int(time.time()))

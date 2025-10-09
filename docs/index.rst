@@ -13,6 +13,7 @@ Prometheus metrics, and a FastAPI control plane.
 .. toctree::
    :maxdepth: 2
 
+   overview
    installation
    usage
    api_reference

@@ -1,6 +1,9 @@
+"""Logging helpers for the async mail service."""
+
 import logging
 
 def get_logger(name: str = "AsyncMailService") -> logging.Logger:
+    """Return a configured :class:`logging.Logger` instance."""
     logger = logging.getLogger(name)
     if not logger.handlers:
         handler = logging.StreamHandler()

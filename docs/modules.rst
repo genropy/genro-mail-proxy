@@ -7,6 +7,11 @@ Python Modules
    :undoc-members:
    :show-inheritance:
 
+.. automodule:: async_mail_service.api
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 .. automodule:: async_mail_service.persistence
    :members:
    :undoc-members:

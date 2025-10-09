@@ -56,6 +56,8 @@ def load_settings() -> dict[str, object]:
         "http_host": get("server", "host", os.getenv("HOST", "0.0.0.0")),
         "http_port": get_int("server", "port", os.getenv("PORT", "8000")),
         "scheduler_active": get_bool("scheduler", "active", os.getenv("SCHEDULER_ACTIVE"), False),
+        "api_token": get("server", "api_token", os.getenv("API_TOKEN")),
+        "sync_token": get("server", "sync_token", os.getenv("SYNC_TOKEN")),
     }
 
     rules_raw = get("scheduler", "rules", os.getenv("SCHEDULER_RULES"))
@@ -70,6 +72,14 @@ def load_settings() -> dict[str, object]:
     db_path = settings["db_path"]
     if isinstance(db_path, str):
         settings["db_path"] = os.path.expanduser(db_path)
+    token = settings.get("api_token")
+    if isinstance(token, str):
+        token = token.strip() or None
+    settings["api_token"] = token
+    sync_token = settings.get("sync_token")
+    if isinstance(sync_token, str):
+        sync_token = sync_token.strip() or None
+    settings["sync_token"] = sync_token
     return settings
 
 
@@ -97,5 +107,5 @@ if __name__ == "__main__":
     settings = load_settings()
     loop = asyncio.get_event_loop()
     service = loop.run_until_complete(run_service(settings))
-    app = create_app(service)
+    app = create_app(service, api_token=settings.get("api_token"))
     uvicorn.run(app, host=str(settings["http_host"]), port=int(settings["http_port"]))

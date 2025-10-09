@@ -287,7 +287,7 @@ async def test_handle_command_send_message_success():
         "id": "msg-send",
         "account_id": "acc",
         "from": "sender@example.com",
-        "to": "dest@example.com",
+        "to": ["dest@example.com"],
         "subject": "Test",
         "body": "Hello",
     }
@@ -319,7 +319,7 @@ async def test_handle_command_send_message_with_optional_headers(monkeypatch):
         "id": "msg-headers",
         "account_id": "acc",
         "from": "sender@example.com",
-        "to": "dest@example.com",
+        "to": ["dest@example.com"],
         "cc": ["cc1@example.com", "cc2@example.com"],
         "bcc": "hidden@example.com",
         "reply_to": "reply@example.com",
@@ -347,7 +347,7 @@ async def test_handle_command_send_message_with_optional_headers(monkeypatch):
 async def test_handle_command_send_message_missing_fields():
     core = make_core()
 
-    result = await core.handle_command("sendMessage", {"to": "dest@example.com"})
+    result = await core.handle_command("sendMessage", {"to": ["dest@example.com"]})
     assert result["ok"] is False
     assert "missing" in result["error"]
 
@@ -364,7 +364,7 @@ async def test_add_messages_queue_processed(monkeypatch):
             {
                 "id": "queued-1",
                 "from": "sender@example.com",
-                "to": "dest@example.com",
+                "to": ["dest@example.com"],
                 "subject": "Queued",
                 "body": "Hello",
             }
@@ -440,7 +440,7 @@ async def test_build_email_adds_only_available_attachments():
 
     data = {
         "from": "sender@example.com",
-        "to": "dest@example.com",
+        "to": ["dest@example.com"],
         "subject": "Greetings",
         "body": "<p>Hello</p>",
         "content_type": "html",
@@ -491,7 +491,7 @@ async def test_fetch_and_send_once_skips_deferred(monkeypatch):
                 "id": "msg1",
                 "account_id": "acc",
                 "from": "a@example.com",
-                "to": "b@example.com",
+                "to": ["b@example.com"],
                 "subject": "Subj",
             }
         ]
@@ -518,7 +518,7 @@ async def test_fetch_and_send_once_clears_expired_deferred(monkeypatch):
                 "id": "msg2",
                 "account_id": "acc",
                 "from": "a@example.com",
-                "to": "b@example.com",
+                "to": ["b@example.com"],
                 "subject": "Subj",
             }
         ]
@@ -560,7 +560,6 @@ async def test_send_with_limits_success_flow(monkeypatch):
     msg["From"] = "sender@example.com"
     msg["To"] = "friend@example.com"
     msg["Subject"] = "Hello"
-    msg["Return-Path"] = "bounce@example.com"
 
     await core._send_with_limits(msg, "msg2", None)
     event = await core._result_queue.get()
@@ -568,9 +567,23 @@ async def test_send_with_limits_success_flow(monkeypatch):
     assert core.metrics.sent_accounts == ["default"]
     assert "msg2" not in core.persistence.pending
     assert core.rate_limiter.logged == ["default"]
-    assert core.pool.smtp.last_from_addr == "bounce@example.com"
+    assert core.pool.smtp.last_from_addr == "sender@example.com"
     await core._flush_delivery_reports()
     assert core.fetcher.reports[-1]["status"] == "sent"
+
+
+@pytest.mark.asyncio
+async def test_send_with_limits_uses_custom_return_path():
+    core = make_core()
+    msg = EmailMessage()
+    msg["From"] = "sender@example.com"
+    msg["To"] = "friend@example.com"
+    msg["Subject"] = "Hello"
+    msg["Return-Path"] = "bounce@example.com"
+
+    await core._send_with_limits(msg, "msg-custom", None)
+    await core._result_queue.get()
+    assert core.pool.smtp.last_from_addr == "bounce@example.com"
 
 
 @pytest.mark.asyncio

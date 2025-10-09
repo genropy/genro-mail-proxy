@@ -1,3 +1,5 @@
+"""Core orchestration logic for the asynchronous mail dispatcher."""
+
 import asyncio
 from email.message import EmailMessage
 from datetime import datetime, timezone
@@ -14,6 +16,7 @@ from .prometheus import MailMetrics
 from zoneinfo import ZoneInfo
 
 class AsyncMailCore:
+    """Coordinate scheduling, rate limiting, persistence and delivery."""
     def __init__(
         self,
         host: str = "localhost",
@@ -28,6 +31,7 @@ class AsyncMailCore:
         metrics: MailMetrics | None = None,
         start_active: bool = False,
     ):
+        """Prepare the runtime collaborators and scheduler state."""
         self.default_host = host
         self.default_port = port
         self.default_user = user
@@ -55,9 +59,11 @@ class AsyncMailCore:
 
     @staticmethod
     def _utc_now() -> str:
+        """Return the current UTC timestamp encoded as an ISO-8601 string."""
         return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     async def init(self):
+        """Initialise persistence and reload scheduler rules from storage."""
         await self.persistence.init_db()
         self._rules = await self.persistence.list_rules()
         if not self._rules:
@@ -65,12 +71,15 @@ class AsyncMailCore:
 
     # Scheduling
     def _has_enabled_rules(self) -> bool:
+        """Check whether at least one scheduling rule is currently enabled."""
         return any(rule.get("enabled", True) for rule in self._rules)
 
     def _is_scheduler_ready(self) -> bool:
+        """Return ``True`` when the scheduler loop is allowed to send mail."""
         return self._active and self._has_enabled_rules()
 
     def _current_interval_from_schedule(self) -> int:
+        """Compute the polling interval (in seconds) based on the rule set."""
         if not self._has_enabled_rules():
             return 60
         tz = ZoneInfo("Europe/Rome")
@@ -102,6 +111,22 @@ class AsyncMailCore:
 
     # Commands
     async def handle_command(self, cmd: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Execute one of the external control commands.
+
+        Parameters
+        ----------
+        cmd:
+            Name of the command as received from the API layer.
+        payload:
+            Optional dictionary holding the command arguments.
+
+        Returns
+        -------
+        dict
+            ``{"ok": True}`` on success with additional fields depending on
+            the command, or ``{"ok": False, "error": "..."}`` on validation
+            errors.
+        """
         payload = payload or {}
         if cmd == "run now":
             await self._flush_delivery_reports()
@@ -185,12 +210,14 @@ class AsyncMailCore:
 
     # Build & send
     async def _resolve_account(self, account_id: Optional[str]) -> Tuple[str, int, Optional[str], Optional[str], Dict[str, Any]]:
+        """Return SMTP credentials for the requested account or defaults."""
         if account_id:
             acc = await self.persistence.get_account(account_id)
             return acc["host"], int(acc["port"]), acc.get("user"), acc.get("password"), acc
         return self.default_host, self.default_port, self.default_user, self.default_password, {"id": "default", "use_tls": self.default_use_tls}
 
     async def _build_email(self, data: Dict[str, Any]) -> EmailMessage:
+        """Translate the command payload into an :class:`EmailMessage`."""
         def _format_addresses(value: Any) -> str | None:
             if not value:
                 return None
@@ -204,7 +231,10 @@ class AsyncMailCore:
 
         msg = EmailMessage()
         msg["From"] = data["from"]
-        msg["To"] = data["to"]
+        to_value = _format_addresses(data.get("to"))
+        if not to_value:
+            raise KeyError("to")
+        msg["To"] = to_value
         msg["Subject"] = data["subject"]
         if cc_value := _format_addresses(data.get("cc")):
             msg["Cc"] = cc_value
@@ -214,8 +244,8 @@ class AsyncMailCore:
             msg["Reply-To"] = reply_to
         if message_id := data.get("message_id"):
             msg["Message-ID"] = message_id
-        if return_path := data.get("return_path"):
-            msg["Return-Path"] = return_path
+        return_path = data.get("return_path") or data["from"]
+        msg["Return-Path"] = return_path
         subtype = "html" if data.get("content_type", "plain") == "html" else "plain"
         msg.set_content(data.get("body", ""), subtype=subtype)
         for header, value in (data.get("headers") or {}).items():
@@ -238,6 +268,7 @@ class AsyncMailCore:
         return msg
 
     async def _enqueue_messages(self, messages: list[Dict[str, Any]], default_priority: int = 10):
+        """Push messages into the internal priority queue."""
         for item in messages:
             priority_value = item.get("priority", default_priority)
             try:
@@ -247,6 +278,7 @@ class AsyncMailCore:
             await self._message_queue.put((priority, next(self._queue_counter), item))
 
     async def _add_rule(self, rule: Dict[str, Any], priority: Optional[int] = None) -> None:
+        """Normalise and store a rule, assigning a deterministic priority."""
         rules = await self.persistence.list_rules()
         next_priority = priority if priority is not None else (rules[-1]["priority"] + 1 if rules else 0)
         rule_copy = rule.copy()
@@ -261,6 +293,7 @@ class AsyncMailCore:
             self._active = True
 
     async def _process_queue(self):
+        """Consume the message queue and trigger delivery for each entry."""
         async with self._queue_lock:
             while not self._message_queue.empty():
                 _, _, data = await self._message_queue.get()
@@ -268,6 +301,7 @@ class AsyncMailCore:
                 self._message_queue.task_done()
 
     async def _handle_message(self, data: Dict[str, Any]):
+        """Deliver or defer a single message pulled from the queue."""
         msg_id = data.get("id")
         account_id = data.get("account_id")
         try:
@@ -296,6 +330,7 @@ class AsyncMailCore:
         await self._send_with_limits(email_msg, msg_id, account_id)
 
     async def _fetch_and_send_once(self, *, force: bool = False):
+        """Fetch new messages from the upstream service and process them."""
         if not force and not self._is_scheduler_ready():
             return
         messages = await self.fetcher.fetch_messages()
@@ -304,6 +339,7 @@ class AsyncMailCore:
         await self._process_queue()
 
     async def _flush_delivery_reports(self):
+        """Send pending delivery reports back to the upstream service."""
         retries: List[Dict[str, Any]] = []
         while True:
             try:
@@ -321,6 +357,7 @@ class AsyncMailCore:
             await self._delivery_queue.put(event)
 
     async def _send_with_limits(self, msg: EmailMessage, msg_id: Optional[str], account_id: Optional[str]):
+        """Send a message enforcing rate limits and bookkeeping."""
         host, port, user, password, acc = await self._resolve_account(account_id)
         use_tls = acc.get("use_tls")
         if use_tls is None:
@@ -374,19 +411,23 @@ class AsyncMailCore:
             return event
 
     async def _report_delivery(self, event: Dict[str, Any]):
+        """Queue a delivery event to be sent back to the upstream service."""
         await self._delivery_queue.put(event)
 
     async def start(self):
+        """Start the background scheduler and maintenance tasks."""
         await self.init()
         self._stop.clear()
         self._task_fetch = asyncio.create_task(self._fetch_loop())
         self._task_cleanup = asyncio.create_task(self._cleanup_loop())
 
     async def stop(self):
+        """Stop the background tasks gracefully."""
         self._stop.set()
         await asyncio.gather(self._task_fetch, self._task_cleanup, return_exceptions=True)
 
     async def _fetch_loop(self):
+        """Background coroutine that periodically polls for new messages."""
         while not self._stop.is_set():
             if not self._is_scheduler_ready():
                 await asyncio.sleep(5)
@@ -396,11 +437,13 @@ class AsyncMailCore:
             await asyncio.sleep(self._current_interval_from_schedule())
 
     async def _cleanup_loop(self):
+        """Background coroutine that keeps SMTP pooled connections healthy."""
         while not self._stop.is_set():
             await asyncio.sleep(150)
             await self.pool.cleanup()
 
     async def results(self):
+        """Yield delivery events to API consumers."""
         while True:
             r = await self._result_queue.get()
             yield r
