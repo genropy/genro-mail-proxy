@@ -31,7 +31,7 @@ Core endpoints
    Enqueue a batch of messages for the scheduler.  Each payload entry matches
    :class:`async_mail_service.api.SendMessagePayload`.
 
-``POST /commands/rules`` / ``PATCH`` / ``DELETE`` / ``GET``
+``POST /commands/rules`` / ``GET /commands/rules`` / ``PATCH /commands/rules/{rule_id}`` / ``DELETE /commands/rules/{rule_id}``
    CRUD operations for scheduling rules.  Entries are described by
    :class:`async_mail_service.api.RulePayload`.
 
@@ -55,3 +55,32 @@ The following metrics are exported:
 * ``asyncmail_deferred_total{account_id}``
 * ``asyncmail_rate_limited_total{account_id}``
 * ``asyncmail_pending_messages``
+
+Outbound proxy sync
+-------------------
+
+Besides REST endpoints that clients call, the service also issues a
+``POST`` request to the configured ``proxy_sync_url`` whenever there are
+delivery results to share with Genropy.  Example payload:
+
+.. code-block:: json
+
+   {
+     "delivery_report": [
+       {"id": "MSG-101", "status": "sent", "ts_send": "2024-10-09T10:00:00Z"},
+       {"id": "MSG-102", "status": "error", "ts_error": "2024-10-09T10:05:12Z", "error": "SMTP timeout"}
+     ]
+   }
+
+Genropy replies with a JSON body, typically:
+
+.. code-block:: json
+
+   {
+     "ok": true,
+     "rejected": []
+   }
+
+If ``rejected`` contains message identifiers, the dispatcher keeps those
+entries queued so they can be retried or marked as failed during the next
+scheduler cycle.

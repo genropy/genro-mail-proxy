@@ -30,6 +30,13 @@ class AsyncMailCore:
         logger=None,
         metrics: MailMetrics | None = None,
         start_active: bool = False,
+        timezone: str = "Europe/Rome",
+        result_queue_size: int = 1000,
+        delivery_queue_size: int = 1000,
+        message_queue_size: int = 10000,
+        queue_put_timeout: float = 5.0,
+        max_enqueue_batch: int = 1000,
+        attachment_timeout: int = 30,
     ):
         """Prepare the runtime collaborators and scheduler state."""
         self.default_host = host
@@ -44,16 +51,20 @@ class AsyncMailCore:
         self.fetcher = Fetcher(fetch_url=fetch_url)
         self.rate_limiter = RateLimiter(self.persistence)
         self.metrics = metrics or MailMetrics()
+        self.timezone = ZoneInfo(timezone)
+        self._queue_put_timeout = queue_put_timeout
+        self._max_enqueue_batch = max_enqueue_batch
+        self._attachment_timeout = attachment_timeout
 
         self._stop = asyncio.Event()
         self._active = start_active
         self._schedule: Dict[str, Any] | None = None
-        self._result_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
-        self._message_queue: asyncio.PriorityQueue[Tuple[int, int, Dict[str, Any]]] = asyncio.PriorityQueue()
+        self._result_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=result_queue_size)
+        self._message_queue: asyncio.PriorityQueue[Tuple[int, int, Dict[str, Any]]] = asyncio.PriorityQueue(maxsize=message_queue_size)
         self._queue_counter = count()
         self._queue_lock = asyncio.Lock()
         self._rules: List[Dict[str, Any]] = []
-        self._delivery_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+        self._delivery_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=delivery_queue_size)
 
         self.attachments = AttachmentManager()
 
@@ -82,8 +93,7 @@ class AsyncMailCore:
         """Compute the polling interval (in seconds) based on the rule set."""
         if not self._has_enabled_rules():
             return 60
-        tz = ZoneInfo("Europe/Rome")
-        now = datetime.now(tz)
+        now = datetime.now(self.timezone)
         weekday = now.weekday()
         hour = now.hour
         interval = 60
@@ -163,13 +173,13 @@ class AsyncMailCore:
             return {"ok": True, "deferred": await self.persistence.list_deferred()}
         if cmd == "sendMessage":
             try:
-                email_msg = await self._build_email(payload)
+                email_msg, envelope_from = await self._build_email(payload)
             except KeyError as e:
                 return {"ok": False, "error": f"missing {e}"}
 
             msg_id = payload.get("id")
             account_id = payload.get("account_id")
-            result = await self._send_with_limits(email_msg, msg_id, account_id)
+            result = await self._send_with_limits(email_msg, envelope_from, msg_id, account_id)
             return {"ok": result.get("status") == "sent", "result": result}
         if cmd == "addMessages":
             messages = payload.get("messages") if isinstance(payload, dict) else None
@@ -216,8 +226,8 @@ class AsyncMailCore:
             return acc["host"], int(acc["port"]), acc.get("user"), acc.get("password"), acc
         return self.default_host, self.default_port, self.default_user, self.default_password, {"id": "default", "use_tls": self.default_use_tls}
 
-    async def _build_email(self, data: Dict[str, Any]) -> EmailMessage:
-        """Translate the command payload into an :class:`EmailMessage`."""
+    async def _build_email(self, data: Dict[str, Any]) -> Tuple[EmailMessage, str]:
+        """Translate the command payload into an :class:`EmailMessage` and envelope sender."""
         def _format_addresses(value: Any) -> str | None:
             if not value:
                 return None
@@ -244,8 +254,7 @@ class AsyncMailCore:
             msg["Reply-To"] = reply_to
         if message_id := data.get("message_id"):
             msg["Message-ID"] = message_id
-        return_path = data.get("return_path") or data["from"]
-        msg["Return-Path"] = return_path
+        envelope_from = data.get("return_path") or data["from"]
         subtype = "html" if data.get("content_type", "plain") == "html" else "plain"
         msg.set_content(data.get("body", ""), subtype=subtype)
         for header, value in (data.get("headers") or {}).items():
@@ -257,25 +266,40 @@ class AsyncMailCore:
             else:
                 msg[header] = value_str
 
-        for att in data.get("attachments", []) or []:
-            filename = att.get("filename", "file.bin")
-            content = await self.attachments.fetch(att)
-            if content is None:
-                self.logger.warning("Skipping attachment without data (filename=%s)", filename)
-                continue
-            mt, st = self.attachments.guess_mime(filename)
-            msg.add_attachment(content, maintype=mt, subtype=st, filename=filename)
-        return msg
+        attachments = data.get("attachments", []) or []
+        if attachments:
+            results = await asyncio.gather(
+                *[self._fetch_attachment_with_timeout(att) for att in attachments],
+                return_exceptions=True,
+            )
+            for att, result in zip(attachments, results):
+                filename = att.get("filename", "file.bin")
+                if isinstance(result, Exception):
+                    self.logger.warning("Failed to fetch attachment %s: %s", filename, result)
+                    continue
+                if result is None:
+                    self.logger.warning("Skipping attachment without data (filename=%s)", filename)
+                    continue
+                content, resolved_filename = result
+                mt, st = self.attachments.guess_mime(resolved_filename)
+                msg.add_attachment(content, maintype=mt, subtype=st, filename=resolved_filename)
+        return msg, envelope_from
 
     async def _enqueue_messages(self, messages: list[Dict[str, Any]], default_priority: int = 10):
         """Push messages into the internal priority queue."""
+        if len(messages) > self._max_enqueue_batch:
+            raise ValueError(f"Cannot enqueue more than {self._max_enqueue_batch} messages at once")
         for item in messages:
             priority_value = item.get("priority", default_priority)
             try:
                 priority = int(priority_value)
             except (TypeError, ValueError):
                 priority = default_priority
-            await self._message_queue.put((priority, next(self._queue_counter), item))
+            await self._put_with_backpressure(
+                self._message_queue,
+                (priority, next(self._queue_counter), item),
+                "message",
+            )
 
     async def _add_rule(self, rule: Dict[str, Any], priority: Optional[int] = None) -> None:
         """Normalise and store a rule, assigning a deterministic priority."""
@@ -305,10 +329,10 @@ class AsyncMailCore:
         msg_id = data.get("id")
         account_id = data.get("account_id")
         try:
-            email_msg = await self._build_email(data)
+            email_msg, envelope_from = await self._build_email(data)
         except KeyError as e:
             event = {"id": msg_id, "status": "error", "error": f"missing {e}", "timestamp": self._utc_now()}
-            await self._result_queue.put(event)
+            await self._publish_result(event)
             await self._report_delivery(event)
             return
         if msg_id and account_id:
@@ -321,13 +345,13 @@ class AsyncMailCore:
                     "timestamp": self._utc_now(),
                     "account": account_id,
                 }
-                await self._result_queue.put(event)
+                await self._publish_result(event)
                 await self._report_delivery(event)
                 return
             else:
                 await self.persistence.clear_deferred(msg_id)
 
-        await self._send_with_limits(email_msg, msg_id, account_id)
+        await self._send_with_limits(email_msg, envelope_from, msg_id, account_id)
 
     async def _fetch_and_send_once(self, *, force: bool = False):
         """Fetch new messages from the upstream service and process them."""
@@ -340,23 +364,34 @@ class AsyncMailCore:
 
     async def _flush_delivery_reports(self):
         """Send pending delivery reports back to the upstream service."""
-        retries: List[Dict[str, Any]] = []
+        pending_reports = await self.persistence.list_delivery_reports()
+        retries: List[str] = []
+
+        # Drain notifications from the in-memory queue since we read from storage directly.
         while True:
             try:
-                event = self._delivery_queue.get_nowait()
+                self._delivery_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
+            else:
+                self._delivery_queue.task_done()
+
+        for report in pending_reports:
+            report_id = report["id"]
+            payload = report["payload"]
             try:
-                await self.fetcher.report_delivery(event)
+                await self.fetcher.report_delivery(payload)
             except Exception as exc:
                 self.logger.warning("Failed to report delivery: %s", exc)
-                retries.append(event)
-            finally:
-                self._delivery_queue.task_done()
-        for event in retries:
-            await self._delivery_queue.put(event)
+                await self.persistence.increment_report_retry(report_id)
+                retries.append(report_id)
+            else:
+                await self.persistence.delete_delivery_report(report_id)
 
-    async def _send_with_limits(self, msg: EmailMessage, msg_id: Optional[str], account_id: Optional[str]):
+        for report_id in retries:
+            await self._put_with_backpressure(self._delivery_queue, report_id, "delivery")
+
+    async def _send_with_limits(self, msg: EmailMessage, envelope_from: Optional[str], msg_id: Optional[str], account_id: Optional[str]):
         """Send a message enforcing rate limits and bookkeeping."""
         host, port, user, password, acc = await self._resolve_account(account_id)
         use_tls = acc.get("use_tls")
@@ -368,6 +403,7 @@ class AsyncMailCore:
         if deferred_until:
             await self.persistence.set_deferred(msg_id or "", acc["id"], deferred_until)
             self.metrics.inc_deferred(acc["id"] if account_id else "default")
+            self.metrics.inc_rate_limited(acc["id"] if account_id else "default")
             event = {
                 "id": msg_id,
                 "status": "deferred",
@@ -375,15 +411,15 @@ class AsyncMailCore:
                 "timestamp": self._utc_now(),
                 "account": acc["id"],
             }
-            await self._result_queue.put(event)
+            await self._publish_result(event)
             await self._report_delivery(event)
             return event
         if msg_id:
             await self.persistence.add_pending(msg_id, msg.get("To"), msg.get("Subject", ""))
         try:
             smtp = await self.pool.get_connection(host, port, user, password, use_tls=use_tls)
-            envelope_from = msg.get("Return-Path") or msg.get("From")
-            await smtp.send_message(msg, from_addr=envelope_from)
+            envelope_sender = envelope_from or msg.get("From")
+            await smtp.send_message(msg, from_addr=envelope_sender)
             await self.persistence.remove_pending(msg_id or "")
             await self.rate_limiter.log_send(acc["id"] if account_id else "default")
             self.metrics.inc_sent(acc["id"] if account_id else "default")
@@ -393,7 +429,7 @@ class AsyncMailCore:
                 "timestamp": self._utc_now(),
                 "account": acc["id"] if account_id else "default",
             }
-            await self._result_queue.put(event)
+            await self._publish_result(event)
             await self._report_delivery(event)
             return event
         except Exception as e:
@@ -406,13 +442,14 @@ class AsyncMailCore:
                 "timestamp": self._utc_now(),
                 "account": acc["id"] if account_id else "default",
             }
-            await self._result_queue.put(event)
+            await self._publish_result(event)
             await self._report_delivery(event)
             return event
 
     async def _report_delivery(self, event: Dict[str, Any]):
-        """Queue a delivery event to be sent back to the upstream service."""
-        await self._delivery_queue.put(event)
+        """Persist and queue a delivery event to be sent to the upstream service."""
+        report_id = await self.persistence.save_delivery_report(event)
+        await self._put_with_backpressure(self._delivery_queue, report_id, "delivery")
 
     async def start(self):
         """Start the background scheduler and maintenance tasks."""
@@ -447,3 +484,25 @@ class AsyncMailCore:
         while True:
             r = await self._result_queue.get()
             yield r
+
+    async def _put_with_backpressure(self, queue: asyncio.Queue[Any], item: Any, queue_name: str) -> None:
+        """Push an item to a queue, avoiding unbounded growth by timing out."""
+        try:
+            await asyncio.wait_for(queue.put(item), timeout=self._queue_put_timeout)
+        except asyncio.TimeoutError:
+            self.logger.error("Timed out while enqueuing item into %s queue; dropping item", queue_name)
+
+    async def _publish_result(self, event: Dict[str, Any]) -> None:
+        """Publish a delivery event while observing queue backpressure."""
+        await self._put_with_backpressure(self._result_queue, event, "result")
+
+    async def _fetch_attachment_with_timeout(self, att: Dict[str, Any]) -> Optional[Tuple[bytes, str]]:
+        """Fetch an attachment using the configured timeout budget."""
+        try:
+            content = await asyncio.wait_for(self.attachments.fetch(att), timeout=self._attachment_timeout)
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(f"Attachment {att.get('filename', 'file.bin')} fetch timed out") from exc
+        if content is None:
+            return None
+        filename = att.get("filename", "file.bin")
+        return content, filename

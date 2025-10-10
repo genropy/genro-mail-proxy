@@ -18,6 +18,8 @@ class StubPersistence:
         self.cleared = []
         self.rules = []
         self.rule_id = 0
+        self.delivery_reports = {}
+        self.delivery_seq = 0
 
     async def init_db(self):
         return None
@@ -94,6 +96,25 @@ class StubPersistence:
 
     async def clear_rules(self):
         self.rules = []
+
+    async def save_delivery_report(self, event):
+        self.delivery_seq += 1
+        report_id = f"report-{self.delivery_seq}"
+        self.delivery_reports[report_id] = {"payload": event.copy(), "retry_count": 0}
+        return report_id
+
+    async def list_delivery_reports(self):
+        return [
+            {"id": rid, "payload": data["payload"].copy(), "retry_count": data["retry_count"]}
+            for rid, data in self.delivery_reports.items()
+        ]
+
+    async def delete_delivery_report(self, report_id):
+        self.delivery_reports.pop(report_id, None)
+
+    async def increment_report_retry(self, report_id):
+        if report_id in self.delivery_reports:
+            self.delivery_reports[report_id]["retry_count"] += 1
 
 
 class StubRateLimiter:
@@ -206,7 +227,10 @@ class StubMetrics:
 
 def make_core(messages=None):
     core = AsyncMailCore(start_active=True)
-    core.logger = types.SimpleNamespace(warning=lambda *args, **kwargs: None)
+    core.logger = types.SimpleNamespace(
+        warning=lambda *args, **kwargs: None,
+        error=lambda *args, **kwargs: None,
+    )
     core.persistence = StubPersistence()
     core.rate_limiter = StubRateLimiter()
     core.fetcher = StubFetcher(messages)
@@ -307,8 +331,9 @@ async def test_handle_command_send_message_with_optional_headers(monkeypatch):
 
     captured = {}
 
-    async def fake_send(msg, msg_id, account_id):
+    async def fake_send(msg, envelope_from, msg_id, account_id):
         captured["msg"] = msg
+        captured["envelope_from"] = envelope_from
         captured["msg_id"] = msg_id
         captured["account_id"] = account_id
         return {"status": "sent", "timestamp": "now", "account": account_id}
@@ -339,8 +364,9 @@ async def test_handle_command_send_message_with_optional_headers(monkeypatch):
     assert msg["Bcc"] == "hidden@example.com"
     assert msg["Reply-To"] == "reply@example.com"
     assert msg["Message-ID"] == "<custom-id@example.com>"
-    assert msg["Return-Path"] == "bounce@example.com"
+    assert "Return-Path" not in msg
     assert msg["X-Test"] == "value"
+    assert captured["envelope_from"] == "bounce@example.com"
 
 
 @pytest.mark.asyncio
@@ -377,7 +403,7 @@ async def test_add_messages_queue_processed(monkeypatch):
 
     send_mock.assert_awaited()
     args, _ = send_mock.await_args
-    _, msg_id, _ = args
+    _, _, msg_id, _ = args
     assert msg_id == "queued-1"
 
 
@@ -450,7 +476,7 @@ async def test_build_email_adds_only_available_attachments():
         ],
     }
 
-    msg = await core._build_email(data)
+    msg, envelope_from = await core._build_email(data)
     assert msg["From"] == "sender@example.com"
     assert msg.get_content_type() == "multipart/mixed"
     body = msg.get_body()
@@ -458,6 +484,7 @@ async def test_build_email_adds_only_available_attachments():
     attachments = list(msg.iter_attachments())
     assert len(attachments) == 1
     assert attachments[0].get_filename() == "a.txt"
+    assert envelope_from == "sender@example.com"
 
 
 @pytest.mark.asyncio
@@ -544,10 +571,11 @@ async def test_send_with_limits_defers_when_rate_limited():
     msg["To"] = "dest@example.com"
     msg["Subject"] = "Hello"
 
-    await core._send_with_limits(msg, "msg1", "acc")
+    await core._send_with_limits(msg, None, "msg1", "acc")
     event = await core._result_queue.get()
     assert event["status"] == "deferred"
     assert core.metrics.deferred_accounts == ["acc"]
+    assert core.metrics.rate_limited_accounts == ["acc"]
     assert ("msg1", "acc") in core.persistence.deferred
     await core._flush_delivery_reports()
     assert core.fetcher.reports[-1]["status"] == "deferred"
@@ -561,7 +589,7 @@ async def test_send_with_limits_success_flow(monkeypatch):
     msg["To"] = "friend@example.com"
     msg["Subject"] = "Hello"
 
-    await core._send_with_limits(msg, "msg2", None)
+    await core._send_with_limits(msg, None, "msg2", None)
     event = await core._result_queue.get()
     assert event["status"] == "sent"
     assert core.metrics.sent_accounts == ["default"]
@@ -581,7 +609,7 @@ async def test_send_with_limits_uses_custom_return_path():
     msg["Subject"] = "Hello"
     msg["Return-Path"] = "bounce@example.com"
 
-    await core._send_with_limits(msg, "msg-custom", None)
+    await core._send_with_limits(msg, "bounce@example.com", "msg-custom", None)
     await core._result_queue.get()
     assert core.pool.smtp.last_from_addr == "bounce@example.com"
 
@@ -594,7 +622,7 @@ async def test_send_with_limits_handles_errors():
     msg["To"] = "friend@example.com"
     msg["Subject"] = "Hello"
 
-    await core._send_with_limits(msg, "msg3", None)
+    await core._send_with_limits(msg, None, "msg3", None)
     event = await core._result_queue.get()
     assert event["status"] == "error"
     assert "msg3" not in core.persistence.pending

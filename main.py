@@ -58,6 +58,7 @@ def load_settings() -> dict[str, object]:
         "scheduler_active": get_bool("scheduler", "active", os.getenv("SCHEDULER_ACTIVE"), False),
         "api_token": get("server", "api_token", os.getenv("API_TOKEN")),
         "sync_token": get("server", "sync_token", os.getenv("SYNC_TOKEN")),
+        "timezone": get("scheduler", "timezone", os.getenv("TIMEZONE", "Europe/Rome")),
     }
 
     rules_raw = get("scheduler", "rules", os.getenv("SCHEDULER_RULES"))
@@ -93,6 +94,7 @@ async def run_service(settings: dict[str, object]):
         fetch_url=settings["fetch_url"],
         db_path=settings["db_path"],
         start_active=bool(settings.get("scheduler_active")),
+        timezone=str(settings.get("timezone") or "Europe/Rome"),
     )
     await service.start()
     rules = settings.get("scheduler_rules") or []

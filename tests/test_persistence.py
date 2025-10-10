@@ -75,3 +75,20 @@ async def test_schedule_rules_crud(tmp_path):
     assert rules[0]["enabled"] is False
     await p.delete_rule(rule["id"])
     assert await p.list_rules() == []
+
+
+@pytest.mark.asyncio
+async def test_delivery_reports_persistence(tmp_path):
+    db = tmp_path / "delivery.db"
+    p = Persistence(str(db))
+    await p.init_db()
+    report_id = await p.save_delivery_report({"id": "msg1", "status": "sent"})
+    reports = await p.list_delivery_reports()
+    assert len(reports) == 1
+    assert reports[0]["id"] == report_id
+    assert reports[0]["payload"]["status"] == "sent"
+    await p.increment_report_retry(report_id)
+    reports = await p.list_delivery_reports()
+    assert reports[0]["retry_count"] == 1
+    await p.delete_delivery_report(report_id)
+    assert await p.list_delivery_reports() == []
