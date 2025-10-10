@@ -1,5 +1,8 @@
 """SQLite backed persistence used by the mail dispatcher."""
 
+import json
+import uuid
+
 import aiosqlite
 from typing import List, Dict, Any
 
@@ -66,6 +69,14 @@ class Persistence:
                 CREATE TABLE IF NOT EXISTS send_log (
                     account_id TEXT,
                     timestamp INTEGER
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS delivery_reports (
+                    id TEXT PRIMARY KEY,
+                    payload TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    retry_count INTEGER DEFAULT 0
                 )
             """)
             await db.commit()
@@ -195,6 +206,49 @@ class Persistence:
             async with db.execute("SELECT COUNT(*) FROM send_log WHERE account_id=? AND timestamp > ?", (account_id, since_ts)) as cur:
                 row = await cur.fetchone()
                 return int(row[0] if row else 0)
+
+    # Delivery reports
+    async def save_delivery_report(self, event: Dict[str, Any]) -> str:
+        """Persist a delivery event and return its storage identifier."""
+        report_id = f"{uuid.uuid4().hex}"
+        payload = json.dumps(event)
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT INTO delivery_reports (id, payload, retry_count) VALUES (?, ?, 0)",
+                (report_id, payload),
+            )
+            await db.commit()
+        return report_id
+
+    async def list_delivery_reports(self) -> List[Dict[str, Any]]:
+        """Return all persisted delivery reports awaiting transmission."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT id, payload, retry_count FROM delivery_reports ORDER BY created_at ASC") as cur:
+                rows = await cur.fetchall()
+        reports: List[Dict[str, Any]] = []
+        for row in rows:
+            report_id, payload, retry_count = row
+            try:
+                decoded = json.loads(payload)
+            except json.JSONDecodeError:
+                decoded = {"raw_payload": payload}
+            reports.append({"id": report_id, "payload": decoded, "retry_count": retry_count})
+        return reports
+
+    async def delete_delivery_report(self, report_id: str) -> None:
+        """Delete a delivery report after successful transmission."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM delivery_reports WHERE id=?", (report_id,))
+            await db.commit()
+
+    async def increment_report_retry(self, report_id: str) -> None:
+        """Increment the retry counter for a delivery report."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE delivery_reports SET retry_count = retry_count + 1 WHERE id=?",
+                (report_id,),
+            )
+            await db.commit()
 
     # Scheduler rules
     async def list_rules(self) -> List[Dict[str, Any]]:

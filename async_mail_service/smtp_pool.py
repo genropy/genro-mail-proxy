@@ -33,37 +33,60 @@ class SMTPPool:
     async def get_connection(self, host: str, port: int, user: Optional[str], password: Optional[str], *, use_tls: bool) -> aiosmtplib.SMTP:
         """Return a pooled connection bound to the calling task."""
         task_id = id(asyncio.current_task())
+
         async with self.lock:
             entry = self.pool.get(task_id)
-            if entry:
-                smtp, last_used, params = entry
-                if params != (host, port, user, password, use_tls):
-                    try:
-                        await smtp.quit()
-                    except Exception:
-                        pass
-                    self.pool.pop(task_id, None)
-                elif await self._is_alive(smtp) and (time.time() - last_used) < self.ttl:
-                    self.pool[task_id] = (smtp, time.time(), params)
-                    return smtp
-                try:
-                    await smtp.quit()
-                except Exception:
-                    pass
-                self.pool.pop(task_id, None)
 
-            smtp = await self._connect(host, port, user, password, use_tls)
+        if entry:
+            smtp, last_used, params = entry
+            params_match = params == (host, port, user, password, use_tls)
+            fresh_enough = (time.time() - last_used) < self.ttl
+
+            if params_match and fresh_enough:
+                is_alive = await self._is_alive(smtp)
+                if is_alive:
+                    async with self.lock:
+                        self.pool[task_id] = (smtp, time.time(), params)
+                    return smtp
+            async with self.lock:
+                self.pool.pop(task_id, None)
+            try:
+                await smtp.quit()
+            except Exception:
+                pass
+
+        smtp = await self._connect(host, port, user, password, use_tls)
+        async with self.lock:
             self.pool[task_id] = (smtp, time.time(), (host, port, user, password, use_tls))
-            return smtp
+        return smtp
 
     async def cleanup(self) -> None:
         """Close idle or broken connections still registered in the pool."""
         now = time.time()
         async with self.lock:
-            for task_id, (smtp, last_used, params) in list(self.pool.items()):
-                if (now - last_used) > self.ttl or not await self._is_alive(smtp):
-                    try:
-                        await smtp.quit()
-                    except Exception:
-                        pass
-                    self.pool.pop(task_id, None)
+            items = list(self.pool.items())
+
+        expired: list[Tuple[int, aiosmtplib.SMTP]] = []
+        candidates: list[Tuple[int, aiosmtplib.SMTP]] = []
+        for task_id, (smtp, last_used, params) in items:
+            if (now - last_used) > self.ttl:
+                expired.append((task_id, smtp))
+            else:
+                candidates.append((task_id, smtp))
+
+        for task_id, smtp in candidates:
+            try:
+                alive = await self._is_alive(smtp)
+            except Exception:
+                alive = False
+            if not alive:
+                expired.append((task_id, smtp))
+
+        for task_id, smtp in expired:
+            async with self.lock:
+                entry = self.pool.pop(task_id, None)
+            if entry:
+                try:
+                    await entry[0].quit()
+                except Exception:
+                    pass

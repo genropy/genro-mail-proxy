@@ -7,6 +7,12 @@
 
 Asynchronous email dispatcher microservice with scheduling, rate limiting, attachments (S3/URL/base64), REST API (FastAPI), and Prometheus metrics.
 
+Main integration points:
+
+- REST control plane secured by ``X-API-Token`` for queue management and configuration.
+- Outbound ``proxy_sync`` call towards Genropy, authenticated via basic auth and configured through ``[sync]`` in ``config.ini``.
+- Delivery reports and Prometheus metrics to monitor message lifecycle and rate limiting.
+
 ## Quick start
 
 ```bash

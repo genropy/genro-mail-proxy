@@ -14,8 +14,9 @@ The service is composed of the following building blocks:
   HTTP layer.
 * **REST API** – defined in :mod:`async_mail_service.api`, built with FastAPI
   and protected by the ``X-API-Token`` header.
-* **Fetcher** – pulls new messages from an upstream Genropy endpoint and posts
-  delivery reports back.
+* **Fetcher** – pulls new messages from an upstream Genropy endpoint and, when
+  delivery reports are available, packages them into the ``proxy_sync`` call
+  configured in ``config.ini``.
 * **Persistence** – stores SMTP accounts, pending/deferred messages and send
   logs in a SQLite database.
 * **RateLimiter** – inspects send logs to determine whether a message needs to
@@ -46,10 +47,19 @@ Request flow
 Fetch synchronisation
 ---------------------
 
-The default fetcher polls ``/fetch-messages`` and ``/delivery-report``.  A
-future ``proxySync`` command can extend the protocol so that the upstream
-server and the proxy coordinate hand-off using confirmation tokens and the
-optional ``sync_token`` value present in ``config.ini``.
+The dispatcher periodically performs two outbound calls:
+
+* ``GET`` ``/fetch-messages`` – retrieves pending messages that Genropy has
+  prepared.
+* ``POST`` ``proxy_sync_url`` – sends a JSON body containing ``delivery_report``
+  entries; credentials are supplied via HTTP basic authentication using
+  ``proxy_sync_user`` and ``proxy_sync_password``.  Genropy can respond with
+  a list of message identifiers that were not accepted, prompting the
+  dispatcher to retry them in the next cycle.
+
+When the upstream response to ``/commands/add-messages`` carries
+``"more_messages": true``, the dispatcher can immediately trigger
+``/commands/run-now`` instead of waiting for the next scheduled fetch.
 
 Suggested diagrams
 ------------------
