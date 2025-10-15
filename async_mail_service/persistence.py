@@ -4,7 +4,7 @@ import json
 import uuid
 
 import aiosqlite
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 class Persistence:
     """Helper class responsible for reading and writing service state."""
@@ -54,9 +54,14 @@ class Persistence:
                     id TEXT PRIMARY KEY,
                     to_addr TEXT,
                     subject TEXT,
+                    account_id TEXT,
                     started_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            try:
+                await db.execute("ALTER TABLE pending_messages ADD COLUMN account_id TEXT")
+            except aiosqlite.OperationalError:
+                pass
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS deferred_messages (
                     id TEXT PRIMARY KEY,
@@ -79,6 +84,30 @@ class Persistence:
                     retry_count INTEGER DEFAULT 0
                 )
             """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS queued_messages (
+                    id TEXT PRIMARY KEY,
+                    payload TEXT NOT NULL,
+                    priority INTEGER NOT NULL,
+                    priority_label TEXT,
+                    account_id TEXT,
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            try:
+                await db.execute("ALTER TABLE queued_messages ADD COLUMN priority_label TEXT")
+            except aiosqlite.OperationalError:
+                pass
+            try:
+                await db.execute("ALTER TABLE queued_messages ADD COLUMN account_id TEXT")
+            except aiosqlite.OperationalError:
+                pass
+            try:
+                await db.execute("ALTER TABLE queued_messages ADD COLUMN updated_at TEXT DEFAULT CURRENT_TIMESTAMP")
+            except aiosqlite.OperationalError:
+                pass
             await db.commit()
 
     # Accounts CRUD
@@ -117,9 +146,13 @@ class Persistence:
                 return result
 
     async def delete_account(self, account_id: str) -> None:
-        """Remove a previously stored SMTP account."""
+        """Remove a previously stored SMTP account and related state."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("DELETE FROM accounts WHERE id=?", (account_id,))
+            await db.execute("DELETE FROM pending_messages WHERE account_id=?", (account_id,))
+            await db.execute("DELETE FROM deferred_messages WHERE account_id=?", (account_id,))
+            await db.execute("DELETE FROM send_log WHERE account_id=?", (account_id,))
+            await db.execute("DELETE FROM queued_messages WHERE account_id=?", (account_id,))
             await db.commit()
 
     async def get_account(self, account_id: str) -> Dict[str, Any]:
@@ -136,20 +169,23 @@ class Persistence:
                 return acc
 
     # Pending
-    async def add_pending(self, msg_id: str, to_addr: str, subject: str) -> None:
+    async def add_pending(self, msg_id: str, to_addr: str, subject: str, account_id: str | None) -> None:
         """Track a message currently in-flight."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                "INSERT OR REPLACE INTO pending_messages (id, to_addr, subject) VALUES (?, ?, ?)",
-                (msg_id, to_addr, subject),
+                "INSERT OR REPLACE INTO pending_messages (id, to_addr, subject, account_id) VALUES (?, ?, ?, ?)",
+                (msg_id, to_addr, subject, account_id),
             )
             await db.commit()
 
-    async def remove_pending(self, msg_id: str) -> None:
+    async def remove_pending(self, msg_id: str) -> bool:
         """Remove a message from the pending queue."""
+        if not msg_id:
+            return False
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("DELETE FROM pending_messages WHERE id=?", (msg_id,))
+            cursor = await db.execute("DELETE FROM pending_messages WHERE id=?", (msg_id,))
             await db.commit()
+            return cursor.rowcount > 0
 
     async def list_pending(self) -> List[Dict[str, Any]]:
         """Return pending messages along with their metadata."""
@@ -158,6 +194,12 @@ class Persistence:
                 rows = await cur.fetchall()
                 cols = [c[0] for c in cur.description]
                 return [dict(zip(cols, r)) for r in rows]
+
+    async def remove_pending_by_account(self, account_id: str) -> None:
+        """Remove all pending messages associated with the given account."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM pending_messages WHERE account_id=?", (account_id,))
+            await db.commit()
 
     # Deferred
     async def set_deferred(self, msg_id: str, account_id: str, deferred_until: int) -> None:
@@ -179,11 +221,14 @@ class Persistence:
                 row = await cur.fetchone()
                 return int(row[0]) if row else None
 
-    async def clear_deferred(self, msg_id: str) -> None:
+    async def clear_deferred(self, msg_id: str) -> bool:
         """Remove any deferred entry for the given message."""
+        if not msg_id:
+            return False
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("DELETE FROM deferred_messages WHERE id=?", (msg_id,))
+            cursor = await db.execute("DELETE FROM deferred_messages WHERE id=?", (msg_id,))
             await db.commit()
+            return cursor.rowcount > 0
 
     async def list_deferred(self) -> List[Dict[str, Any]]:
         """Return all messages currently deferred by the rate limiter."""
@@ -192,6 +237,73 @@ class Persistence:
                 rows = await cur.fetchall()
                 cols = [c[0] for c in cur.description]
                 return [dict(zip(cols, r)) for r in rows]
+
+    # Queued messages (monitoring)
+    async def save_message(self, msg_id: str, payload: Dict[str, Any], priority: int, priority_label: Optional[str] = None) -> None:
+        """Store or refresh the payload of a message currently queued for delivery."""
+        if not msg_id:
+            msg_id = str(uuid.uuid4())
+        data = json.dumps(payload)
+        account_id = payload.get("account_id")
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO queued_messages (id, payload, priority, priority_label, account_id, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 'queued', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(id) DO UPDATE SET
+                    payload=excluded.payload,
+                    priority=excluded.priority,
+                    priority_label=excluded.priority_label,
+                    account_id=excluded.account_id,
+                    status='queued',
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (msg_id, data, int(priority), priority_label, account_id),
+            )
+            await db.commit()
+
+    async def update_message_status(self, msg_id: str, status: str) -> None:
+        """Update the lifecycle status of a queued message."""
+        if not msg_id:
+            return
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE queued_messages
+                SET status=?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                (status, msg_id),
+            )
+            await db.commit()
+
+    async def delete_message(self, msg_id: str) -> bool:
+        """Remove a message from the queue tracking table."""
+        if not msg_id:
+            return False
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("DELETE FROM queued_messages WHERE id=?", (msg_id,))
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def list_messages(self, active_only: bool = False) -> List[Dict[str, Any]]:
+        """Return queued messages along with their original payload."""
+        async with aiosqlite.connect(self.db_path) as db:
+            query = """
+                SELECT id, payload, priority, priority_label, account_id, status, created_at, updated_at
+                FROM queued_messages
+            """
+            if active_only:
+                query += " WHERE status IN ('queued','pending','deferred')"
+            async with db.execute(query) as cur:
+                rows = await cur.fetchall()
+                cols = [c[0] for c in cur.description]
+                records = []
+                for row in rows:
+                    record = dict(zip(cols, row))
+                    record["message"] = json.loads(record.pop("payload"))
+                    records.append(record)
+                return records
 
     # Send log (for rate limits)
     async def log_send(self, account_id: str, timestamp: int) -> None:

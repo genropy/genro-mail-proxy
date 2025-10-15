@@ -16,6 +16,7 @@ class DummyService:
         self.metrics = types.SimpleNamespace(generate_latest=lambda: b"metrics-data")
         self.rules = []
         self.rule_id = 1
+        self.messages = []
 
     async def handle_command(self, cmd, payload):
         self.calls.append((cmd, payload))
@@ -30,7 +31,24 @@ class DummyService:
                 },
             }
         if cmd == "addMessages":
-            return {"ok": True, "queued": len(payload.get("messages", []))}
+            messages = []
+            for msg in payload.get("messages", []):
+                messages.append(
+                    {
+                        "id": msg.get("id"),
+                        "account_id": msg.get("account_id"),
+                        "priority": 2,
+                        "priority_label": "medium",
+                        "status": "queued",
+                        "proxy_ts": "2024-01-01T00:00:00Z",
+                        "error_ts": None,
+                        "error_msg": None,
+                    }
+                )
+            return {"ok": True, "status": "ok", "queued": len(messages), "messages": messages}
+        if cmd == "deleteMessages":
+            ids = payload.get("ids", []) if isinstance(payload, dict) else []
+            return {"ok": True, "removed": len(ids), "not_found": []}
         if cmd == "addRule":
             rule = payload.copy()
             rule.setdefault("interval_minutes", 1)
@@ -55,6 +73,8 @@ class DummyService:
             return {"ok": True, "pending": []}
         if cmd in {"listDeferred"}:
             return {"ok": True, "deferred": []}
+        if cmd == "listMessages":
+            return {"ok": True, "messages": list(self.messages)}
         if cmd == "listAccounts":
             return {"ok": True, "accounts": []}
         return {"ok": True, "cmd": cmd, "payload": payload}
@@ -125,7 +145,8 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
         "id": "msg1",
         "account_id": "acc",
         "from": "sender@example.com",
-        "to": ["dest@example.com"],
+        "to": "dest@example.com, second@example.com",
+        "cc": "copy@example.com",
         "subject": "Hello",
         "body": "Hi",
         "attachments": [
@@ -142,7 +163,8 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
             {
                 "id": "msg-bulk",
                 "from": "sender@example.com",
-                "to": ["dest@example.com"],
+                "to": "dest@example.com, other@example.com",
+                "bcc": "hidden@example.com",
                 "subject": "Bulk",
                 "body": "Bulk body",
             }
@@ -150,7 +172,15 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
     }
     bulk_resp = client.post("/commands/add-messages", json=bulk_payload)
     assert bulk_resp.status_code == 200
-    assert bulk_resp.json()["queued"] == 1
+    bulk_response_json = bulk_resp.json()
+    assert isinstance(bulk_response_json, list)
+    assert bulk_response_json[0]["id"] == "msg-bulk"
+    assert bulk_response_json[0]["status"] == "queued"
+
+    delete_payload = {"ids": ["msg-bulk"]}
+    delete_resp = client.post("/commands/delete-messages", json=delete_payload)
+    assert delete_resp.status_code == 200
+    assert delete_resp.json()["removed"] == 1
 
     account = {"id": "acc", "host": "smtp.local", "port": 25}
     assert client.post("/account", json=account).json()["ok"] is True
@@ -158,6 +188,7 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
     assert client.delete("/account/acc").json()["ok"] is True
     assert client.get("/pending").json()["ok"] is True
     assert client.get("/deferred").json()["ok"] is True
+    assert client.get("/messages").json()["ok"] is True
 
     expected_calls = [
         ("run now", {}),
@@ -173,7 +204,8 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
                 "id": "msg1",
                 "account_id": "acc",
                 "from": "sender@example.com",
-                "to": ["dest@example.com"],
+                "to": "dest@example.com, second@example.com",
+                "cc": "copy@example.com",
                 "subject": "Hello",
                 "body": "Hi",
                 "content_type": "plain",
@@ -190,7 +222,8 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
                     {
                         "id": "msg-bulk",
                         "from": "sender@example.com",
-                        "to": ["dest@example.com"],
+                        "to": "dest@example.com, other@example.com",
+                        "bcc": "hidden@example.com",
                         "subject": "Bulk",
                         "body": "Bulk body",
                         "content_type": "plain",
@@ -198,11 +231,13 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
                 ]
             },
         ),
+        ("deleteMessages", {"ids": ["msg-bulk"]}),
         ("addAccount", {"id": "acc", "host": "smtp.local", "port": 25, "user": None, "password": None, "ttl": 300, "limit_per_minute": None, "limit_per_hour": None, "limit_per_day": None, "limit_behavior": "defer", "use_tls": None}),
         ("listAccounts", {}),
         ("deleteAccount", {"id": "acc"}),
         ("pendingMessages", {}),
         ("listDeferred", {}),
+        ("listMessages", {}),
     ]
     assert svc.calls == expected_calls
 

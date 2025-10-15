@@ -76,7 +76,7 @@ class SendMessagePayload(BaseModel):
     id: Optional[str] = None
     account_id: Optional[str] = None
     from_: str = Field(alias="from")
-    to: List[str]
+    to: Union[List[str], str]
     cc: Optional[Union[List[str], str]] = None
     bcc: Optional[Union[List[str], str]] = None
     reply_to: Optional[str] = None
@@ -87,6 +87,7 @@ class SendMessagePayload(BaseModel):
     headers: Optional[Dict[str, Any]] = None
     message_id: Optional[str] = None
     attachments: Optional[List[AttachmentPayload]] = None
+    priority: Optional[Union[int, Literal["immediate", "high", "medium", "low"]]] = None
 
 
 class MessageEvent(BaseModel):
@@ -127,6 +128,7 @@ class PendingMessage(BaseModel):
     id: str
     to_addr: Optional[str] = None
     subject: Optional[str] = None
+    account_id: Optional[str] = None
     started_at: Optional[str] = None
 
 
@@ -182,10 +184,44 @@ class RuleTogglePayload(BaseModel):
 class EnqueueMessagesPayload(BaseModel):
     """Queue of messages used by ``addMessages``."""
     messages: List[SendMessagePayload]
+    default_priority: Optional[Union[int, Literal["immediate", "high", "medium", "low"]]] = None
 
 
-class EnqueueMessagesResponse(CommandStatus):
-    queued: int
+class EnqueuedMessageEntry(BaseModel):
+    """Result entry returned after invoking ``addMessages``."""
+    id: Optional[str] = None
+    account_id: Optional[str] = None
+    priority: Optional[int] = None
+    priority_label: Optional[str] = None
+    status: Optional[str] = None
+    proxy_ts: Optional[str] = None
+    error_ts: Optional[str] = None
+    error_msg: Optional[str] = None
+
+
+class MessageRecord(BaseModel):
+    """Full representation of a message tracked by the dispatcher."""
+    id: str
+    priority: int
+    priority_label: Optional[str] = None
+    account_id: Optional[str] = None
+    status: Literal["queued", "pending", "deferred", "error", "sent"]
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    message: Dict[str, Any]
+
+
+class MessagesResponse(CommandStatus):
+    messages: List[MessageRecord]
+
+
+class DeleteMessagesPayload(BaseModel):
+    ids: List[str] = Field(default_factory=list)
+
+
+class DeleteMessagesResponse(CommandStatus):
+    removed: int
+    not_found: Optional[List[str]] = None
 
 def create_app(svc: AsyncMailCore, api_token: str | None = None) -> FastAPI:
     """Create and configure the FastAPI application.
@@ -250,7 +286,7 @@ def create_app(svc: AsyncMailCore, api_token: str | None = None) -> FastAPI:
         result = await service.handle_command("sendMessage", data)
         return SendMessageResponse.model_validate(result)
 
-    @router.post("/add-messages", response_model=EnqueueMessagesResponse, response_model_exclude_none=True)
+    @router.post("/add-messages", response_model=List[EnqueuedMessageEntry], response_model_exclude_none=True)
     async def add_messages(payload: EnqueueMessagesPayload):
         """Push a batch of messages into the scheduler queue."""
         if not service:
@@ -258,8 +294,25 @@ def create_app(svc: AsyncMailCore, api_token: str | None = None) -> FastAPI:
         data = {
             "messages": [msg.model_dump(by_alias=True, exclude_none=True) for msg in payload.messages]
         }
+        if payload.default_priority is not None:
+            data["default_priority"] = payload.default_priority
         result = await service.handle_command("addMessages", data)
-        return EnqueueMessagesResponse.model_validate(result)
+        if isinstance(result, dict):
+            if result.get("ok") is False:
+                detail = {"error": result.get("error"), "rejected": result.get("rejected")}
+                raise HTTPException(status_code=400, detail=detail)
+            messages = result.get("messages") or []
+        else:
+            messages = result
+        return [EnqueuedMessageEntry.model_validate(item) for item in messages]
+
+    @router.post("/delete-messages", response_model=DeleteMessagesResponse, response_model_exclude_none=True)
+    async def delete_messages(payload: DeleteMessagesPayload):
+        """Remove messages from the scheduler queue and related tracking tables."""
+        if not service:
+            raise HTTPException(500, "Service not initialized")
+        result = await service.handle_command("deleteMessages", payload.model_dump())
+        return DeleteMessagesResponse.model_validate(result)
 
     @router.post("/rules", response_model=RulesResponse, response_model_exclude_none=True)
     async def add_rule(payload: RulePayload):
@@ -332,6 +385,14 @@ def create_app(svc: AsyncMailCore, api_token: str | None = None) -> FastAPI:
             raise HTTPException(500, "Service not initialized")
         result = await service.handle_command("listDeferred", {})
         return DeferredResponse.model_validate(result)
+
+    @api.get("/messages", response_model=MessagesResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
+    async def all_messages():
+        """Expose the current message queue with detailed payload information."""
+        if not service:
+            raise HTTPException(500, "Service not initialized")
+        result = await service.handle_command("listMessages", {})
+        return MessagesResponse.model_validate(result)
 
     @api.get("/metrics", dependencies=[auth_dependency])
     async def metrics():

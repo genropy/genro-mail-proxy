@@ -14,10 +14,10 @@ def load_settings() -> dict[str, object]:
     """
     Load configuration from an INI file (default: config.ini) with environment variables as fallbacks.
     Supported sections/keys:
-      [smtp] host, port, user, password
-      [fetch] url
       [storage] db_path
-      [server] host, port
+      [server] host, port, api_token
+      [client] client_sync_url, client_sync_user, client_sync_password, client_sync_token
+      [delivery] send_interval_seconds, default_priority
     """
     config_path = Path(os.getenv("ASYNC_MAIL_CONFIG", "config.ini"))
     parser = configparser.ConfigParser()
@@ -45,20 +45,25 @@ def load_settings() -> dict[str, object]:
             return False
         return default
 
+    def get_float(section: str, option: str, fallback: str | None = None, default: float | None = None) -> float | None:
+        value = get(section, option, fallback)
+        if value is None:
+            return default
+        return float(value)
+
     settings = {
-        "smtp_host": get("smtp", "host", os.getenv("SMTP_HOST", "smtp.gmail.com")),
-        "smtp_port": get_int("smtp", "port", os.getenv("SMTP_PORT", "587")),
-        "smtp_user": get("smtp", "user", os.getenv("SMTP_USER")),
-        "smtp_password": get("smtp", "password", os.getenv("SMTP_PASSWORD")),
-        "smtp_use_tls": get_bool("smtp", "use_tls", os.getenv("SMTP_USE_TLS"), None),
-        "fetch_url": get("fetch", "url", os.getenv("FETCH_URL", "http://localhost:8080/mail-service-endpoint")),
         "db_path": get("storage", "db_path", os.getenv("DB_PATH", "/data/mail_service.db")),
         "http_host": get("server", "host", os.getenv("HOST", "0.0.0.0")),
         "http_port": get_int("server", "port", os.getenv("PORT", "8000")),
         "scheduler_active": get_bool("scheduler", "active", os.getenv("SCHEDULER_ACTIVE"), False),
         "api_token": get("server", "api_token", os.getenv("API_TOKEN")),
-        "sync_token": get("server", "sync_token", os.getenv("SYNC_TOKEN")),
         "timezone": get("scheduler", "timezone", os.getenv("TIMEZONE", "Europe/Rome")),
+        "client_sync_url": get("client", "client_sync_url", os.getenv("CLIENT_SYNC_URL")),
+        "client_sync_user": get("client", "client_sync_user", os.getenv("CLIENT_SYNC_USER")),
+        "client_sync_password": get("client", "client_sync_password", os.getenv("CLIENT_SYNC_PASSWORD")),
+        "client_sync_token": get("client", "client_sync_token", os.getenv("CLIENT_SYNC_TOKEN")),
+        "send_loop_interval": get_float("delivery", "send_interval_seconds", os.getenv("SEND_LOOP_INTERVAL")),
+        "default_priority": get_int("delivery", "default_priority", os.getenv("DEFAULT_PRIORITY"), default=1),
     }
 
     rules_raw = get("scheduler", "rules", os.getenv("SCHEDULER_RULES"))
@@ -77,25 +82,25 @@ def load_settings() -> dict[str, object]:
     if isinstance(token, str):
         token = token.strip() or None
     settings["api_token"] = token
-    sync_token = settings.get("sync_token")
-    if isinstance(sync_token, str):
-        sync_token = sync_token.strip() or None
-    settings["sync_token"] = sync_token
     return settings
 
 
 async def run_service(settings: dict[str, object]):
-    service = AsyncMailCore(
-        host=str(settings["smtp_host"]),
-        port=int(settings["smtp_port"]),
-        user=settings["smtp_user"],
-        password=settings["smtp_password"],
-        use_tls=settings["smtp_use_tls"],
-        fetch_url=settings["fetch_url"],
+    service_kwargs = dict(
         db_path=settings["db_path"],
         start_active=bool(settings.get("scheduler_active")),
         timezone=str(settings.get("timezone") or "Europe/Rome"),
+        client_sync_url=settings.get("client_sync_url"),
+        client_sync_user=settings.get("client_sync_user"),
+        client_sync_password=settings.get("client_sync_password"),
+        client_sync_token=settings.get("client_sync_token"),
+        default_priority=settings.get("default_priority"),
     )
+    send_loop_interval = settings.get("send_loop_interval")
+    if send_loop_interval is not None:
+        service_kwargs["send_loop_interval"] = float(send_loop_interval)
+
+    service = AsyncMailCore(**service_kwargs)
     await service.start()
     rules = settings.get("scheduler_rules") or []
     if rules:

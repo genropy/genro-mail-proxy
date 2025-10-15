@@ -20,6 +20,7 @@ class StubPersistence:
         self.rule_id = 0
         self.delivery_reports = {}
         self.delivery_seq = 0
+        self.messages = {}
 
     async def init_db(self):
         return None
@@ -32,6 +33,14 @@ class StubPersistence:
 
     async def delete_account(self, account_id):
         self.accounts.pop(account_id, None)
+        for key in list(self.pending):
+            if self.pending[key].get("account_id") == account_id:
+                self.pending.pop(key, None)
+        self.deferred = {k: v for k, v in self.deferred.items() if k[1] != account_id}
+        self.send_log = [entry for entry in self.send_log if entry[0] != account_id]
+        for key in list(self.messages):
+            if self.messages[key].get("account_id") == account_id:
+                self.messages.pop(key, None)
 
     async def get_account(self, account_id):
         if account_id not in self.accounts:
@@ -41,11 +50,16 @@ class StubPersistence:
     async def list_pending(self):
         return list(self.pending.values())
 
-    async def add_pending(self, msg_id, to_addr, subject):
-        self.pending[msg_id] = {"id": msg_id, "to_addr": to_addr, "subject": subject}
+    async def add_pending(self, msg_id, to_addr, subject, account_id):
+        self.pending[msg_id] = {
+            "id": msg_id,
+            "to_addr": to_addr,
+            "subject": subject,
+            "account_id": account_id,
+        }
 
     async def remove_pending(self, msg_id):
-        self.pending.pop(msg_id, None)
+        return self.pending.pop(msg_id, None) is not None
 
     async def list_deferred(self):
         return [
@@ -61,10 +75,14 @@ class StubPersistence:
         return entry["deferred_until"] if entry else None
 
     async def clear_deferred(self, msg_id):
+        removed = False
         for key in list(self.deferred):
             if key[0] == msg_id:
                 self.deferred.pop(key)
-        self.cleared.append(msg_id)
+                removed = True
+        if removed:
+            self.cleared.append(msg_id)
+        return removed
 
     async def log_send(self, account_id, timestamp):
         self.send_log.append((account_id, timestamp))
@@ -116,6 +134,33 @@ class StubPersistence:
         if report_id in self.delivery_reports:
             self.delivery_reports[report_id]["retry_count"] += 1
 
+    async def save_message(self, msg_id, payload, priority, priority_label=None):
+        self.messages[msg_id] = {
+            "id": msg_id,
+            "message": payload.copy(),
+            "priority": int(priority),
+            "priority_label": priority_label,
+            "status": "queued",
+            "created_at": "now",
+            "updated_at": "now",
+            "account_id": payload.get("account_id"),
+        }
+
+    async def update_message_status(self, msg_id, status):
+        if msg_id in self.messages:
+            self.messages[msg_id]["status"] = status
+            self.messages[msg_id]["updated_at"] = "now"
+
+    async def delete_message(self, msg_id):
+        return self.messages.pop(msg_id, None) is not None
+
+    async def list_messages(self, active_only=False):
+        records = [value.copy() for value in self.messages.values()]
+        if active_only:
+            allowed = {"queued", "pending", "deferred"}
+            records = [rec for rec in records if rec["status"] in allowed]
+        return records
+
 
 class StubRateLimiter:
     def __init__(self):
@@ -129,19 +174,11 @@ class StubRateLimiter:
         self.logged.append(account_id)
 
 
-class StubFetcher:
-    def __init__(self, messages=None):
-        self.messages = list(messages or [])
-        self.calls = 0
+class StubReporter:
+    def __init__(self):
         self.reports = []
 
-    async def fetch_messages(self):
-        self.calls += 1
-        current = list(self.messages)
-        self.messages.clear()
-        return current
-
-    async def report_delivery(self, payload):
+    async def report(self, payload):
         self.reports.append(payload)
 
 
@@ -226,17 +263,18 @@ class StubMetrics:
 
 
 def make_core(messages=None):
-    core = AsyncMailCore(start_active=True)
+    reporter = StubReporter()
+    core = AsyncMailCore(start_active=True, report_delivery_callable=reporter.report)
     core.logger = types.SimpleNamespace(
         warning=lambda *args, **kwargs: None,
         error=lambda *args, **kwargs: None,
     )
     core.persistence = StubPersistence()
     core.rate_limiter = StubRateLimiter()
-    core.fetcher = StubFetcher(messages)
     core.pool = StubPool()
     core.attachments = StubAttachments()
     core.metrics = StubMetrics()
+    core.sync_reporter = reporter
     core._rules = [
         {
             "id": 1,
@@ -259,15 +297,18 @@ def make_core(messages=None):
 async def test_handle_command_dispatch(monkeypatch):
     core = make_core()
 
-    fetch_mock = AsyncMock()
-    monkeypatch.setattr(core, "_fetch_and_send_once", fetch_mock)
+    flush_mock = AsyncMock()
+    process_mock = AsyncMock()
+    monkeypatch.setattr(core, "_flush_delivery_reports", flush_mock)
+    monkeypatch.setattr(core, "_process_queue", process_mock)
 
     await core.persistence.add_account({"id": "acc", "host": "smtp", "port": 25})
-    await core.persistence.add_pending("id1", "to@example.com", "Subject")
+    await core.persistence.add_pending("id1", "to@example.com", "Subject", "acc")
     core.persistence.deferred[("id2", "acc")] = {"deferred_until": 1700}
 
     assert await core.handle_command("run now") == {"ok": True}
-    fetch_mock.assert_awaited()
+    flush_mock.assert_awaited()
+    process_mock.assert_awaited()
 
     assert await core.handle_command("suspend") == {"ok": True, "active": False}
     assert core._active is False
@@ -288,8 +329,32 @@ async def test_handle_command_dispatch(monkeypatch):
     assert accounts["ok"] is True
     assert any(acc["id"] == "new" for acc in accounts["accounts"])
 
+    await core.persistence.add_pending("new-pending", "to@example.com", "Subject", "new")
+    core.persistence.deferred[("new-deferred", "new")] = {"deferred_until": 999}
+    core.persistence.send_log.append(("new", 10))
+    await core._enqueue_messages(
+        [
+            {
+                "id": "queued-new",
+                "account_id": "new",
+                "from": "sender@example.com",
+                "to": ["dest@example.com"],
+                "subject": "Queued",
+                "body": "Body",
+            }
+        ],
+        core_module.DEFAULT_PRIORITY,
+    )
+    assert "queued-new" in core.persistence.messages
+    assert core._message_queue.qsize() == 1
+
     await core.handle_command("deleteAccount", {"id": "new"})
     assert all(acc["id"] != "new" for acc in (await core.handle_command("listAccounts"))["accounts"])
+    assert "queued-new" not in core.persistence.messages
+    assert core._message_queue.qsize() == 0
+    assert "new-pending" not in core.persistence.pending
+    assert ("new-deferred", "new") not in core.persistence.deferred
+    assert all(acc_id != "new" for acc_id, _ in core.persistence.send_log)
 
     pending = await core.handle_command("pendingMessages")
     assert pending["ok"] is True
@@ -300,6 +365,37 @@ async def test_handle_command_dispatch(monkeypatch):
     assert deferred["deferred"][0]["id"] == "id2"
 
     assert await core.handle_command("unknown") == {"ok": False, "error": "unknown command"}
+
+
+@pytest.mark.asyncio
+async def test_handle_delete_messages_command():
+    core = make_core()
+    await core.persistence.add_account({"id": "acc", "host": "smtp", "port": 25})
+
+    await core._enqueue_messages(
+        [
+            {
+                "id": "msg-delete",
+                "account_id": "acc",
+                "from": "sender@example.com",
+                "to": ["dest@example.com"],
+                "subject": "Queued",
+                "body": "Body",
+            }
+        ],
+        core_module.DEFAULT_PRIORITY,
+    )
+    await core.persistence.add_pending("msg-delete", "dest@example.com", "Queued", "acc")
+    await core.persistence.set_deferred("msg-delete", "acc", 999)
+
+    response = await core.handle_command("deleteMessages", {"ids": ["msg-delete", "missing"]})
+    assert response["ok"] is True
+    assert response["removed"] == 1
+    assert response["not_found"] == ["missing"]
+
+    assert core._message_queue.qsize() == 0
+    assert "msg-delete" not in core.persistence.pending
+    assert await core.persistence.get_deferred_until("msg-delete", "acc") is None
 
 
 @pytest.mark.asyncio
@@ -379,8 +475,37 @@ async def test_handle_command_send_message_missing_fields():
 
 
 @pytest.mark.asyncio
+async def test_send_message_without_account_configuration():
+    reporter = StubReporter()
+    core = AsyncMailCore(start_active=True, report_delivery_callable=reporter.report)
+    core.logger = types.SimpleNamespace(
+        warning=lambda *args, **kwargs: None,
+        error=lambda *args, **kwargs: None,
+    )
+    core.persistence = StubPersistence()
+    core.rate_limiter = StubRateLimiter()
+    core.pool = StubPool()
+    core.attachments = StubAttachments()
+    core.metrics = StubMetrics()
+    core.sync_reporter = reporter
+
+    payload = {
+        "id": "no-account",
+        "from": "sender@example.com",
+        "to": ["dest@example.com"],
+        "subject": "Missing account",
+        "body": "Hello",
+    }
+
+    result = await core.handle_command("sendMessage", payload)
+    assert result["ok"] is False
+    assert result["result"]["error_code"] == "missing_account_configuration"
+
+
+@pytest.mark.asyncio
 async def test_add_messages_queue_processed(monkeypatch):
     core = make_core()
+    await core.persistence.add_account({"id": "acc", "host": "smtp", "port": 25})
 
     send_mock = AsyncMock()
     monkeypatch.setattr(core, "_send_with_limits", send_mock)
@@ -391,6 +516,7 @@ async def test_add_messages_queue_processed(monkeypatch):
                 "id": "queued-1",
                 "from": "sender@example.com",
                 "to": ["dest@example.com"],
+                "account_id": "acc",
                 "subject": "Queued",
                 "body": "Hello",
             }
@@ -399,12 +525,192 @@ async def test_add_messages_queue_processed(monkeypatch):
 
     result = await core.handle_command("addMessages", payload)
     assert result["ok"] is True
+    assert result["status"] == "ok"
     assert result["queued"] == 1
+    assert result.get("rejected") in (None, [])
+    assert result["messages"][0]["id"] == "queued-1"
+    assert result["messages"][0]["proxy_ts"] is not None
+    assert result["messages"][0]["status"] == "queued"
+    assert result["messages"][0]["error_msg"] is None
+
+    await core._process_queue()
 
     send_mock.assert_awaited()
     args, _ = send_mock.await_args
     _, _, msg_id, _ = args
     assert msg_id == "queued-1"
+
+
+@pytest.mark.asyncio
+async def test_add_messages_returns_error_entries_for_rejected():
+    core = make_core()
+    core.persistence.accounts["acc"] = {"id": "acc", "host": "smtp", "port": 25}
+
+    payload = {
+        "messages": [
+            {
+                "id": "queued-1",
+                "from": "sender@example.com",
+                "to": ["dest@example.com"],
+                "account_id": "acc",
+                "subject": "Queued",
+                "body": "Hello",
+            },
+            {
+                "id": "bad-1",
+                "from": "sender@example.com",
+                "account_id": "acc",
+                "subject": "Missing recipient",
+                "body": "Hello",
+            },
+        ]
+    }
+
+    result = await core.handle_command("addMessages", payload)
+    assert result["ok"] is True
+    assert result["status"] == "ok"
+    assert result["queued"] == 1
+    assert result["rejected"][0]["id"] == "bad-1"
+    assert len(result["messages"]) == 2
+    success_entry = next(item for item in result["messages"] if item["id"] == "queued-1")
+    failure_entry = next(item for item in result["messages"] if item["id"] == "bad-1")
+    assert success_entry["error_msg"] is None
+    assert success_entry["proxy_ts"] is not None
+    assert success_entry["status"] == "queued"
+    assert failure_entry["error_msg"] == "missing to"
+    assert failure_entry["error_ts"] is not None
+    assert failure_entry["proxy_ts"] is None
+    assert failure_entry["status"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_add_messages_reject_unknown_account():
+    core = make_core()
+
+    payload = {
+        "messages": [
+            {
+                "id": "queued-1",
+                "from": "sender@example.com",
+                "to": ["dest@example.com"],
+                "account_id": "missing",
+                "subject": "Queued",
+                "body": "Hello",
+            }
+        ]
+    }
+
+    result = await core.handle_command("addMessages", payload)
+    assert result["ok"] is False
+    assert result["status"] == "error"
+    assert result["error"] == "all messages rejected"
+    assert result["rejected"][0]["reason"] == "account not found"
+    assert result["messages"] == []
+
+
+@pytest.mark.asyncio
+async def test_add_messages_reject_without_defaults():
+    reporter = StubReporter()
+    core = AsyncMailCore(start_active=True, report_delivery_callable=reporter.report)
+    core.logger = types.SimpleNamespace(
+        warning=lambda *args, **kwargs: None,
+        error=lambda *args, **kwargs: None,
+    )
+    core.persistence = StubPersistence()
+    core.rate_limiter = StubRateLimiter()
+    core.pool = StubPool()
+    core.attachments = StubAttachments()
+    core.metrics = StubMetrics()
+    core.sync_reporter = reporter
+
+    payload = {
+        "messages": [
+            {
+                "id": "no-default",
+                "from": "sender@example.com",
+                "to": ["dest@example.com"],
+                "subject": "Queued",
+                "body": "Hello",
+            }
+        ]
+    }
+
+    result = await core.handle_command("addMessages", payload)
+    assert result["ok"] is False
+    assert result["status"] == "error"
+    assert result["rejected"][0]["reason"] == "missing account configuration"
+    assert result["messages"] == []
+
+
+@pytest.mark.asyncio
+async def test_process_queue_handles_missing_fields():
+    core = make_core()
+    core.persistence.accounts["acc"] = {"id": "acc", "host": "smtp", "port": 25}
+
+    await core._enqueue_messages([
+        {"id": "msg1", "account_id": "acc"}
+    ])
+
+    await core._process_queue()
+    result = await core._result_queue.get()
+    assert result["status"] == "error"
+    assert "missing" in result["error"]
+    await core._flush_delivery_reports()
+    assert core.sync_reporter.reports[-1]["status"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_process_queue_skips_existing_deferred(monkeypatch):
+    future_ts = int(datetime.now(timezone.utc).timestamp()) + 100
+    core = make_core()
+    core.persistence.accounts["acc"] = {"id": "acc", "host": "smtp", "port": 25}
+    core.persistence.deferred[("msg1", "acc")] = {"deferred_until": future_ts}
+
+    send_mock = AsyncMock()
+    monkeypatch.setattr(core, "_send_with_limits", send_mock)
+
+    await core._enqueue_messages([
+        {
+            "id": "msg1",
+            "account_id": "acc",
+            "from": "a@example.com",
+            "to": ["b@example.com"],
+            "subject": "Subj",
+            "body": "Body",
+        }
+    ])
+
+    await core._process_queue()
+    result = await core._result_queue.get()
+    assert result["status"] == "deferred"
+    send_mock.assert_not_awaited()
+    await core._flush_delivery_reports()
+    assert core.sync_reporter.reports[-1]["status"] == "deferred"
+
+
+@pytest.mark.asyncio
+async def test_process_queue_clears_expired_deferred(monkeypatch):
+    core = make_core()
+    core.persistence.accounts["acc"] = {"id": "acc", "host": "smtp", "port": 25}
+    core.persistence.deferred[("msg2", "acc")] = {"deferred_until": 0}
+
+    send_mock = AsyncMock()
+    monkeypatch.setattr(core, "_send_with_limits", send_mock)
+
+    await core._enqueue_messages([
+        {
+            "id": "msg2",
+            "account_id": "acc",
+            "from": "a@example.com",
+            "to": ["b@example.com"],
+            "subject": "Subj",
+            "body": "Body",
+        }
+    ])
+
+    await core._process_queue()
+    assert "msg2" in core.persistence.cleared
+    send_mock.assert_awaited()
 
 
 def test_current_interval_from_schedule(monkeypatch):
@@ -488,80 +794,6 @@ async def test_build_email_adds_only_available_attachments():
 
 
 @pytest.mark.asyncio
-async def test_fetch_and_send_once_inactive():
-    core = make_core([{"id": "1"}])
-    core._active = False
-
-    await core._fetch_and_send_once()
-    assert core.fetcher.calls == 0
-
-
-@pytest.mark.asyncio
-async def test_fetch_and_send_once_handles_missing_fields():
-    core = make_core([{"id": "msg1", "account_id": "acc"}])
-    core.persistence.accounts["acc"] = {"id": "acc", "host": "smtp", "port": 25}
-
-    await core._fetch_and_send_once()
-    result = await core._result_queue.get()
-    assert result["status"] == "error"
-    assert "missing" in result["error"]
-    await core._flush_delivery_reports()
-    assert core.fetcher.reports[-1]["status"] == "error"
-
-
-@pytest.mark.asyncio
-async def test_fetch_and_send_once_skips_deferred(monkeypatch):
-    future_ts = int(datetime.now(timezone.utc).timestamp()) + 100
-    core = make_core(
-        [
-            {
-                "id": "msg1",
-                "account_id": "acc",
-                "from": "a@example.com",
-                "to": ["b@example.com"],
-                "subject": "Subj",
-            }
-        ]
-    )
-    core.persistence.accounts["acc"] = {"id": "acc", "host": "smtp", "port": 25}
-    core.persistence.deferred[("msg1", "acc")] = {"deferred_until": future_ts}
-
-    send_mock = AsyncMock()
-    monkeypatch.setattr(core, "_send_with_limits", send_mock)
-
-    await core._fetch_and_send_once()
-    result = await core._result_queue.get()
-    assert result["status"] == "deferred"
-    send_mock.assert_not_awaited()
-    await core._flush_delivery_reports()
-    assert core.fetcher.reports[-1]["status"] == "deferred"
-
-
-@pytest.mark.asyncio
-async def test_fetch_and_send_once_clears_expired_deferred(monkeypatch):
-    core = make_core(
-        [
-            {
-                "id": "msg2",
-                "account_id": "acc",
-                "from": "a@example.com",
-                "to": ["b@example.com"],
-                "subject": "Subj",
-            }
-        ]
-    )
-    core.persistence.accounts["acc"] = {"id": "acc", "host": "smtp", "port": 25}
-    core.persistence.deferred[("msg2", "acc")] = {"deferred_until": 0}
-
-    send_mock = AsyncMock()
-    monkeypatch.setattr(core, "_send_with_limits", send_mock)
-
-    await core._fetch_and_send_once()
-    assert "msg2" in core.persistence.cleared
-    send_mock.assert_awaited()
-
-
-@pytest.mark.asyncio
 async def test_send_with_limits_defers_when_rate_limited():
     core = make_core()
     await core.persistence.add_account({"id": "acc", "host": "smtp", "port": 25})
@@ -578,38 +810,40 @@ async def test_send_with_limits_defers_when_rate_limited():
     assert core.metrics.rate_limited_accounts == ["acc"]
     assert ("msg1", "acc") in core.persistence.deferred
     await core._flush_delivery_reports()
-    assert core.fetcher.reports[-1]["status"] == "deferred"
+    assert core.sync_reporter.reports[-1]["status"] == "deferred"
 
 
 @pytest.mark.asyncio
 async def test_send_with_limits_success_flow(monkeypatch):
     core = make_core()
+    await core.persistence.add_account({"id": "acc", "host": "smtp", "port": 25})
     msg = EmailMessage()
     msg["From"] = "sender@example.com"
     msg["To"] = "friend@example.com"
     msg["Subject"] = "Hello"
 
-    await core._send_with_limits(msg, None, "msg2", None)
+    await core._send_with_limits(msg, None, "msg2", "acc")
     event = await core._result_queue.get()
     assert event["status"] == "sent"
-    assert core.metrics.sent_accounts == ["default"]
+    assert core.metrics.sent_accounts == ["acc"]
     assert "msg2" not in core.persistence.pending
-    assert core.rate_limiter.logged == ["default"]
+    assert core.rate_limiter.logged == ["acc"]
     assert core.pool.smtp.last_from_addr == "sender@example.com"
     await core._flush_delivery_reports()
-    assert core.fetcher.reports[-1]["status"] == "sent"
+    assert core.sync_reporter.reports[-1]["status"] == "sent"
 
 
 @pytest.mark.asyncio
 async def test_send_with_limits_uses_custom_return_path():
     core = make_core()
+    await core.persistence.add_account({"id": "acc", "host": "smtp", "port": 25})
     msg = EmailMessage()
     msg["From"] = "sender@example.com"
     msg["To"] = "friend@example.com"
     msg["Subject"] = "Hello"
     msg["Return-Path"] = "bounce@example.com"
 
-    await core._send_with_limits(msg, "bounce@example.com", "msg-custom", None)
+    await core._send_with_limits(msg, "bounce@example.com", "msg-custom", "acc")
     await core._result_queue.get()
     assert core.pool.smtp.last_from_addr == "bounce@example.com"
 
@@ -618,14 +852,15 @@ async def test_send_with_limits_uses_custom_return_path():
 async def test_send_with_limits_handles_errors():
     core = make_core()
     core.pool.smtp.should_fail = True
+    await core.persistence.add_account({"id": "acc", "host": "smtp", "port": 25})
     msg = EmailMessage()
     msg["To"] = "friend@example.com"
     msg["Subject"] = "Hello"
 
-    await core._send_with_limits(msg, None, "msg3", None)
+    await core._send_with_limits(msg, None, "msg3", "acc")
     event = await core._result_queue.get()
     assert event["status"] == "error"
     assert "msg3" not in core.persistence.pending
-    assert core.metrics.error_accounts == ["default"]
+    assert core.metrics.error_accounts == ["acc"]
     await core._flush_delivery_reports()
-    assert core.fetcher.reports[-1]["status"] == "error"
+    assert core.sync_reporter.reports[-1]["status"] == "error"

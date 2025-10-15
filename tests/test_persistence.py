@@ -21,9 +21,10 @@ async def test_pending_crud(tmp_path):
     db = tmp_path / "pending.db"
     p = Persistence(str(db))
     await p.init_db()
-    await p.add_pending("msg1", "to@example.com", "Subject")
+    await p.add_pending("msg1", "to@example.com", "Subject", "acc")
     pending = await p.list_pending()
     assert pending[0]["id"] == "msg1"
+    assert pending[0]["account_id"] == "acc"
     await p.remove_pending("msg1")
     assert await p.list_pending() == []
 
