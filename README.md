@@ -10,7 +10,7 @@ Asynchronous email dispatcher microservice with scheduling, rate limiting, attac
 Main integration points:
 
 - REST control plane secured by ``X-API-Token`` for queue management and configuration.
-- Outbound ``proxy_sync`` call towards Genropy, authenticated via basic auth and configured through ``[sync]`` in ``config.ini``.
+- Outbound ``proxy_sync`` call towards Genropy, authenticated via basic auth and configured through ``[client]`` in ``config.ini``.
 - Delivery reports and Prometheus metrics to monitor message lifecycle and rate limiting.
 - Unified SQLite storage with a single ``messages`` table that tracks queue state (`priority`, `deferred_ts`) and delivery lifecycle (`sent_ts`, `error_ts`, `reported_ts`), removing the legacy `pending_messages`, `deferred_messages`, `queued_messages`, and `delivery_reports` tables.
 - Background loops:

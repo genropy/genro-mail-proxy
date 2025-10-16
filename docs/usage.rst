@@ -8,18 +8,18 @@ Configuration
 The service loads settings from ``config.ini`` (or the path provided by ``ASYNC_MAIL_CONFIG``)
 and environment variables. Main sections/keys::
 
-  [smtp]        host, port, user, password, use_tls
   [storage]     db_path
-  [server]      host, port, api_token, sync_token
-  [sync]        proxy_sync_url, proxy_sync_user, proxy_sync_password, proxy_sync_batch_size
+  [server]      host, port, api_token
+  [client]      client_sync_url, client_sync_user, client_sync_password, client_sync_token
+  [scheduler]   active, timezone, rules (JSON-encoded)
   [delivery]    send_interval_seconds, default_priority, delivery_report_retention_seconds
 
 ``api_token`` secures the FastAPI endpoints: every HTTP request must include
-``X-API-Token: <value>``. ``sync_token`` is available for future Genropy-to-proxy
-handshakes. The ``[sync]`` section configures the outbound ``proxy_sync`` call
-performed by the dispatcher towards the Genropy server.  Credentials are sent
-using HTTP basic authentication (the same format obtained with
-``https://user:password@host/path`` URLs).
+``X-API-Token: <value>``. The ``[client]`` section configures the outbound
+``proxy_sync`` call performed by the dispatcher towards the Genropy server.
+Credentials are sent using HTTP basic authentication (the same format obtained
+with ``https://user:password@host/path`` URLs) unless ``client_sync_token`` is
+provided.
 
 Proxy sync exchange
 -------------------
@@ -43,16 +43,18 @@ response from Genropy is:
 
    {"sent": 12, "error": 1, "deferred": 0}
 
-Genropy will subsequently push new messages through ``/commands/add-messages``
-and, when ``more_messages`` is ``true``, the dispatcher can trigger
-``/commands/run-now`` to pick up the backlog immediately.
+Genropy will subsequently push new messages through ``/commands/add-messages``.
+For automated deployments the background SMTP loop already polls the queue every
+``send_interval_seconds``; the ``/commands/run-now`` shortcut is intended only
+for instances created with ``test_mode=True`` (for example during unit tests or
+manual maintenance) where the background tasks are disabled.
 
 
 Endpoints
 ---------
 
 - GET /status
-- POST /commands/run-now
+- POST /commands/run-now (available only when the service runs with ``test_mode=True``)
 - POST /commands/suspend
 - POST /commands/activate
 - POST /commands/add-messages
@@ -66,16 +68,19 @@ Endpoints
 - GET /messages
 - GET /metrics
 
+Test mode
+---------
+
+Unit tests and manual maintenance scripts can instantiate
+``async_mail_service.core.AsyncMailCore`` with ``test_mode=True``. In this
+configuration the background dispatcher/reporting/cleanup tasks are not started;
+instead, operators can call ``/commands/run-now`` (or invoke
+``handle_command("run now", {})`` directly) to execute single, on-demand cycles.
+Production services should leave ``test_mode`` at its default ``False`` value so
+the periodic loops continue to process the queue automatically.
+
 REST Examples (curl)
 --------------------
-
-Run now:
-
-.. code-block:: bash
-
-   curl -X POST http://localhost:8000/commands/run-now \
-        -H "Content-Type: application/json" \
-        -H "X-API-Token: my-secret-token"
 
 Add account:
 

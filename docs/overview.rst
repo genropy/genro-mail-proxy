@@ -25,6 +25,22 @@ The service is composed of the following building blocks:
 * **Metrics** – :class:`async_mail_service.prometheus.MailMetrics` exports
   Prometheus counters and gauges.
 
+.. mermaid::
+   :caption: Logical architecture of the async mail service
+
+   graph TD
+     Client["REST Clients"] -->|JSON commands| API[FastAPI layer]
+     API --> Core[AsyncMailCore]
+     Core --> Persistence[(SQLite<br/>messages, accounts, send_log)]
+     Core --> RateLimiter[RateLimiter]
+     RateLimiter --> Persistence
+     Core --> Pool[SMTPPool]
+     Pool --> SMTP[SMTP Server]
+     Core --> Metrics[Prometheus exporter]
+     Core --> Sync["Client sync (proxy_sync)"]
+     Sync --> Upstream["Genropy / external system"]
+     Metrics --> Prometheus["Prometheus server"]
+
 Request flow
 ------------
 
@@ -44,6 +60,31 @@ Request flow
    ``error_ts`` / ``error``) and streamed to API consumers through
    :meth:`AsyncMailCore.results`.
 
+.. mermaid::
+   :caption: Message delivery sequence
+
+   sequenceDiagram
+     participant Client
+     participant API as FastAPI
+     participant Core as AsyncMailCore
+     participant DB as SQLite
+     participant SMTP as SMTP Server
+
+     Client->>API: POST /commands/add-messages
+     API->>Core: handle_command("addMessages")
+     Core->>DB: INSERT into messages
+     loop Background SMTP loop
+       Core->>DB: SELECT ready messages
+       Core->>SMTP: send_message()
+       alt Success
+         Core->>DB: UPDATE sent_ts
+       else Error
+         Core->>DB: UPDATE error_ts / error
+       end
+     end
+     Core->>API: results queue / delivery report
+     API-->>Client: Deferred status or polling
+
 Client synchronisation
 ----------------------
 
@@ -55,12 +96,3 @@ current lifecycle state for each message.  Once the upstream service confirms
 reception (for example returning ``{"sent": 12, "error": 1, "deferred": 3}``)
 the dispatcher stamps ``reported_ts`` and eventually purges those rows when
 they age past the configured retention window.
-
-Suggested diagrams
-------------------
-
-Read the Docs supports rich diagrams (for example via the ``sphinxcontrib-mermaid``
-extension or embedded SVG images).  Adding a sequence diagram covering
-``proxySync`` or the delivery flow would make the lifecycle even clearer.
-This documentation currently provides a textual overview so it remains useful
-even without optional diagram extensions.

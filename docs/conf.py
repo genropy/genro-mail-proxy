@@ -4,7 +4,14 @@ sys.path.insert(0, os.path.abspath('..'))
 project = "gnr-async-mail-service"
 author = "Softwell S.r.l. & Giovanni Porcari"
 release = "0.1.0"
-extensions = ["sphinx.ext.autodoc","sphinx.ext.napoleon","sphinx.ext.intersphinx","sphinx.ext.viewcode"]
+extensions = [
+    "sphinx.ext.autodoc",
+    "sphinx.ext.napoleon",
+    "sphinx.ext.intersphinx",
+    "sphinx.ext.viewcode",
+    "sphinx.ext.graphviz",
+    "sphinxcontrib.mermaid",
+]
 templates_path = ["_templates"]
 exclude_patterns = []
 html_theme = "sphinx_rtd_theme"

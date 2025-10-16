@@ -16,6 +16,7 @@ Prometheus metrics, and a FastAPI control plane.
    overview
    installation
    usage
+   protocol
    api_reference
    modules
    contributing

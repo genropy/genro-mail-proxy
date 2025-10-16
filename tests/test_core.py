@@ -92,6 +92,7 @@ async def make_core(tmp_path) -> AsyncMailCore:
         start_active=True,
         report_delivery_callable=reporter,
         report_retention_seconds=2,
+        test_mode=True,
     )
     await core.persistence.init_db()
     core.pool = DummyPool()
@@ -120,6 +121,16 @@ async def make_core(tmp_path) -> AsyncMailCore:
     ]
     await core.handle_command("addAccount", {"id": "acc", "host": "smtp.local", "port": 25})
     return core
+
+
+@pytest.mark.asyncio
+async def test_run_now_disallowed_outside_test_mode(tmp_path):
+    db_path = tmp_path / "core-prod.db"
+    core = AsyncMailCore(db_path=str(db_path), start_active=True)
+    await core.persistence.init_db()
+    result = await core.handle_command("run now", {})
+    assert result["ok"] is False
+    assert "test_mode" in result["error"]
 
 
 @pytest.mark.asyncio

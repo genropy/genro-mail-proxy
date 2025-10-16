@@ -60,6 +60,7 @@ class AsyncMailCore:
         report_delivery_callable: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
         send_loop_interval: float = 0.5,
         report_retention_seconds: int | None = None,
+        test_mode: bool = False,
     ):
         """Prepare the runtime collaborators and scheduler state."""
         self.default_host = None
@@ -82,6 +83,7 @@ class AsyncMailCore:
         self._report_retention_seconds = (
             report_retention_seconds if report_retention_seconds is not None else 7 * 24 * 3600
         )
+        self._test_mode = bool(test_mode)
 
         self._stop = asyncio.Event()
         self._active = start_active
@@ -198,6 +200,8 @@ class AsyncMailCore:
         """Execute one of the external control commands."""
         payload = payload or {}
         if cmd == "run now":
+            if not self._test_mode:
+                return {"ok": False, "error": "run now is available only when test_mode is enabled"}
             await self._process_smtp_cycle()
             await self._process_client_cycle()
             return {"ok": True}
@@ -356,6 +360,8 @@ class AsyncMailCore:
         """Start the background scheduler and maintenance tasks."""
         await self.init()
         self._stop.clear()
+        if self._test_mode:
+            return
         self._task_smtp = asyncio.create_task(self._smtp_dispatch_loop(), name="smtp-dispatch-loop")
         self._task_client = asyncio.create_task(self._client_report_loop(), name="client-report-loop")
         self._task_cleanup = asyncio.create_task(self._cleanup_loop(), name="smtp-cleanup-loop")

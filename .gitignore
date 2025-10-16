@@ -2,4 +2,3 @@
 *.pyc
 docs/_build
 docs/html
-.DS_Store
