@@ -9,10 +9,10 @@ The service loads settings from ``config.ini`` (or the path provided by ``ASYNC_
 and environment variables. Main sections/keys::
 
   [smtp]        host, port, user, password, use_tls
-  [fetch]       url (endpoint that exposes pending messages)
   [storage]     db_path
   [server]      host, port, api_token, sync_token
   [sync]        proxy_sync_url, proxy_sync_user, proxy_sync_password, proxy_sync_batch_size
+  [delivery]    send_interval_seconds, default_priority, delivery_report_retention_seconds
 
 ``api_token`` secures the FastAPI endpoints: every HTTP request must include
 ``X-API-Token: <value>``. ``sync_token`` is available for future Genropy-to-proxy
@@ -31,8 +31,8 @@ When the scheduler has delivery results to report, it POSTs to
 
    {
      "delivery_report": [
-       {"id": "MSG-001", "status": "sent", "ts_send": "2024-10-09T08:00:00Z"},
-       {"id": "MSG-002", "status": "error", "ts_error": "2024-10-09T08:05:12Z", "error": "SMTP timeout"}
+       {"id": "MSG-001", "account_id": "accA", "priority": 1, "sent_ts": 1728460800, "error_ts": null, "error": null, "deferred_ts": null},
+       {"id": "MSG-002", "account_id": "accA", "priority": 2, "sent_ts": null, "error_ts": 1728461112, "error": "SMTP timeout", "deferred_ts": null}
      ]
    }
 
@@ -41,10 +41,7 @@ response from Genropy is:
 
 .. code-block:: json
 
-   {
-     "ok": true,
-     "processed": 2
-   }
+   {"sent": 12, "error": 1, "deferred": 0}
 
 Genropy will subsequently push new messages through ``/commands/add-messages``
 and, when ``more_messages`` is ``true``, the dispatcher can trigger
@@ -58,7 +55,6 @@ Endpoints
 - POST /commands/run-now
 - POST /commands/suspend
 - POST /commands/activate
-- POST /commands/send-message
 - POST /commands/add-messages
 - POST /commands/rules
 - GET /commands/rules
@@ -67,8 +63,7 @@ Endpoints
 - POST /account
 - GET /accounts
 - DELETE /account/{id}
-- GET /pending
-- GET /deferred
+- GET /messages
 - GET /metrics
 
 REST Examples (curl)
@@ -105,10 +100,15 @@ Python (httpx)
    client = httpx.Client(base_url="http://localhost:8000",
                          headers={"X-API-Token": "my-secret-token"})
 
-   r = client.post("/commands/send-message", json={
-       "from": "sender@example.com",
-       "to": ["dest@example.com"],
-       "subject": "Hi",
-       "body": "Hello world"
+   r = client.post("/commands/add-messages", json={
+       "messages": [
+           {
+               "id": "MSG-001",
+               "from": "sender@example.com",
+               "to": ["dest@example.com"],
+               "subject": "Hi",
+               "body": "Hello world"
+           }
+       ]
    })
    print(r.json())

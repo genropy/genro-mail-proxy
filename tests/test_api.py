@@ -20,32 +20,8 @@ class DummyService:
 
     async def handle_command(self, cmd, payload):
         self.calls.append((cmd, payload))
-        if cmd == "sendMessage":
-            return {
-                "ok": True,
-                "result": {
-                    "id": payload.get("id"),
-                    "status": "sent",
-                    "timestamp": "2024-01-01T00:00:00Z",
-                    "account": payload.get("account_id"),
-                },
-            }
         if cmd == "addMessages":
-            messages = []
-            for msg in payload.get("messages", []):
-                messages.append(
-                    {
-                        "id": msg.get("id"),
-                        "account_id": msg.get("account_id"),
-                        "priority": 2,
-                        "priority_label": "medium",
-                        "status": "queued",
-                        "proxy_ts": "2024-01-01T00:00:00Z",
-                        "error_ts": None,
-                        "error_msg": None,
-                    }
-                )
-            return {"ok": True, "status": "ok", "queued": len(messages), "messages": messages}
+            return {"ok": True, "queued": len(payload.get("messages", [])), "rejected": []}
         if cmd == "deleteMessages":
             ids = payload.get("ids", []) if isinstance(payload, dict) else []
             return {"ok": True, "removed": len(ids), "not_found": []}
@@ -69,10 +45,6 @@ class DummyService:
                 if rule["id"] == payload.get("id"):
                     rule["enabled"] = payload.get("enabled", True)
             return {"ok": True, "rules": list(self.rules)}
-        if cmd in {"pendingMessages"}:
-            return {"ok": True, "pending": []}
-        if cmd in {"listDeferred"}:
-            return {"ok": True, "deferred": []}
         if cmd == "listMessages":
             return {"ok": True, "messages": list(self.messages)}
         if cmd == "listAccounts":
@@ -141,23 +113,6 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
     assert client.patch(f"/commands/rules/{rule_id}", json={"enabled": False}).json()["ok"] is True
     assert client.delete(f"/commands/rules/{rule_id}").json()["ok"] is True
 
-    send_payload = {
-        "id": "msg1",
-        "account_id": "acc",
-        "from": "sender@example.com",
-        "to": "dest@example.com, second@example.com",
-        "cc": "copy@example.com",
-        "subject": "Hello",
-        "body": "Hi",
-        "attachments": [
-            {"filename": "doc.txt", "content": "ZGF0YQ=="},
-            {"filename": "remote.bin", "url": "https://files"},
-        ],
-    }
-    resp = client.post("/commands/send-message", json=send_payload)
-    assert resp.status_code == 200
-    assert resp.json()["result"]["status"] == "sent"
-
     bulk_payload = {
         "messages": [
             {
@@ -173,9 +128,9 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
     bulk_resp = client.post("/commands/add-messages", json=bulk_payload)
     assert bulk_resp.status_code == 200
     bulk_response_json = bulk_resp.json()
-    assert isinstance(bulk_response_json, list)
-    assert bulk_response_json[0]["id"] == "msg-bulk"
-    assert bulk_response_json[0]["status"] == "queued"
+    assert isinstance(bulk_response_json, dict)
+    assert bulk_response_json["queued"] == 1
+    assert bulk_response_json["rejected"] == []
 
     delete_payload = {"ids": ["msg-bulk"]}
     delete_resp = client.post("/commands/delete-messages", json=delete_payload)
@@ -186,8 +141,6 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
     assert client.post("/account", json=account).json()["ok"] is True
     assert client.get("/accounts").json()["ok"] is True
     assert client.delete("/account/acc").json()["ok"] is True
-    assert client.get("/pending").json()["ok"] is True
-    assert client.get("/deferred").json()["ok"] is True
     assert client.get("/messages").json()["ok"] is True
 
     expected_calls = [
@@ -198,23 +151,6 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
         ("listRules", {}),
         ("setRuleEnabled", {"id": rule_id, "enabled": False}),
         ("deleteRule", {"id": rule_id}),
-        (
-            "sendMessage",
-            {
-                "id": "msg1",
-                "account_id": "acc",
-                "from": "sender@example.com",
-                "to": "dest@example.com, second@example.com",
-                "cc": "copy@example.com",
-                "subject": "Hello",
-                "body": "Hi",
-                "content_type": "plain",
-                "attachments": [
-                    {"filename": "doc.txt", "content": "ZGF0YQ=="},
-                    {"filename": "remote.bin", "url": "https://files"},
-                ],
-            },
-        ),
         (
             "addMessages",
             {
@@ -235,8 +171,6 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
         ("addAccount", {"id": "acc", "host": "smtp.local", "port": 25, "user": None, "password": None, "ttl": 300, "limit_per_minute": None, "limit_per_hour": None, "limit_per_day": None, "limit_behavior": "defer", "use_tls": None}),
         ("listAccounts", {}),
         ("deleteAccount", {"id": "acc"}),
-        ("pendingMessages", {}),
-        ("listDeferred", {}),
         ("listMessages", {}),
     ]
     assert svc.calls == expected_calls

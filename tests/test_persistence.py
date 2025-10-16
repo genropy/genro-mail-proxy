@@ -1,12 +1,26 @@
+import time
+
 import pytest
+
 from async_mail_service.persistence import Persistence
+
 
 @pytest.mark.asyncio
 async def test_account_crud(tmp_path):
     db = tmp_path / "test.db"
     p = Persistence(str(db))
     await p.init_db()
-    await p.add_account({"id":"gmail","host":"smtp.gmail.com","port":587,"user":"a","password":"b","ttl":300,"use_tls":False})
+    await p.add_account(
+        {
+            "id": "gmail",
+            "host": "smtp.gmail.com",
+            "port": 587,
+            "user": "a",
+            "password": "b",
+            "ttl": 300,
+            "use_tls": False,
+        }
+    )
     lst = await p.list_accounts()
     assert len(lst) == 1
     assert lst[0]["use_tls"] is False
@@ -16,29 +30,63 @@ async def test_account_crud(tmp_path):
     lst = await p.list_accounts()
     assert len(lst) == 0
 
-@pytest.mark.asyncio
-async def test_pending_crud(tmp_path):
-    db = tmp_path / "pending.db"
-    p = Persistence(str(db))
-    await p.init_db()
-    await p.add_pending("msg1", "to@example.com", "Subject", "acc")
-    pending = await p.list_pending()
-    assert pending[0]["id"] == "msg1"
-    assert pending[0]["account_id"] == "acc"
-    await p.remove_pending("msg1")
-    assert await p.list_pending() == []
 
 @pytest.mark.asyncio
-async def test_deferred_crud(tmp_path):
-    db = tmp_path / "deferred.db"
+async def test_messages_lifecycle(tmp_path):
+    db = tmp_path / "messages.db"
     p = Persistence(str(db))
     await p.init_db()
-    await p.set_deferred("msg1", "acc", 123)
-    assert await p.get_deferred_until("msg1", "acc") == 123
-    deferred = await p.list_deferred()
-    assert deferred[0]["account_id"] == "acc"
+    now = int(time.time())
+    inserted = await p.insert_messages(
+        [
+            {
+                "id": "msg1",
+                "account_id": "acc",
+                "priority": 2,
+                "payload": {"id": "msg1", "from": "a@example.com", "to": "b@example.com", "body": "hello"},
+            }
+        ]
+    )
+    assert inserted == ["msg1"]
+    ready = await p.fetch_ready_messages(limit=10, now_ts=now)
+    assert len(ready) == 1
+    assert ready[0]["id"] == "msg1"
+    await p.set_deferred("msg1", now + 60)
+    assert await p.fetch_ready_messages(limit=10, now_ts=now) == []
     await p.clear_deferred("msg1")
-    assert await p.get_deferred_until("msg1", "acc") is None
+    ready = await p.fetch_ready_messages(limit=10, now_ts=now)
+    assert len(ready) == 1
+    await p.mark_error("msg1", now, "boom")
+    assert await p.fetch_ready_messages(limit=10, now_ts=now + 120) == []
+    reports = await p.fetch_reports(10)
+    assert reports[0]["error"] == "boom"
+    await p.mark_sent("msg1", now + 1)
+    reports = await p.fetch_reports(10)
+    assert reports[0]["sent_ts"] == now + 1
+    await p.mark_reported(["msg1"], now + 2)
+    removed = await p.remove_reported_before(now + 10)
+    assert removed == 1
+    assert await p.list_messages() == []
+
+
+@pytest.mark.asyncio
+async def test_existing_ids(tmp_path):
+    db = tmp_path / "existing.db"
+    p = Persistence(str(db))
+    await p.init_db()
+    await p.insert_messages(
+        [
+            {
+                "id": "msg1",
+                "account_id": None,
+                "priority": 2,
+                "payload": {"id": "msg1", "from": "a", "to": "b", "body": "hi"},
+            }
+        ]
+    )
+    existing = await p.existing_message_ids(["msg1", "msg2"])
+    assert existing == {"msg1"}
+
 
 @pytest.mark.asyncio
 async def test_send_log_and_counts(tmp_path):
@@ -51,6 +99,7 @@ async def test_send_log_and_counts(tmp_path):
     assert await p.count_sends_since("acc", 15) == 1
     assert await p.count_sends_since("acc", 5) == 2
     assert await p.count_sends_since("acc", 25) == 0
+
 
 @pytest.mark.asyncio
 async def test_get_account_missing_raises(tmp_path):
@@ -67,29 +116,12 @@ async def test_schedule_rules_crud(tmp_path):
     p = Persistence(str(db))
     await p.init_db()
     assert await p.list_rules() == []
-    rule = await p.add_rule({"name": "default", "interval_minutes": 2, "days": [1, 2]})
-    assert rule["priority"] == 0
+    stored = await p.add_rule({"name": "default", "interval_minutes": 2, "days": [1, 2]})
+    assert stored["priority"] == 0
     rules = await p.list_rules()
     assert len(rules) == 1
-    await p.set_rule_enabled(rule["id"], False)
-    rules = await p.list_rules()
-    assert rules[0]["enabled"] is False
-    await p.delete_rule(rule["id"])
+    await p.set_rule_enabled(rules[0]["id"], False)
+    updated = await p.list_rules()
+    assert updated[0]["enabled"] is False
+    await p.delete_rule(rules[0]["id"])
     assert await p.list_rules() == []
-
-
-@pytest.mark.asyncio
-async def test_delivery_reports_persistence(tmp_path):
-    db = tmp_path / "delivery.db"
-    p = Persistence(str(db))
-    await p.init_db()
-    report_id = await p.save_delivery_report({"id": "msg1", "status": "sent"})
-    reports = await p.list_delivery_reports()
-    assert len(reports) == 1
-    assert reports[0]["id"] == report_id
-    assert reports[0]["payload"]["status"] == "sent"
-    await p.increment_report_retry(report_id)
-    reports = await p.list_delivery_reports()
-    assert reports[0]["retry_count"] == 1
-    await p.delete_delivery_report(report_id)
-    assert await p.list_delivery_reports() == []

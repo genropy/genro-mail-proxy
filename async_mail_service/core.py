@@ -1,19 +1,20 @@
 """Core orchestration logic for the asynchronous mail dispatcher."""
 
+from __future__ import annotations
+
 import asyncio
-from email.message import EmailMessage
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, Tuple, List, Awaitable, Callable, Iterable, Set
-from itertools import count
+from email.message import EmailMessage
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import aiohttp
 
-from .logger import get_logger
-from .smtp_pool import SMTPPool
-from .persistence import Persistence
-from .rate_limit import RateLimiter
 from .attachments import AttachmentManager
+from .logger import get_logger
+from .persistence import Persistence
 from .prometheus import MailMetrics
+from .rate_limit import RateLimiter
+from .smtp_pool import SMTPPool
 from zoneinfo import ZoneInfo
 
 PRIORITY_LABELS = {
@@ -23,7 +24,8 @@ PRIORITY_LABELS = {
     3: "low",
 }
 LABEL_TO_PRIORITY = {label: value for value, label in PRIORITY_LABELS.items()}
-DEFAULT_PRIORITY = 1
+DEFAULT_PRIORITY = 2
+
 
 class AccountConfigurationError(RuntimeError):
     """Raised when a message is missing the information required to resolve an SMTP account."""
@@ -35,6 +37,7 @@ class AccountConfigurationError(RuntimeError):
 
 class AsyncMailCore:
     """Coordinate scheduling, rate limiting, persistence and delivery."""
+
     def __init__(
         self,
         *,
@@ -44,7 +47,7 @@ class AsyncMailCore:
         start_active: bool = False,
         timezone: str = "Europe/Rome",
         result_queue_size: int = 1000,
-        delivery_queue_size: int = 1000,
+        delivery_queue_size: int = 1000,  # legacy arg kept for compatibility
         message_queue_size: int = 10000,
         queue_put_timeout: float = 5.0,
         max_enqueue_batch: int = 1000,
@@ -55,7 +58,8 @@ class AsyncMailCore:
         client_sync_token: str | None = None,
         default_priority: int | str = DEFAULT_PRIORITY,
         report_delivery_callable: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
-        send_loop_interval: float = 0.2,
+        send_loop_interval: float = 0.5,
+        report_retention_seconds: int | None = None,
     ):
         """Prepare the runtime collaborators and scheduler state."""
         self.default_host = None
@@ -74,18 +78,18 @@ class AsyncMailCore:
         self._max_enqueue_batch = max_enqueue_batch
         self._attachment_timeout = attachment_timeout
         self._send_loop_interval = max(0.05, float(send_loop_interval))
+        self._smtp_batch_size = max(1, int(message_queue_size))
+        self._report_retention_seconds = (
+            report_retention_seconds if report_retention_seconds is not None else 7 * 24 * 3600
+        )
 
         self._stop = asyncio.Event()
         self._active = start_active
-        self._schedule: Dict[str, Any] | None = None
-        self._result_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=result_queue_size)
-        self._message_queue: asyncio.PriorityQueue[Tuple[int, int, Dict[str, Any]]] = asyncio.PriorityQueue(maxsize=message_queue_size)
-        self._queue_counter = count()
-        self._queue_lock = asyncio.Lock()
         self._rules: List[Dict[str, Any]] = []
-        self._delivery_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=delivery_queue_size)
-        self._task_sender: Optional[asyncio.Task] = None
-        self._task_delivery: Optional[asyncio.Task] = None
+
+        self._result_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=result_queue_size)
+        self._task_smtp: Optional[asyncio.Task] = None
+        self._task_client: Optional[asyncio.Task] = None
         self._task_cleanup: Optional[asyncio.Task] = None
 
         self._client_sync_url = client_sync_url
@@ -98,17 +102,24 @@ class AsyncMailCore:
         priority_value, _ = self._normalise_priority(default_priority, DEFAULT_PRIORITY)
         self._default_priority = priority_value
 
+    # --------------------------------------------------------------------- utils
     @staticmethod
-    def _utc_now() -> str:
-        """Return the current UTC timestamp encoded as an ISO-8601 string."""
+    def _utc_now_iso() -> str:
+        """Return the current UTC timestamp as ISO-8601 string."""
         return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-    async def init(self):
+    @staticmethod
+    def _utc_now_epoch() -> int:
+        """Return the current UTC timestamp as seconds since epoch."""
+        return int(datetime.now(timezone.utc).timestamp())
+
+    async def init(self) -> None:
         """Initialise persistence and reload scheduler rules from storage."""
         await self.persistence.init_db()
         self._rules = await self.persistence.list_rules()
         if not self._rules:
             self._active = False
+        await self._refresh_queue_gauge()
 
     def _normalise_priority(self, value: Any, default: Any = DEFAULT_PRIORITY) -> Tuple[int, str]:
         """Coerce user supplied priority into the internal representation."""
@@ -143,13 +154,13 @@ class AsyncMailCore:
         label = PRIORITY_LABELS.get(priority, PRIORITY_LABELS[fallback])
         return priority, label
 
-    # Scheduling
+    # ---------------------------------------------------------------- scheduling
     def _has_enabled_rules(self) -> bool:
         """Check whether at least one scheduling rule is currently enabled."""
         return any(rule.get("enabled", True) for rule in self._rules)
 
     def _is_scheduler_ready(self) -> bool:
-        """Return ``True`` when the scheduler loop is allowed to send mail."""
+        """Return ``True`` when the scheduler loop is allowed to notify clients."""
         return self._active and self._has_enabled_rules()
 
     def _current_interval_from_schedule(self) -> int:
@@ -182,28 +193,13 @@ class AsyncMailCore:
                 interval = int(rule.get("interval_minutes", interval // 60 or 1)) * 60
         return max(1, interval)
 
-    # Commands
+    # ------------------------------------------------------------------ commands
     async def handle_command(self, cmd: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Execute one of the external control commands.
-
-        Parameters
-        ----------
-        cmd:
-            Name of the command as received from the API layer.
-        payload:
-            Optional dictionary holding the command arguments.
-
-        Returns
-        -------
-        dict
-            ``{"ok": True}`` on success with additional fields depending on
-            the command, or ``{"ok": False, "error": "..."}`` on validation
-            errors.
-        """
+        """Execute one of the external control commands."""
         payload = payload or {}
         if cmd == "run now":
-            await self._flush_delivery_reports()
-            await self._process_queue()
+            await self._process_smtp_cycle()
+            await self._process_client_cycle()
             return {"ok": True}
         if cmd == "suspend":
             self._active = False
@@ -228,83 +224,19 @@ class AsyncMailCore:
         if cmd == "deleteAccount":
             account_id = payload.get("id")
             await self.persistence.delete_account(account_id)
-            await self._purge_account_messages(account_id)
-            pending = await self.persistence.list_pending()
-            self.metrics.set_pending(len(pending))
+            await self._refresh_queue_gauge()
             return {"ok": True}
         if cmd == "deleteMessages":
-            message_ids = []
-            if isinstance(payload, dict):
-                message_ids = payload.get("ids") or []
-            removed, missing = await self._delete_messages(message_ids)
-            pending = await self.persistence.list_pending()
-            self.metrics.set_pending(len(pending))
-            return {"ok": True, "removed": removed, "not_found": missing}
-        if cmd == "pendingMessages":
-            pending = await self.persistence.list_pending()
-            self.metrics.set_pending(len(pending))
-            return {"ok": True, "pending": pending}
-        if cmd == "listDeferred":
-            return {"ok": True, "deferred": await self.persistence.list_deferred()}
+            ids = payload.get("ids") if isinstance(payload, dict) else []
+            removed, not_found = await self._delete_messages(ids or [])
+            await self._refresh_queue_gauge()
+            return {"ok": True, "removed": removed, "not_found": not_found}
         if cmd == "listMessages":
-            active_only = True
-            if isinstance(payload, dict) and "active_only" in payload:
-                active_only = bool(payload.get("active_only"))
+            active_only = bool(payload.get("active_only", False)) if isinstance(payload, dict) else False
             messages = await self.persistence.list_messages(active_only=active_only)
             return {"ok": True, "messages": messages}
-        if cmd == "sendMessage":
-            try:
-                email_msg, envelope_from = await self._build_email(payload)
-            except KeyError as e:
-                return {"ok": False, "error": f"missing {e}"}
-
-            msg_id = payload.get("id")
-            account_id = payload.get("account_id")
-            result = await self._send_with_limits(email_msg, envelope_from, msg_id, account_id)
-            return {"ok": result.get("status") == "sent", "result": result}
         if cmd == "addMessages":
-            messages = payload.get("messages") if isinstance(payload, dict) else None
-            if not isinstance(messages, list):
-                return {"ok": False, "error": "messages must be a list"}
-            validated: List[Dict[str, Any]] = []
-            rejected: List[Dict[str, Any]] = []
-            for item in messages:
-                if not isinstance(item, dict):
-                    rejected.append({"id": None, "reason": "invalid payload"})
-                    continue
-                is_valid, reason = await self._validate_enqueue_payload(item)
-                if is_valid:
-                    validated.append(item)
-                else:
-                    rejected.append({"id": item.get("id"), "reason": reason})
-            if not validated:
-                return {"ok": False, "status": "error", "error": "all messages rejected", "rejected": rejected, "messages": []}
-            default_priority_value = self._default_priority
-            if isinstance(payload, dict) and "default_priority" in payload:
-                default_priority_value, _ = self._normalise_priority(payload.get("default_priority"), self._default_priority)
-            has_immediate, tracked_messages = await self._enqueue_messages(validated, default_priority=default_priority_value)
-            response_items: List[Dict[str, Any]] = list(tracked_messages)
-            if rejected:
-                error_ts = self._utc_now()
-                for entry in rejected:
-                    response_items.append(
-                        {
-                            "id": entry.get("id"),
-                            "account_id": entry.get("account_id"),
-                            "priority": None,
-                            "priority_label": None,
-                            "status": "error",
-                            "proxy_ts": None,
-                            "error_ts": error_ts,
-                            "error_msg": entry.get("reason"),
-                        }
-                    )
-            result: Dict[str, Any] = {"ok": True, "status": "ok", "queued": len(validated), "messages": response_items}
-            if rejected:
-                result["rejected"] = rejected
-            if has_immediate:
-                await self.handle_command("run now", {})
-            return result
+            return await self._handle_add_messages(payload)
         if cmd == "addRule":
             await self._add_rule(payload or {})
             return {"ok": True, "rules": self._rules}
@@ -331,7 +263,315 @@ class AsyncMailCore:
             return {"ok": True, "rules": self._rules}
         return {"ok": False, "error": "unknown command"}
 
-    # Build & send
+    async def _handle_add_messages(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        messages = payload.get("messages") if isinstance(payload, dict) else None
+        if not isinstance(messages, list):
+            return {"ok": False, "error": "messages must be a list"}
+        if len(messages) > self._max_enqueue_batch:
+            return {"ok": False, "error": f"Cannot enqueue more than {self._max_enqueue_batch} messages at once"}
+
+        default_priority_value = 2
+        if "default_priority" in payload:
+            default_priority_value, _ = self._normalise_priority(payload.get("default_priority"), 2)
+
+        validated: List[Dict[str, Any]] = []
+        rejected: List[Dict[str, Any]] = []
+        for item in messages:
+            if not isinstance(item, dict):
+                rejected.append({"id": None, "reason": "invalid payload"})
+                continue
+            is_valid, reason = await self._validate_enqueue_payload(item)
+            if not is_valid:
+                rejected.append({"id": item.get("id"), "reason": reason})
+                continue
+            priority, _ = self._normalise_priority(item.get("priority"), default_priority_value)
+            item["priority"] = priority
+            if "deferred_ts" in item and item["deferred_ts"] is None:
+                item.pop("deferred_ts")
+            validated.append(item)
+
+        if not validated:
+            return {"ok": False, "error": "all messages rejected", "rejected": rejected}
+
+        existing_ids = await self.persistence.existing_message_ids(msg.get("id") for msg in validated)
+        for msg in list(validated):
+            if msg["id"] in existing_ids:
+                rejected.append({"id": msg["id"], "reason": "duplicate id"})
+                validated.remove(msg)
+
+        entries = [
+            {
+                "id": msg["id"],
+                "account_id": msg.get("account_id"),
+                "priority": int(msg["priority"]),
+                "payload": msg,
+                "deferred_ts": msg.get("deferred_ts"),
+            }
+            for msg in validated
+        ]
+        inserted = await self.persistence.insert_messages(entries)
+        for msg in validated:
+            if msg["id"] not in inserted:
+                rejected.append({"id": msg["id"], "reason": "duplicate id"})
+
+        await self._refresh_queue_gauge()
+
+        result: Dict[str, Any] = {
+            "ok": True,
+            "queued": len([mid for mid in inserted if mid]),
+            "rejected": rejected,
+        }
+        return result
+
+    async def _delete_messages(self, message_ids: Iterable[str]) -> Tuple[int, List[str]]:
+        ids = {mid for mid in message_ids if mid}
+        if not ids:
+            return 0, []
+        removed = 0
+        missing: List[str] = []
+        for mid in sorted(ids):
+            if await self.persistence.delete_message(mid):
+                removed += 1
+            else:
+                missing.append(mid)
+        return removed, missing
+
+    async def _add_rule(self, rule: Dict[str, Any], priority: Optional[int] = None) -> None:
+        """Normalise and store a rule, assigning a deterministic priority."""
+        rules = await self.persistence.list_rules()
+        next_priority = priority if priority is not None else (rules[-1]["priority"] + 1 if rules else 0)
+        rule_copy = rule.copy()
+        rule_copy.setdefault("interval_minutes", 1)
+        rule_copy["priority"] = next_priority
+        rule_copy["days"] = [int(d) for d in rule_copy.get("days", [])]
+        rule_copy["enabled"] = bool(rule_copy.get("enabled", True))
+        rule_copy["cross_midnight"] = bool(rule_copy.get("cross_midnight", False))
+        await self.persistence.add_rule(rule_copy)
+        self._rules = await self.persistence.list_rules()
+        if self._has_enabled_rules() and not self._active:
+            self._active = True
+
+    # ----------------------------------------------------------------- lifecycle
+    async def start(self) -> None:
+        """Start the background scheduler and maintenance tasks."""
+        await self.init()
+        self._stop.clear()
+        self._task_smtp = asyncio.create_task(self._smtp_dispatch_loop(), name="smtp-dispatch-loop")
+        self._task_client = asyncio.create_task(self._client_report_loop(), name="client-report-loop")
+        self._task_cleanup = asyncio.create_task(self._cleanup_loop(), name="smtp-cleanup-loop")
+
+    async def stop(self) -> None:
+        """Stop the background tasks gracefully."""
+        self._stop.set()
+        await asyncio.gather(
+            *(task for task in [self._task_smtp, self._task_client, self._task_cleanup] if task),
+            return_exceptions=True,
+        )
+
+    # --------------------------------------------------------------- SMTP logic
+    async def _smtp_dispatch_loop(self) -> None:
+        """Continuously pick messages from storage and attempt delivery."""
+        while not self._stop.is_set():
+            try:
+                processed = await self._process_smtp_cycle()
+            except Exception as exc:  # pragma: no cover - defensive
+                self.logger.exception("Unhandled error in SMTP dispatch loop: %s", exc)
+                processed = False
+            if not processed:
+                await asyncio.sleep(self._send_loop_interval)
+
+    async def _process_smtp_cycle(self) -> bool:
+        """Process one batch of messages ready for delivery."""
+        now_ts = self._utc_now_epoch()
+        batch = await self.persistence.fetch_ready_messages(limit=self._smtp_batch_size, now_ts=now_ts)
+        if not batch:
+            await self._refresh_queue_gauge()
+            return False
+        for entry in batch:
+            await self._dispatch_message(entry, now_ts)
+        await self._refresh_queue_gauge()
+        return True
+
+    async def _dispatch_message(self, entry: Dict[str, Any], now_ts: int) -> None:
+        msg_id = entry.get("id")
+        message = entry.get("message") or {}
+        if msg_id:
+            await self.persistence.clear_deferred(msg_id)
+        try:
+            email_msg, envelope_from = await self._build_email(message)
+        except KeyError as exc:
+            reason = f"missing {exc}"
+            await self.persistence.mark_error(msg_id, now_ts, reason)
+            await self._publish_result(
+                {
+                    "id": msg_id,
+                    "status": "error",
+                    "error": reason,
+                    "timestamp": self._utc_now_iso(),
+                    "account": message.get("account_id"),
+                }
+            )
+            return
+
+        event = await self._send_with_limits(email_msg, envelope_from, msg_id, message)
+        if event:
+            await self._publish_result(event)
+
+    async def _send_with_limits(
+        self,
+        msg: EmailMessage,
+        envelope_from: Optional[str],
+        msg_id: Optional[str],
+        payload: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Send a message enforcing rate limits and bookkeeping."""
+        account_id = payload.get("account_id")
+        try:
+            host, port, user, password, acc = await self._resolve_account(account_id)
+        except AccountConfigurationError as exc:
+            error_ts = self._utc_now_epoch()
+            await self.persistence.mark_error(msg_id or "", error_ts, str(exc))
+            return {
+                "id": msg_id,
+                "status": "error",
+                "error": str(exc),
+                "error_code": exc.code,
+                "timestamp": self._utc_now_iso(),
+                "account": account_id or "default",
+            }
+
+        use_tls = acc.get("use_tls")
+        if use_tls is None:
+            use_tls = int(port) == 465
+        else:
+            use_tls = bool(use_tls)
+        resolved_account_id = account_id or acc.get("id") or "default"
+
+        deferred_until = await self.rate_limiter.check_and_plan(acc)
+        if deferred_until:
+            await self.persistence.set_deferred(msg_id or "", deferred_until)
+            self.metrics.inc_deferred(resolved_account_id)
+            self.metrics.inc_rate_limited(resolved_account_id)
+            return {
+                "id": msg_id,
+                "status": "deferred",
+                "deferred_until": deferred_until,
+                "timestamp": self._utc_now_iso(),
+                "account": resolved_account_id,
+            }
+
+        try:
+            smtp = await self.pool.get_connection(host, port, user, password, use_tls=use_tls)
+            envelope_sender = envelope_from or msg.get("From")
+            await smtp.send_message(msg, from_addr=envelope_sender)
+        except Exception as exc:
+            error_ts = self._utc_now_epoch()
+            await self.persistence.mark_error(msg_id or "", error_ts, str(exc))
+            self.metrics.inc_error(resolved_account_id)
+            return {
+                "id": msg_id,
+                "status": "error",
+                "error": str(exc),
+                "timestamp": self._utc_now_iso(),
+                "account": resolved_account_id,
+            }
+
+        sent_ts = self._utc_now_epoch()
+        await self.persistence.mark_sent(msg_id or "", sent_ts)
+        await self.rate_limiter.log_send(resolved_account_id)
+        self.metrics.inc_sent(resolved_account_id)
+        return {
+            "id": msg_id,
+            "status": "sent",
+            "timestamp": self._utc_now_iso(),
+            "account": resolved_account_id,
+        }
+
+    # ----------------------------------------------------------- client reporting
+    async def _client_report_loop(self) -> None:
+        """Background coroutine that periodically pushes delivery reports."""
+        while not self._stop.is_set():
+            interval = self._current_interval_from_schedule()
+            try:
+                await self._process_client_cycle()
+            except Exception as exc:  # pragma: no cover - defensive
+                self.logger.exception("Unhandled error in client report loop: %s", exc)
+            await asyncio.sleep(interval)
+
+    async def _process_client_cycle(self) -> None:
+        """Perform one delivery report cycle."""
+        if not self._is_scheduler_ready():
+            return
+
+        reports = await self.persistence.fetch_reports(self._smtp_batch_size)
+        if not reports:
+            # Still allow the client sync endpoint to trigger its own fetch if needed
+            if self._client_sync_url and self._report_delivery_callable is None:
+                await self._send_delivery_reports([])
+            await self._apply_retention()
+            return
+
+        payloads = [
+            {
+                "id": item.get("id"),
+                "account_id": item.get("account_id"),
+                "priority": item.get("priority"),
+                "sent_ts": item.get("sent_ts"),
+                "error_ts": item.get("error_ts"),
+                "error": item.get("error"),
+                "deferred_ts": item.get("deferred_ts"),
+            }
+            for item in reports
+        ]
+        await self._send_delivery_reports(payloads)
+        reported_ts = self._utc_now_epoch()
+        await self.persistence.mark_reported((item["id"] for item in reports), reported_ts)
+        await self._apply_retention()
+
+    async def _apply_retention(self) -> None:
+        """Delete reported messages older than the configured retention."""
+        if self._report_retention_seconds <= 0:
+            return
+        threshold = self._utc_now_epoch() - self._report_retention_seconds
+        removed = await self.persistence.remove_reported_before(threshold)
+        if removed:
+            await self._refresh_queue_gauge()
+
+    # ---------------------------------------------------------------- housekeeping
+    async def _cleanup_loop(self) -> None:
+        """Background coroutine that keeps SMTP pooled connections healthy."""
+        while not self._stop.is_set():
+            await asyncio.sleep(150)
+            await self.pool.cleanup()
+
+    async def _refresh_queue_gauge(self) -> None:
+        """Refresh the metric describing queued messages."""
+        try:
+            count = await self.persistence.count_active_messages()
+        except Exception:  # pragma: no cover - defensive
+            self.logger.exception("Failed to refresh queue gauge")
+            return
+        self.metrics.set_pending(count)
+
+    # ----------------------------------------------------------------- messaging
+    async def results(self):
+        """Yield delivery events to API consumers."""
+        while True:
+            event = await self._result_queue.get()
+            yield event
+
+    async def _put_with_backpressure(self, queue: asyncio.Queue[Any], item: Any, queue_name: str) -> None:
+        """Push an item to a queue, avoiding unbounded growth by timing out."""
+        try:
+            await asyncio.wait_for(queue.put(item), timeout=self._queue_put_timeout)
+        except asyncio.TimeoutError:  # pragma: no cover - defensive
+            self.logger.error("Timed out while enqueuing item into %s queue; dropping item", queue_name)
+
+    async def _publish_result(self, event: Dict[str, Any]) -> None:
+        """Publish a delivery event while observing queue backpressure."""
+        await self._put_with_backpressure(self._result_queue, event, "result")
+
+    # ---------------------------------------------------------- SMTP primitives
     async def _resolve_account(self, account_id: Optional[str]) -> Tuple[str, int, Optional[str], Optional[str], Dict[str, Any]]:
         """Return SMTP credentials for the requested account or defaults."""
         if account_id:
@@ -349,6 +589,7 @@ class AsyncMailCore:
 
     async def _build_email(self, data: Dict[str, Any]) -> Tuple[EmailMessage, str]:
         """Translate the command payload into an :class:`EmailMessage` and envelope sender."""
+
         def _format_addresses(value: Any) -> str | None:
             if not value:
                 return None
@@ -402,341 +643,24 @@ class AsyncMailCore:
                     self.logger.warning("Skipping attachment without data (filename=%s)", filename)
                     continue
                 content, resolved_filename = result
-                mt, st = self.attachments.guess_mime(resolved_filename)
-                msg.add_attachment(content, maintype=mt, subtype=st, filename=resolved_filename)
+                maintype, subtype = self.attachments.guess_mime(resolved_filename)
+                msg.add_attachment(content, maintype=maintype, subtype=subtype, filename=resolved_filename)
         return msg, envelope_from
 
-    async def _enqueue_messages(self, messages: list[Dict[str, Any]], default_priority: int | str | None = None) -> Tuple[bool, List[Dict[str, Any]]]:
-        """Push messages into the internal priority queue."""
-        if len(messages) > self._max_enqueue_batch:
-            raise ValueError(f"Cannot enqueue more than {self._max_enqueue_batch} messages at once")
-        has_immediate = False
-        summaries: List[Dict[str, Any]] = []
-        resolved_default, _ = self._normalise_priority(default_priority, self._default_priority)
-        for item in messages:
-            priority, label = self._normalise_priority(item.get("priority"), resolved_default)
-            item["priority"] = priority
-            if priority == 0:
-                has_immediate = True
-            queued_ts = self._utc_now()
-            await self.persistence.save_message(item.get("id"), item, priority, label)
-            await self._put_with_backpressure(
-                self._message_queue,
-                (priority, next(self._queue_counter), item),
-                "message",
-            )
-            summaries.append(
-                {
-                    "id": item.get("id"),
-                    "account_id": item.get("account_id"),
-                    "priority": priority,
-                    "priority_label": label,
-                    "status": "queued",
-                    "proxy_ts": queued_ts,
-                    "error_ts": None,
-                    "error_msg": None,
-                }
-            )
-        return has_immediate, summaries
-
-    async def _purge_account_messages(self, account_id: Optional[str]) -> None:
-        """Remove any queued messages for the given account."""
-        if not account_id:
-            return
-        await self._remove_from_memory_queue(account_id=account_id)
-
-    async def _remove_from_memory_queue(self, ids: Optional[Set[str]] = None, account_id: Optional[str] = None) -> Set[str]:
-        """Remove queued messages matching the given identifiers or account."""
-        ids = set(ids or set())
-        removed: Set[str] = set()
-        if not ids and not account_id:
-            return removed
-        async with self._queue_lock:
-            retained: List[Tuple[int, int, Dict[str, Any]]] = []
-            while not self._message_queue.empty():
-                priority, counter, item = await self._message_queue.get()
-                try:
-                    message_id = item.get("id")
-                    message_account = item.get("account_id")
-                    remove = False
-                    if ids and message_id in ids:
-                        remove = True
-                    if account_id and message_account == account_id:
-                        remove = True
-                    if remove:
-                        if message_id:
-                            removed.add(message_id)
-                        continue
-                    retained.append((priority, counter, item))
-                finally:
-                    self._message_queue.task_done()
-            for entry in retained:
-                await self._message_queue.put(entry)
-        return removed
-
-    async def _delete_messages(self, message_ids: Iterable[str]) -> Tuple[int, List[str]]:
-        """Delete messages from queues, pending lists and deferred storage."""
-        ids = {mid for mid in (message_ids or []) if mid}
-        if not ids:
-            return 0, []
-        removed_from_queue = await self._remove_from_memory_queue(ids=ids)
-        removed_count = 0
-        missing: List[str] = []
-        for mid in ids:
-            touched = mid in removed_from_queue
-            if await self.persistence.delete_message(mid):
-                touched = True
-            if await self.persistence.remove_pending(mid):
-                touched = True
-            if await self.persistence.clear_deferred(mid):
-                touched = True
-            if touched:
-                removed_count += 1
-            else:
-                missing.append(mid)
-        missing.sort()
-        return removed_count, missing
-
-    async def _add_rule(self, rule: Dict[str, Any], priority: Optional[int] = None) -> None:
-        """Normalise and store a rule, assigning a deterministic priority."""
-        rules = await self.persistence.list_rules()
-        next_priority = priority if priority is not None else (rules[-1]["priority"] + 1 if rules else 0)
-        rule_copy = rule.copy()
-        rule_copy.setdefault("interval_minutes", 1)
-        rule_copy["priority"] = next_priority
-        rule_copy["days"] = [int(d) for d in rule_copy.get("days", [])]
-        rule_copy["enabled"] = bool(rule_copy.get("enabled", True))
-        rule_copy["cross_midnight"] = bool(rule_copy.get("cross_midnight", False))
-        await self.persistence.add_rule(rule_copy)
-        self._rules = await self.persistence.list_rules()
-        if self._has_enabled_rules() and not self._active:
-            self._active = True
-
-    async def _process_queue(self) -> bool:
-        """Consume the message queue and trigger delivery for each entry."""
-        processed = False
-        async with self._queue_lock:
-            while not self._message_queue.empty():
-                _, _, data = await self._message_queue.get()
-                try:
-                    msg_id = data.get("id")
-                    if msg_id:
-                        await self.persistence.update_message_status(msg_id, "pending")
-                    await self._handle_message(data)
-                finally:
-                    self._message_queue.task_done()
-                processed = True
-        return processed
-
-    async def _handle_message(self, data: Dict[str, Any]):
-        """Deliver or defer a single message pulled from the queue."""
-        msg_id = data.get("id")
-        account_id = data.get("account_id")
+    async def _fetch_attachment_with_timeout(self, att: Dict[str, Any]) -> Optional[Tuple[bytes, str]]:
+        """Fetch an attachment using the configured timeout budget."""
         try:
-            email_msg, envelope_from = await self._build_email(data)
-        except KeyError as e:
-            event = {"id": msg_id, "status": "error", "error": f"missing {e}", "timestamp": self._utc_now()}
-            if msg_id:
-                await self.persistence.update_message_status(msg_id, "error")
-            await self._publish_result(event)
-            await self._queue_delivery_event(event)
-            return
-        if msg_id and account_id:
-            deferred_until = await self.persistence.get_deferred_until(msg_id, account_id)
-            if deferred_until and deferred_until > int(datetime.now(tz=timezone.utc).timestamp()):
-                event = {
-                    "id": msg_id,
-                    "status": "deferred",
-                    "deferred_until": deferred_until,
-                    "timestamp": self._utc_now(),
-                    "account": account_id,
-                }
-                await self.persistence.update_message_status(msg_id, "deferred")
-                await self._publish_result(event)
-                await self._queue_delivery_event(event)
-                return
-            else:
-                await self.persistence.clear_deferred(msg_id)
+            content = await asyncio.wait_for(self.attachments.fetch(att), timeout=self._attachment_timeout)
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(f"Attachment {att.get('filename', 'file.bin')} fetch timed out") from exc
+        if content is None:
+            return None
+        filename = att.get("filename", "file.bin")
+        return content, filename
 
-        await self._send_with_limits(email_msg, envelope_from, msg_id, account_id)
-
-    async def _flush_delivery_reports(self):
-        """Send pending delivery reports back to the upstream service."""
-        pending_reports = await self.persistence.list_delivery_reports()
-        retries: List[str] = []
-
-        # Drain notifications from the in-memory queue since we read from storage directly.
-        while True:
-            try:
-                self._delivery_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-            else:
-                self._delivery_queue.task_done()
-
-        if not pending_reports:
-            # No delivery reports to send, but still contact the proxy to trigger message polling.
-            if self._report_delivery_callable is None and self._client_sync_url:
-                try:
-                    await self._send_delivery_reports([])
-                except Exception as exc:
-                    self.logger.warning("Failed to contact client sync endpoint: %s", exc)
-            return
-
-        payloads = [report["payload"] for report in pending_reports]
-        try:
-            await self._send_delivery_reports(payloads)
-        except Exception as exc:
-            self.logger.warning("Failed to report delivery: %s", exc)
-            for report in pending_reports:
-                report_id = report["id"]
-                await self.persistence.increment_report_retry(report_id)
-                retries.append(report_id)
-        else:
-            for report in pending_reports:
-                await self.persistence.delete_delivery_report(report["id"])
-
-        for report_id in retries:
-            await self._put_with_backpressure(self._delivery_queue, report_id, "delivery")
-
-    async def _send_with_limits(self, msg: EmailMessage, envelope_from: Optional[str], msg_id: Optional[str], account_id: Optional[str]):
-        """Send a message enforcing rate limits and bookkeeping."""
-        try:
-            host, port, user, password, acc = await self._resolve_account(account_id)
-        except AccountConfigurationError as exc:
-            event = {
-                "id": msg_id,
-                "status": "error",
-                "error": str(exc),
-                "error_code": exc.code,
-                "timestamp": self._utc_now(),
-                "account": account_id or "default",
-            }
-            if msg_id:
-                await self.persistence.update_message_status(msg_id, "error")
-            await self._publish_result(event)
-            await self._queue_delivery_event(event)
-            return event
-        use_tls = acc.get("use_tls")
-        if use_tls is None:
-            use_tls = int(port) == 465
-        else:
-            use_tls = bool(use_tls)
-        resolved_account_id = account_id or acc.get("id") or "default"
-        deferred_until = await self.rate_limiter.check_and_plan(acc)
-        if deferred_until:
-            await self.persistence.set_deferred(msg_id or "", resolved_account_id, deferred_until)
-            self.metrics.inc_deferred(resolved_account_id)
-            self.metrics.inc_rate_limited(resolved_account_id)
-            event = {
-                "id": msg_id,
-                "status": "deferred",
-                "deferred_until": deferred_until,
-                "timestamp": self._utc_now(),
-                "account": resolved_account_id,
-            }
-            if msg_id:
-                await self.persistence.update_message_status(msg_id, "deferred")
-            await self._publish_result(event)
-            await self._queue_delivery_event(event)
-            return event
-        if msg_id:
-            await self.persistence.add_pending(msg_id, msg.get("To"), msg.get("Subject", ""), resolved_account_id)
-        try:
-            smtp = await self.pool.get_connection(host, port, user, password, use_tls=use_tls)
-            envelope_sender = envelope_from or msg.get("From")
-            await smtp.send_message(msg, from_addr=envelope_sender)
-            await self.persistence.remove_pending(msg_id or "")
-            await self.rate_limiter.log_send(resolved_account_id)
-            self.metrics.inc_sent(resolved_account_id)
-            event = {
-                "id": msg_id,
-                "status": "sent",
-                "timestamp": self._utc_now(),
-                "account": resolved_account_id,
-            }
-            if msg_id:
-                await self.persistence.delete_message(msg_id)
-            await self._publish_result(event)
-            await self._queue_delivery_event(event)
-            return event
-        except Exception as e:
-            await self.persistence.remove_pending(msg_id or "")
-            self.metrics.inc_error(resolved_account_id)
-            event = {
-                "id": msg_id,
-                "status": "error",
-                "error": str(e),
-                "timestamp": self._utc_now(),
-                "account": resolved_account_id,
-            }
-            if msg_id:
-                await self.persistence.update_message_status(msg_id, "error")
-            await self._publish_result(event)
-            await self._queue_delivery_event(event)
-            return event
-
-    async def _queue_delivery_event(self, event: Dict[str, Any]):
-        """Persist and queue a delivery event to be sent to the upstream service."""
-        report_id = await self.persistence.save_delivery_report(event)
-        await self._put_with_backpressure(self._delivery_queue, report_id, "delivery")
-
-    async def start(self):
-        """Start the background scheduler and maintenance tasks."""
-        await self.init()
-        self._stop.clear()
-        self._task_sender = asyncio.create_task(self._send_loop())
-        self._task_delivery = asyncio.create_task(self._delivery_loop())
-        self._task_cleanup = asyncio.create_task(self._cleanup_loop())
-
-    async def stop(self):
-        """Stop the background tasks gracefully."""
-        self._stop.set()
-        await asyncio.gather(
-            *(task for task in [self._task_sender, self._task_delivery, self._task_cleanup] if task),
-            return_exceptions=True,
-        )
-
-    async def _delivery_loop(self):
-        """Background coroutine that periodically pushes delivery reports."""
-        while not self._stop.is_set():
-            if not self._is_scheduler_ready():
-                await asyncio.sleep(5)
-                continue
-            await self._flush_delivery_reports()
-            await asyncio.sleep(self._current_interval_from_schedule())
-
-    async def _send_loop(self):
-        """Background coroutine that continuously drains the message queue."""
-        while not self._stop.is_set():
-            processed = await self._process_queue()
-            if not processed:
-                await asyncio.sleep(self._send_loop_interval)
-
-    async def _cleanup_loop(self):
-        """Background coroutine that keeps SMTP pooled connections healthy."""
-        while not self._stop.is_set():
-            await asyncio.sleep(150)
-            await self.pool.cleanup()
-
-    async def results(self):
-        """Yield delivery events to API consumers."""
-        while True:
-            r = await self._result_queue.get()
-            yield r
-
-    async def _put_with_backpressure(self, queue: asyncio.Queue[Any], item: Any, queue_name: str) -> None:
-        """Push an item to a queue, avoiding unbounded growth by timing out."""
-        try:
-            await asyncio.wait_for(queue.put(item), timeout=self._queue_put_timeout)
-        except asyncio.TimeoutError:
-            self.logger.error("Timed out while enqueuing item into %s queue; dropping item", queue_name)
-
-    async def _publish_result(self, event: Dict[str, Any]) -> None:
-        """Publish a delivery event while observing queue backpressure."""
-        await self._put_with_backpressure(self._result_queue, event, "result")
-
+    # ------------------------------------------------------------ client bridge
     async def _send_delivery_reports(self, payloads: List[Dict[str, Any]]) -> None:
+        """Send delivery report payloads to the configured proxy or callback."""
         if self._report_delivery_callable is not None:
             for payload in payloads:
                 await self._report_delivery_callable(payload)
@@ -765,11 +689,14 @@ class AsyncMailCore:
                 headers=headers or None,
             ) as resp:
                 resp.raise_for_status()
+        self.logger.debug("Delivery report batch delivered (%d items)", batch_size)
 
+    # ------------------------------------------------------------- validations
     async def _validate_enqueue_payload(self, payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
         msg_id = payload.get("id")
         if not msg_id:
             return False, "missing id"
+        payload.setdefault("priority", 2)
         sender = payload.get("from")
         if not sender:
             return False, "missing from"
@@ -785,17 +712,6 @@ class AsyncMailCore:
                 await self.persistence.get_account(account_id)
             except Exception:
                 return False, "account not found"
-        elif not (self.default_host and self.default_port is not None):
+        elif not (self.default_host and self.default_port):
             return False, "missing account configuration"
         return True, None
-
-    async def _fetch_attachment_with_timeout(self, att: Dict[str, Any]) -> Optional[Tuple[bytes, str]]:
-        """Fetch an attachment using the configured timeout budget."""
-        try:
-            content = await asyncio.wait_for(self.attachments.fetch(att), timeout=self._attachment_timeout)
-        except asyncio.TimeoutError as exc:
-            raise TimeoutError(f"Attachment {att.get('filename', 'file.bin')} fetch timed out") from exc
-        if content is None:
-            return None
-        filename = att.get("filename", "file.bin")
-        return content, filename

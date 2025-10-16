@@ -70,10 +70,10 @@ class AttachmentPayload(BaseModel):
     s3: Optional[Dict[str, Any]] = None
 
 
-class SendMessagePayload(BaseModel):
-    """Payload accepted by the ``sendMessage`` command and HTTP endpoint."""
+class MessagePayload(BaseModel):
+    """Payload accepted by the ``addMessages`` command."""
     model_config = ConfigDict(populate_by_name=True)
-    id: Optional[str] = None
+    id: str
     account_id: Optional[str] = None
     from_: str = Field(alias="from")
     to: Union[List[str], str]
@@ -88,20 +88,7 @@ class SendMessagePayload(BaseModel):
     message_id: Optional[str] = None
     attachments: Optional[List[AttachmentPayload]] = None
     priority: Optional[Union[int, Literal["immediate", "high", "medium", "low"]]] = None
-
-
-class MessageEvent(BaseModel):
-    """Event published by the dispatcher once delivery completes."""
-    id: Optional[str] = None
-    status: Literal["sent", "error", "deferred"]
-    deferred_until: Optional[int] = None
-    error: Optional[str] = None
-    timestamp: str
-    account: Optional[str] = None
-
-
-class SendMessageResponse(CommandStatus):
-    result: Optional[MessageEvent] = None
+    deferred_ts: Optional[int] = None
 
 
 class AccountInfo(BaseModel):
@@ -121,31 +108,6 @@ class AccountInfo(BaseModel):
 
 class AccountsResponse(CommandStatus):
     accounts: List[AccountInfo]
-
-
-class PendingMessage(BaseModel):
-    """Representation of a message currently waiting to be sent."""
-    id: str
-    to_addr: Optional[str] = None
-    subject: Optional[str] = None
-    account_id: Optional[str] = None
-    started_at: Optional[str] = None
-
-
-class PendingResponse(CommandStatus):
-    pending: List[PendingMessage]
-
-
-class DeferredMessage(BaseModel):
-    """A message temporarily deferred because of rate limits."""
-    id: str
-    account_id: Optional[str] = None
-    deferred_until: Optional[int] = None
-    created_at: Optional[str] = None
-
-
-class DeferredResponse(CommandStatus):
-    deferred: List[DeferredMessage]
 
 
 class RulePayload(BaseModel):
@@ -183,29 +145,32 @@ class RuleTogglePayload(BaseModel):
 
 class EnqueueMessagesPayload(BaseModel):
     """Queue of messages used by ``addMessages``."""
-    messages: List[SendMessagePayload]
+    messages: List[MessagePayload]
     default_priority: Optional[Union[int, Literal["immediate", "high", "medium", "low"]]] = None
 
 
-class EnqueuedMessageEntry(BaseModel):
-    """Result entry returned after invoking ``addMessages``."""
+class RejectedMessage(BaseModel):
+    """Rejected message entry."""
     id: Optional[str] = None
-    account_id: Optional[str] = None
-    priority: Optional[int] = None
-    priority_label: Optional[str] = None
-    status: Optional[str] = None
-    proxy_ts: Optional[str] = None
-    error_ts: Optional[str] = None
-    error_msg: Optional[str] = None
+    reason: str
+
+
+class AddMessagesResponse(CommandStatus):
+    """Response returned by the ``addMessages`` command."""
+    queued: int = 0
+    rejected: List[RejectedMessage] = Field(default_factory=list)
 
 
 class MessageRecord(BaseModel):
     """Full representation of a message tracked by the dispatcher."""
     id: str
     priority: int
-    priority_label: Optional[str] = None
     account_id: Optional[str] = None
-    status: Literal["queued", "pending", "deferred", "error", "sent"]
+    deferred_ts: Optional[int] = None
+    sent_ts: Optional[int] = None
+    error_ts: Optional[int] = None
+    error: Optional[str] = None
+    reported_ts: Optional[int] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     message: Dict[str, Any]
@@ -275,36 +240,25 @@ def create_app(svc: AsyncMailCore, api_token: str | None = None) -> FastAPI:
         result = await service.handle_command("activate", {})
         return BasicOkResponse.model_validate(result)
 
-    @router.post("/send-message", response_model=SendMessageResponse, response_model_exclude_none=True)
-    async def send_message(payload: SendMessagePayload):
-        """Send a single message immediately (bypassing the scheduler queue)."""
-        if not service:
-            raise HTTPException(500, "Service not initialized")
-        data = payload.model_dump(by_alias=True, exclude_none=True)
-        if payload.attachments is not None:
-            data["attachments"] = [att.model_dump(exclude_none=True) for att in payload.attachments]
-        result = await service.handle_command("sendMessage", data)
-        return SendMessageResponse.model_validate(result)
-
-    @router.post("/add-messages", response_model=List[EnqueuedMessageEntry], response_model_exclude_none=True)
+    @router.post("/add-messages", response_model=AddMessagesResponse, response_model_exclude_none=True)
     async def add_messages(payload: EnqueueMessagesPayload):
         """Push a batch of messages into the scheduler queue."""
         if not service:
             raise HTTPException(500, "Service not initialized")
-        data = {
-            "messages": [msg.model_dump(by_alias=True, exclude_none=True) for msg in payload.messages]
-        }
+        serialized: List[Dict[str, Any]] = []
+        for msg in payload.messages:
+            data = msg.model_dump(by_alias=True, exclude_none=True)
+            if msg.attachments is not None:
+                data["attachments"] = [att.model_dump(exclude_none=True) for att in msg.attachments]
+            serialized.append(data)
+        data = {"messages": serialized}
         if payload.default_priority is not None:
             data["default_priority"] = payload.default_priority
         result = await service.handle_command("addMessages", data)
-        if isinstance(result, dict):
-            if result.get("ok") is False:
-                detail = {"error": result.get("error"), "rejected": result.get("rejected")}
-                raise HTTPException(status_code=400, detail=detail)
-            messages = result.get("messages") or []
-        else:
-            messages = result
-        return [EnqueuedMessageEntry.model_validate(item) for item in messages]
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            detail = {"error": result.get("error"), "rejected": result.get("rejected")}
+            raise HTTPException(status_code=400, detail=detail)
+        return AddMessagesResponse.model_validate(result)
 
     @router.post("/delete-messages", response_model=DeleteMessagesResponse, response_model_exclude_none=True)
     async def delete_messages(payload: DeleteMessagesPayload):
@@ -369,22 +323,6 @@ def create_app(svc: AsyncMailCore, api_token: str | None = None) -> FastAPI:
             raise HTTPException(500, "Service not initialized")
         result = await service.handle_command("deleteAccount", {"id": account_id})
         return BasicOkResponse.model_validate(result)
-
-    @api.get("/pending", response_model=PendingResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
-    async def pending():
-        """Expose the pending messages currently tracked by the dispatcher."""
-        if not service:
-            raise HTTPException(500, "Service not initialized")
-        result = await service.handle_command("pendingMessages", {})
-        return PendingResponse.model_validate(result)
-
-    @api.get("/deferred", response_model=DeferredResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
-    async def deferred():
-        """Return messages temporarily deferred because of rate limits."""
-        if not service:
-            raise HTTPException(500, "Service not initialized")
-        result = await service.handle_command("listDeferred", {})
-        return DeferredResponse.model_validate(result)
 
     @api.get("/messages", response_model=MessagesResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
     async def all_messages():
