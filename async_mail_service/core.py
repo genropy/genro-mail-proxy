@@ -376,17 +376,17 @@ class AsyncMailCore:
     # ----------------------------------------------------------------- lifecycle
     async def start(self) -> None:
         """Start the background scheduler and maintenance tasks."""
-        self.logger.info("Starting AsyncMailCore...")
+        self.logger.debug("Starting AsyncMailCore...")
         await self.init()
         self._stop.clear()
-        self.logger.info("Creating SMTP dispatch loop task...")
+        self.logger.debug("Creating SMTP dispatch loop task...")
         self._task_smtp = asyncio.create_task(self._smtp_dispatch_loop(), name="smtp-dispatch-loop")
-        self.logger.info("Creating client report loop task...")
+        self.logger.debug("Creating client report loop task...")
         self._task_client = asyncio.create_task(self._client_report_loop(), name="client-report-loop")
         if not self._test_mode:
-            self.logger.info("Creating cleanup loop task...")
+            self.logger.debug("Creating cleanup loop task...")
             self._task_cleanup = asyncio.create_task(self._cleanup_loop(), name="smtp-cleanup-loop")
-        self.logger.info("All background tasks created")
+        self.logger.debug("All background tasks created")
 
     async def stop(self) -> None:
         """Stop the background tasks gracefully."""
@@ -400,7 +400,7 @@ class AsyncMailCore:
     # --------------------------------------------------------------- SMTP logic
     async def _smtp_dispatch_loop(self) -> None:
         """Continuously pick messages from storage and attempt delivery."""
-        self.logger.info("SMTP dispatch loop started")
+        self.logger.debug("SMTP dispatch loop started")
         first_iteration = True
         while not self._stop.is_set():
             if first_iteration and self._test_mode:
@@ -837,7 +837,7 @@ class AsyncMailCore:
                 ids_preview or "-",
             )
         else:
-            self.logger.info(
+            self.logger.debug(
                 "Posting delivery reports to client sync endpoint %s (count=%d)",
                 self._client_sync_url,
                 batch_size,
