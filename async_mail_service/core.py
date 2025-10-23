@@ -400,33 +400,23 @@ class AsyncMailCore:
     # --------------------------------------------------------------- SMTP logic
     async def _smtp_dispatch_loop(self) -> None:
         """Continuously pick messages from storage and attempt delivery."""
-        import sys
         self.logger.info("SMTP dispatch loop started")
-        print("DEBUG: SMTP dispatch loop started", file=sys.stderr, flush=True)
         first_iteration = True
-        print(f"DEBUG: About to enter while loop, _stop.is_set()={self._stop.is_set()}", file=sys.stderr, flush=True)
         while not self._stop.is_set():
-            print("DEBUG: Inside while loop iteration", file=sys.stderr, flush=True)
             if first_iteration and self._test_mode:
-                print(f"DEBUG: First iteration, test_mode={self._test_mode}", file=sys.stderr, flush=True)
                 self.logger.info("First iteration in test mode, waiting for wakeup")
                 await self._wait_for_wakeup(self._send_loop_interval)
             first_iteration = False
             try:
-                print("DEBUG: Calling _process_smtp_cycle", file=sys.stderr, flush=True)
                 self.logger.debug("Processing SMTP cycle...")
                 processed = await self._process_smtp_cycle()
-                print(f"DEBUG: _process_smtp_cycle returned {processed}", file=sys.stderr, flush=True)
                 self.logger.debug(f"SMTP cycle processed={processed}")
             except Exception as exc:  # pragma: no cover - defensive
-                print(f"DEBUG: Exception in loop: {exc}", file=sys.stderr, flush=True)
                 self.logger.exception("Unhandled error in SMTP dispatch loop: %s", exc)
                 processed = False
             if not processed:
-                print(f"DEBUG: No messages, waiting {self._send_loop_interval}s", file=sys.stderr, flush=True)
                 self.logger.debug(f"No messages processed, waiting {self._send_loop_interval}s")
                 await self._wait_for_wakeup(self._send_loop_interval)
-        print("DEBUG: Exited while loop", file=sys.stderr, flush=True)
 
     async def _process_smtp_cycle(self) -> bool:
         """Process one batch of messages ready for delivery."""
