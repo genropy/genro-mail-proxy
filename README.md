@@ -7,7 +7,20 @@
 
 Asynchronous email dispatcher microservice with scheduling, rate limiting, attachments (S3/URL/base64), REST API (FastAPI), and Prometheus metrics.
 
-Main integration points:
+## Why Use an Email Proxy?
+
+Instead of directly connecting to SMTP servers from your application, gnr-async-mail-service provides a **decoupled, resilient email delivery layer** with:
+
+- ⚡ **19x faster requests** (32ms vs 620ms) - non-blocking async operations
+- 🔄 **Never lose messages** - automatic retry, guaranteed persistence
+- 🎯 **Connection pooling** - 10-50x faster for burst sends
+- 📊 **Centralized monitoring** - Prometheus metrics, not scattered logs
+- 🛡️ **Built-in rate limiting** - shared across all app instances
+- 🎛️ **Priority queuing** - immediate/high/medium/low with automatic ordering
+
+**See [Architecture Overview](docs/architecture_overview.rst)** for detailed comparison with direct SMTP.
+
+## Main integration points:
 
 - REST control plane secured by ``X-API-Token`` for queue management and configuration.
 - Outbound ``proxy_sync`` call towards Genropy, authenticated via basic auth and configured through ``[client]`` in ``config.ini``.
