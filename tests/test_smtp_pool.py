@@ -4,11 +4,12 @@ from async_mail_service.smtp_pool import SMTPPool
 
 
 class DummySMTP:
-    def __init__(self, hostname, port, start_tls=True, use_tls=False):
+    def __init__(self, hostname, port, start_tls=True, use_tls=False, timeout=None):
         self.hostname = hostname
         self.port = port
         self.start_tls = start_tls
         self.use_tls = use_tls
+        self.timeout = timeout
         self.login_credentials = None
         self.connected = False
         self.closed = False

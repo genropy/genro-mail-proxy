@@ -68,7 +68,6 @@ def load_settings() -> dict[str, object]:
         "http_port": get_int("server", "port", os.getenv("PORT", "8000")),
         "scheduler_active": get_bool("scheduler", "active", os.getenv("SCHEDULER_ACTIVE"), False),
         "api_token": get("server", "api_token", os.getenv("API_TOKEN")),
-        "timezone": get("scheduler", "timezone", os.getenv("TIMEZONE", "Europe/Rome")),
         "client_sync_url": get("client", "client_sync_url", os.getenv("CLIENT_SYNC_URL")),
         "client_sync_user": get("client", "client_sync_user", os.getenv("CLIENT_SYNC_USER")),
         "client_sync_password": get("client", "client_sync_password", os.getenv("CLIENT_SYNC_PASSWORD")),
@@ -96,15 +95,6 @@ def load_settings() -> dict[str, object]:
         ),
     }
 
-    rules_raw = get("scheduler", "rules", os.getenv("SCHEDULER_RULES"))
-    scheduler_rules = []
-    if rules_raw:
-        try:
-            scheduler_rules = json.loads(rules_raw)
-        except json.JSONDecodeError:
-            scheduler_rules = []
-    settings["scheduler_rules"] = scheduler_rules
-
     db_path = settings["db_path"]
     if isinstance(db_path, str):
         settings["db_path"] = os.path.expanduser(db_path)
@@ -119,7 +109,6 @@ async def run_service(settings: dict[str, object]):
     service_kwargs = dict(
         db_path=settings["db_path"],
         start_active=bool(settings.get("scheduler_active")),
-        timezone=str(settings.get("timezone") or "Europe/Rome"),
         client_sync_url=settings.get("client_sync_url"),
         client_sync_user=settings.get("client_sync_user"),
         client_sync_password=settings.get("client_sync_password"),
@@ -136,11 +125,6 @@ async def run_service(settings: dict[str, object]):
 
     service = AsyncMailCore(**service_kwargs)
     await service.start()
-    rules = settings.get("scheduler_rules") or []
-    if rules:
-        await service.handle_command("schedule", {"rules": rules, "active": settings.get("scheduler_active", False)})
-    elif not settings.get("scheduler_active", False):
-        service._active = False
     return service
 
 
@@ -150,7 +134,6 @@ if __name__ == "__main__":
     service_kwargs = dict(
         db_path=settings["db_path"],
         start_active=bool(settings.get("scheduler_active")),
-        timezone=str(settings.get("timezone") or "Europe/Rome"),
         client_sync_url=settings.get("client_sync_url"),
         client_sync_user=settings.get("client_sync_user"),
         client_sync_password=settings.get("client_sync_password"),
@@ -172,10 +155,5 @@ if __name__ == "__main__":
     @app.on_event("startup")
     async def startup():
         await service.start()
-        rules = settings.get("scheduler_rules") or []
-        if rules:
-            await service.handle_command("schedule", {"rules": rules, "active": settings.get("scheduler_active", False)})
-        elif not settings.get("scheduler_active", False):
-            service._active = False
 
     uvicorn.run(app, host=str(settings["http_host"]), port=int(settings["http_port"]))

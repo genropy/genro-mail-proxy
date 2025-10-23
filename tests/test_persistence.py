@@ -108,20 +108,3 @@ async def test_get_account_missing_raises(tmp_path):
     await p.init_db()
     with pytest.raises(ValueError):
         await p.get_account("unknown")
-
-
-@pytest.mark.asyncio
-async def test_schedule_rules_crud(tmp_path):
-    db = tmp_path / "rules.db"
-    p = Persistence(str(db))
-    await p.init_db()
-    assert await p.list_rules() == []
-    stored = await p.add_rule({"name": "default", "interval_minutes": 2, "days": [1, 2]})
-    assert stored["priority"] == 0
-    rules = await p.list_rules()
-    assert len(rules) == 1
-    await p.set_rule_enabled(rules[0]["id"], False)
-    updated = await p.list_rules()
-    assert updated[0]["enabled"] is False
-    await p.delete_rule(rules[0]["id"])
-    assert await p.list_rules() == []

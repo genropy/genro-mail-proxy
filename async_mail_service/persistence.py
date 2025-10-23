@@ -47,22 +47,6 @@ class Persistence:
 
             await db.execute(
                 """
-                CREATE TABLE IF NOT EXISTS schedule_rules (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT,
-                    enabled INTEGER DEFAULT 1,
-                    priority INTEGER NOT NULL,
-                    days TEXT,
-                    start_hour INTEGER,
-                    end_hour INTEGER,
-                    cross_midnight INTEGER DEFAULT 0,
-                    interval_minutes INTEGER NOT NULL
-                )
-                """
-            )
-
-            await db.execute(
-                """
                 CREATE TABLE IF NOT EXISTS send_log (
                     account_id TEXT,
                     timestamp INTEGER
@@ -407,75 +391,3 @@ class Persistence:
                 row = await cur.fetchone()
         return int(row[0] if row else 0)
 
-    # Scheduler rules ----------------------------------------------------------
-    async def list_rules(self) -> List[Dict[str, Any]]:
-        """Return scheduling rules ordered by priority."""
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute(
-                """
-                SELECT id, name, enabled, priority, days, start_hour, end_hour, cross_midnight, interval_minutes
-                FROM schedule_rules
-                ORDER BY priority ASC, id ASC
-                """
-            ) as cur:
-                rows = await cur.fetchall()
-                cols = [c[0] for c in cur.description]
-        result: List[Dict[str, Any]] = []
-        for row in rows:
-            data = dict(zip(cols, row))
-            data["enabled"] = bool(data["enabled"])
-            data["cross_midnight"] = bool(data["cross_midnight"])
-            data["days"] = [int(x) for x in data["days"].split(",")] if data["days"] else []
-            result.append(data)
-        return result
-
-    async def add_rule(self, rule: Dict[str, Any]) -> Dict[str, Any]:
-        """Insert a new scheduling rule and return the stored representation."""
-        stored = rule.copy()
-        stored.setdefault("interval_minutes", 1)
-        stored.setdefault("enabled", True)
-        stored.setdefault("priority", 0)
-        stored.setdefault("days", [])
-        days = ",".join(str(int(d)) for d in stored.get("days", []))
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(
-                """
-                INSERT INTO schedule_rules (name, enabled, priority, days, start_hour, end_hour, cross_midnight, interval_minutes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    stored.get("name"),
-                    1 if stored.get("enabled", True) else 0,
-                    int(stored.get("priority", 0)),
-                    days,
-                    stored.get("start_hour"),
-                    stored.get("end_hour"),
-                    1 if stored.get("cross_midnight") else 0,
-                    int(stored["interval_minutes"]),
-                ),
-            )
-            await db.commit()
-            inserted_id = cursor.lastrowid
-        stored["id"] = inserted_id
-        return stored
-
-    async def delete_rule(self, rule_id: int) -> None:
-        """Delete a rule by identifier."""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("DELETE FROM schedule_rules WHERE id=?", (rule_id,))
-            await db.commit()
-
-    async def clear_rules(self) -> None:
-        """Remove all scheduling rules."""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("DELETE FROM schedule_rules")
-            await db.commit()
-
-    async def set_rule_enabled(self, rule_id: int, enabled: bool) -> None:
-        """Toggle a rule on or off."""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                "UPDATE schedule_rules SET enabled=? WHERE id=?",
-                (1 if enabled else 0, rule_id),
-            )
-            await db.commit()

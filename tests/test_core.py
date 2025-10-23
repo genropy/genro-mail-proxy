@@ -111,19 +111,6 @@ async def make_core(tmp_path, max_retries=5) -> AsyncMailCore:
         info=lambda *args, **kwargs: None,
         debug=lambda *args, **kwargs: None,
     )
-    core._rules = [
-        {
-            "id": 1,
-            "name": "default",
-            "enabled": True,
-            "priority": 0,
-            "days": [],
-            "start_hour": None,
-            "end_hour": None,
-            "cross_midnight": False,
-            "interval_minutes": 1,
-        }
-    ]
     await core.handle_command("addAccount", {"id": "acc", "host": "smtp.local", "port": 25})
     return core
 

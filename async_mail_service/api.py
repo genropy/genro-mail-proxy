@@ -110,39 +110,6 @@ class AccountsResponse(CommandStatus):
     accounts: List[AccountInfo]
 
 
-class RulePayload(BaseModel):
-    """Scheduling rule received from the control plane."""
-    name: Optional[str] = None
-    enabled: bool = True
-    priority: Optional[int] = None
-    days: List[int] = Field(default_factory=list)
-    start_hour: Optional[int] = Field(default=None, ge=0, le=23)
-    end_hour: Optional[int] = Field(default=None, ge=0, le=23)
-    cross_midnight: bool = False
-    interval_minutes: int = Field(default=1, ge=1)
-
-
-class RuleInfo(BaseModel):
-    """Scheduling rule returned by ``listRules`` and related commands."""
-    id: int
-    name: Optional[str] = None
-    enabled: bool
-    priority: int
-    days: List[int]
-    start_hour: Optional[int] = None
-    end_hour: Optional[int] = None
-    cross_midnight: bool
-    interval_minutes: int
-
-
-class RulesResponse(CommandStatus):
-    rules: List[RuleInfo]
-
-
-class RuleTogglePayload(BaseModel):
-    enabled: bool
-
-
 class EnqueueMessagesPayload(BaseModel):
     """Queue of messages used by ``addMessages``."""
     messages: List[MessagePayload]
@@ -267,38 +234,6 @@ def create_app(svc: AsyncMailCore, api_token: str | None = None) -> FastAPI:
             raise HTTPException(500, "Service not initialized")
         result = await service.handle_command("deleteMessages", payload.model_dump())
         return DeleteMessagesResponse.model_validate(result)
-
-    @router.post("/rules", response_model=RulesResponse, response_model_exclude_none=True)
-    async def add_rule(payload: RulePayload):
-        """Create or update a scheduling rule."""
-        if not service:
-            raise HTTPException(500, "Service not initialized")
-        result = await service.handle_command("addRule", payload.model_dump(exclude_none=True))
-        return RulesResponse.model_validate(result)
-
-    @router.get("/rules", response_model=RulesResponse, response_model_exclude_none=True)
-    async def list_rules():
-        """Return the current scheduling rules in priority order."""
-        if not service:
-            raise HTTPException(500, "Service not initialized")
-        result = await service.handle_command("listRules", {})
-        return RulesResponse.model_validate(result)
-
-    @router.delete("/rules/{rule_id}", response_model=RulesResponse, response_model_exclude_none=True)
-    async def delete_rule(rule_id: int):
-        """Remove a scheduling rule."""
-        if not service:
-            raise HTTPException(500, "Service not initialized")
-        result = await service.handle_command("deleteRule", {"id": rule_id})
-        return RulesResponse.model_validate(result)
-
-    @router.patch("/rules/{rule_id}", response_model=RulesResponse, response_model_exclude_none=True)
-    async def toggle_rule(rule_id: int, payload: RuleTogglePayload):
-        """Enable or disable a scheduling rule."""
-        if not service:
-            raise HTTPException(500, "Service not initialized")
-        result = await service.handle_command("setRuleEnabled", {"id": rule_id, "enabled": payload.enabled})
-        return RulesResponse.model_validate(result)
 
     @api.post("/account", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
     async def add_account(acc: AccountPayload):

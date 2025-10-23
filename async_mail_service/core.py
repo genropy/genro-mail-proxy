@@ -17,7 +17,6 @@ from .persistence import Persistence
 from .prometheus import MailMetrics
 from .rate_limit import RateLimiter
 from .smtp_pool import SMTPPool
-from zoneinfo import ZoneInfo
 
 PRIORITY_LABELS = {
     0: "immediate",
@@ -120,9 +119,8 @@ class AsyncMailCore:
         logger=None,
         metrics: MailMetrics | None = None,
         start_active: bool = False,
-        timezone: str = "Europe/Rome",
         result_queue_size: int = 1000,
-        delivery_queue_size: int = 1000,  # legacy arg kept for compatibility
+        delivery_queue_size: int = 1000,  # unused parameter, kept for backward compatibility
         message_queue_size: int = 10000,
         queue_put_timeout: float = 5.0,
         max_enqueue_batch: int = 1000,
@@ -153,7 +151,6 @@ class AsyncMailCore:
         self.persistence = Persistence(db_path or ":memory:")
         self.rate_limiter = RateLimiter(self.persistence)
         self.metrics = metrics or MailMetrics()
-        self.timezone = ZoneInfo(timezone)
         self._queue_put_timeout = queue_put_timeout
         self._max_enqueue_batch = max_enqueue_batch
         self._attachment_timeout = attachment_timeout
@@ -166,7 +163,6 @@ class AsyncMailCore:
 
         self._stop = asyncio.Event()
         self._active = start_active
-        self._rules: List[Dict[str, Any]] = []
 
         self._send_loop_interval = math.inf if self._test_mode else base_send_interval
         self._wake_event = asyncio.Event()  # Wake event for SMTP dispatch loop
@@ -202,11 +198,8 @@ class AsyncMailCore:
         return int(datetime.now(timezone.utc).timestamp())
 
     async def init(self) -> None:
-        """Initialise persistence and reload scheduler rules from storage."""
+        """Initialise persistence."""
         await self.persistence.init_db()
-        self._rules = await self.persistence.list_rules()
-        if not self._rules:
-            self._active = False
         await self._refresh_queue_gauge()
 
     def _normalise_priority(self, value: Any, default: Any = DEFAULT_PRIORITY) -> Tuple[int, str]:
@@ -258,45 +251,6 @@ class AsyncMailCore:
             return f"{preview[:197]}..."
         return preview or "-"
 
-    # ---------------------------------------------------------------- scheduling
-    def _has_enabled_rules(self) -> bool:
-        """Check whether at least one scheduling rule is currently enabled."""
-        return any(rule.get("enabled", True) for rule in self._rules)
-
-    def _is_scheduler_ready(self) -> bool:
-        """Return ``True`` when the scheduler loop is allowed to notify clients."""
-        return self._active and self._has_enabled_rules()
-
-    def _current_interval_from_schedule(self) -> int:
-        """Compute the polling interval (in seconds) based on the rule set."""
-        if not self._has_enabled_rules():
-            return 60
-        now = datetime.now(self.timezone)
-        weekday = now.weekday()
-        hour = now.hour
-        interval = 60
-        for rule in self._rules:
-            if not rule.get("enabled", True):
-                continue
-            days = rule.get("days", [])
-            if days and weekday not in days:
-                continue
-            start = rule.get("start_hour")
-            end = rule.get("end_hour")
-            cross = rule.get("cross_midnight", False)
-            in_window = False
-            if start is None or end is None:
-                in_window = True
-            elif cross:
-                if hour >= start or hour < end:
-                    in_window = True
-            else:
-                if start <= hour < end:
-                    in_window = True
-            if in_window:
-                interval = int(rule.get("interval_minutes", interval // 60 or 1)) * 60
-        return max(1, interval)
-
     # ------------------------------------------------------------------ commands
     async def handle_command(self, cmd: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Execute one of the external control commands."""
@@ -310,14 +264,6 @@ class AsyncMailCore:
         if cmd == "activate":
             self._active = True
             return {"ok": True, "active": True}
-        if cmd == "schedule":
-            rules = payload.get("rules", []) if isinstance(payload, dict) else []
-            await self.persistence.clear_rules()
-            self._rules = []
-            for idx, rule in enumerate(rules):
-                await self._add_rule(rule, priority=idx)
-            self._active = bool(payload.get("active", self._active)) and self._has_enabled_rules()
-            return {"ok": True, "rules": self._rules}
         if cmd == "addAccount":
             await self.persistence.add_account(payload)
             return {"ok": True}
@@ -340,30 +286,6 @@ class AsyncMailCore:
             return {"ok": True, "messages": messages}
         if cmd == "addMessages":
             return await self._handle_add_messages(payload)
-        if cmd == "addRule":
-            await self._add_rule(payload or {})
-            return {"ok": True, "rules": self._rules}
-        if cmd == "deleteRule":
-            rule_id = payload.get("id") if isinstance(payload, dict) else None
-            if rule_id is None:
-                return {"ok": False, "error": "missing 'id'"}
-            await self.persistence.delete_rule(int(rule_id))
-            self._rules = await self.persistence.list_rules()
-            if not self._has_enabled_rules():
-                self._active = False
-            return {"ok": True, "rules": self._rules}
-        if cmd == "listRules":
-            return {"ok": True, "rules": self._rules}
-        if cmd == "setRuleEnabled":
-            rule_id = payload.get("id") if isinstance(payload, dict) else None
-            enabled = payload.get("enabled") if isinstance(payload, dict) else None
-            if rule_id is None or enabled is None:
-                return {"ok": False, "error": "missing 'id' or 'enabled'"}
-            await self.persistence.set_rule_enabled(int(rule_id), bool(enabled))
-            self._rules = await self.persistence.list_rules()
-            if not self._has_enabled_rules():
-                self._active = False
-            return {"ok": True, "rules": self._rules}
         return {"ok": False, "error": "unknown command"}
 
     async def _handle_add_messages(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -438,21 +360,6 @@ class AsyncMailCore:
             else:
                 missing.append(mid)
         return removed, missing
-
-    async def _add_rule(self, rule: Dict[str, Any], priority: Optional[int] = None) -> None:
-        """Normalise and store a rule, assigning a deterministic priority."""
-        rules = await self.persistence.list_rules()
-        next_priority = priority if priority is not None else (rules[-1]["priority"] + 1 if rules else 0)
-        rule_copy = rule.copy()
-        rule_copy.setdefault("interval_minutes", 1)
-        rule_copy["priority"] = next_priority
-        rule_copy["days"] = [int(d) for d in rule_copy.get("days", [])]
-        rule_copy["enabled"] = bool(rule_copy.get("enabled", True))
-        rule_copy["cross_midnight"] = bool(rule_copy.get("cross_midnight", False))
-        await self.persistence.add_rule(rule_copy)
-        self._rules = await self.persistence.list_rules()
-        if self._has_enabled_rules() and not self._active:
-            self._active = True
 
     # ----------------------------------------------------------------- lifecycle
     async def start(self) -> None:
@@ -728,15 +635,16 @@ class AsyncMailCore:
         Background coroutine that pushes delivery reports.
 
         Optimization: When SMTP loop sends messages, it triggers this loop immediately
-        via _wake_client_event to reduce delivery report latency. Otherwise, this loop
-        waits for the normal schedule interval.
+        via _wake_client_event to reduce delivery report latency. Otherwise, uses a
+        5-minute fallback timeout.
         """
         first_iteration = True
+        fallback_interval = 300  # 5 minutes fallback if no immediate wake-up
         while not self._stop.is_set():
             if first_iteration and self._test_mode:
                 await self._wait_for_client_wakeup(math.inf)
             first_iteration = False
-            interval = math.inf if self._test_mode else self._current_interval_from_schedule()
+            interval = math.inf if self._test_mode else fallback_interval
             try:
                 await self._process_client_cycle()
             except Exception as exc:  # pragma: no cover - defensive
@@ -746,7 +654,7 @@ class AsyncMailCore:
 
     async def _process_client_cycle(self) -> None:
         """Perform one delivery report cycle."""
-        if not self._is_scheduler_ready():
+        if not self._active:
             return
 
         reports = await self.persistence.fetch_reports(self._smtp_batch_size)
