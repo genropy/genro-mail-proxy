@@ -499,7 +499,7 @@ class AsyncMailCore:
         try:
             smtp = await self.pool.get_connection(host, port, user, password, use_tls=use_tls)
             envelope_sender = envelope_from or msg.get("From")
-            await smtp.send_message(msg, from_addr=envelope_sender)
+            await smtp.send_message(msg, sender=envelope_sender)
         except Exception as exc:
             error_ts = self._utc_now_epoch()
             await self.persistence.mark_error(msg_id or "", error_ts, str(exc))
