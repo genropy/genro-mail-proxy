@@ -14,6 +14,7 @@ Prometheus metrics, and a FastAPI control plane.
    :maxdepth: 2
 
    overview
+   architecture_overview
    installation
    usage
    protocol
