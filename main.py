@@ -1,6 +1,7 @@
 import asyncio
 import os
 import json
+import logging
 import configparser
 from pathlib import Path
 
@@ -8,6 +9,14 @@ import uvicorn
 
 from async_mail_service.core import AsyncMailCore
 from async_mail_service.api import create_app
+
+# Configure logging level from environment
+log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, log_level, logging.INFO),
+    format='[%(asctime)s] [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
 
 def load_settings() -> dict[str, object]:
@@ -129,8 +138,35 @@ async def run_service(settings: dict[str, object]):
 
 if __name__ == "__main__":
     settings = load_settings()
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    service = loop.run_until_complete(run_service(settings))
+    # Create service instance but don't start it yet - let uvicorn handle the event loop
+    service_kwargs = dict(
+        db_path=settings["db_path"],
+        start_active=bool(settings.get("scheduler_active")),
+        timezone=str(settings.get("timezone") or "Europe/Rome"),
+        client_sync_url=settings.get("client_sync_url"),
+        client_sync_user=settings.get("client_sync_user"),
+        client_sync_password=settings.get("client_sync_password"),
+        client_sync_token=settings.get("client_sync_token"),
+        default_priority=settings.get("default_priority"),
+        report_retention_seconds=settings.get("report_retention_seconds"),
+        test_mode=bool(settings.get("test_mode")),
+        log_delivery_activity=bool(settings.get("log_delivery_activity")),
+    )
+    send_loop_interval = settings.get("send_loop_interval")
+    if send_loop_interval is not None:
+        service_kwargs["send_loop_interval"] = float(send_loop_interval)
+
+    service = AsyncMailCore(**service_kwargs)
     app = create_app(service, api_token=settings.get("api_token"))
+
+    # Use uvicorn's lifespan events to start the service
+    @app.on_event("startup")
+    async def startup():
+        await service.start()
+        rules = settings.get("scheduler_rules") or []
+        if rules:
+            await service.handle_command("schedule", {"rules": rules, "active": settings.get("scheduler_active", False)})
+        elif not settings.get("scheduler_active", False):
+            service._active = False
+
     uvicorn.run(app, host=str(settings["http_host"]), port=int(settings["http_port"]))

@@ -376,12 +376,17 @@ class AsyncMailCore:
     # ----------------------------------------------------------------- lifecycle
     async def start(self) -> None:
         """Start the background scheduler and maintenance tasks."""
+        self.logger.info("Starting AsyncMailCore...")
         await self.init()
         self._stop.clear()
+        self.logger.info("Creating SMTP dispatch loop task...")
         self._task_smtp = asyncio.create_task(self._smtp_dispatch_loop(), name="smtp-dispatch-loop")
+        self.logger.info("Creating client report loop task...")
         self._task_client = asyncio.create_task(self._client_report_loop(), name="client-report-loop")
         if not self._test_mode:
+            self.logger.info("Creating cleanup loop task...")
             self._task_cleanup = asyncio.create_task(self._cleanup_loop(), name="smtp-cleanup-loop")
+        self.logger.info("All background tasks created")
 
     async def stop(self) -> None:
         """Stop the background tasks gracefully."""
@@ -395,27 +400,45 @@ class AsyncMailCore:
     # --------------------------------------------------------------- SMTP logic
     async def _smtp_dispatch_loop(self) -> None:
         """Continuously pick messages from storage and attempt delivery."""
+        import sys
+        self.logger.info("SMTP dispatch loop started")
+        print("DEBUG: SMTP dispatch loop started", file=sys.stderr, flush=True)
         first_iteration = True
+        print(f"DEBUG: About to enter while loop, _stop.is_set()={self._stop.is_set()}", file=sys.stderr, flush=True)
         while not self._stop.is_set():
+            print("DEBUG: Inside while loop iteration", file=sys.stderr, flush=True)
             if first_iteration and self._test_mode:
+                print(f"DEBUG: First iteration, test_mode={self._test_mode}", file=sys.stderr, flush=True)
+                self.logger.info("First iteration in test mode, waiting for wakeup")
                 await self._wait_for_wakeup(self._send_loop_interval)
             first_iteration = False
             try:
+                print("DEBUG: Calling _process_smtp_cycle", file=sys.stderr, flush=True)
+                self.logger.debug("Processing SMTP cycle...")
                 processed = await self._process_smtp_cycle()
+                print(f"DEBUG: _process_smtp_cycle returned {processed}", file=sys.stderr, flush=True)
+                self.logger.debug(f"SMTP cycle processed={processed}")
             except Exception as exc:  # pragma: no cover - defensive
+                print(f"DEBUG: Exception in loop: {exc}", file=sys.stderr, flush=True)
                 self.logger.exception("Unhandled error in SMTP dispatch loop: %s", exc)
                 processed = False
             if not processed:
+                print(f"DEBUG: No messages, waiting {self._send_loop_interval}s", file=sys.stderr, flush=True)
+                self.logger.debug(f"No messages processed, waiting {self._send_loop_interval}s")
                 await self._wait_for_wakeup(self._send_loop_interval)
+        print("DEBUG: Exited while loop", file=sys.stderr, flush=True)
 
     async def _process_smtp_cycle(self) -> bool:
         """Process one batch of messages ready for delivery."""
         now_ts = self._utc_now_epoch()
+        self.logger.debug(f"Fetching ready messages (now_ts={now_ts}, limit={self._smtp_batch_size})")
         batch = await self.persistence.fetch_ready_messages(limit=self._smtp_batch_size, now_ts=now_ts)
+        self.logger.debug(f"Fetched {len(batch)} ready messages")
         if not batch:
             await self._refresh_queue_gauge()
             return False
         for entry in batch:
+            self.logger.debug(f"Dispatching message {entry.get('id')}")
             await self._dispatch_message(entry, now_ts)
         await self._refresh_queue_gauge()
         return True
@@ -499,7 +522,9 @@ class AsyncMailCore:
         try:
             smtp = await self.pool.get_connection(host, port, user, password, use_tls=use_tls)
             envelope_sender = envelope_from or msg.get("From")
-            await smtp.send_message(msg, sender=envelope_sender)
+            # Wrap send_message in timeout to prevent hanging (max 30s for large attachments)
+            async with asyncio.timeout(30.0):
+                await smtp.send_message(msg, sender=envelope_sender)
         except Exception as exc:
             error_ts = self._utc_now_epoch()
             await self.persistence.mark_error(msg_id or "", error_ts, str(exc))
@@ -607,25 +632,33 @@ class AsyncMailCore:
 
     async def _wait_for_wakeup(self, timeout: float | None) -> None:
         """Pause the loop while allowing external wake-ups via 'run now'."""
+        self.logger.debug(f"_wait_for_wakeup called with timeout={timeout}")
         if self._stop.is_set():
+            self.logger.debug("_stop is set, returning immediately")
             return
         if timeout is None:
+            self.logger.debug("Waiting indefinitely for wake event")
             await self._wake_event.wait()
             self._wake_event.clear()
             return
         timeout = float(timeout)
         if math.isinf(timeout):
+            self.logger.debug("Infinite timeout, waiting for wake event")
             await self._wake_event.wait()
             self._wake_event.clear()
             return
         timeout = max(0.0, timeout)
         if timeout == 0:
+            self.logger.debug("Zero timeout, yielding")
             await asyncio.sleep(0)
             return
+        self.logger.debug(f"Waiting {timeout}s for wake event or timeout")
         try:
             async with asyncio.timeout(timeout):
                 await self._wake_event.wait()
+                self.logger.debug("Woken up by event")
         except asyncio.TimeoutError:
+            self.logger.debug(f"Timeout after {timeout}s")
             return
         self._wake_event.clear()
 
