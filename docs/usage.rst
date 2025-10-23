@@ -74,10 +74,13 @@ Test mode
 Unit tests and manual maintenance scripts can instantiate
 ``async_mail_service.core.AsyncMailCore`` with ``test_mode=True``. In this
 configuration the background dispatcher/reporting/cleanup tasks are not started;
-instead, operators can call ``/commands/run-now`` (or invoke
-``handle_command("run now", {})`` directly) to execute single, on-demand cycles.
+instead, callers typically execute the internal ``_process_smtp_cycle`` and
+``_process_client_cycle`` helpers directly when they need to drain the queue.
 Production services should leave ``test_mode`` at its default ``False`` value so
-the periodic loops continue to process the queue automatically.
+the periodic loops continue to process the queue automatically. The
+``/commands/run-now`` endpoint is available in every mode and simply wakes those
+background loops, causing them to run their next cycle without waiting for the
+regular interval.
 
 REST Examples (curl)
 --------------------

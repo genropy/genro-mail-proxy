@@ -124,13 +124,14 @@ async def make_core(tmp_path) -> AsyncMailCore:
 
 
 @pytest.mark.asyncio
-async def test_run_now_disallowed_outside_test_mode(tmp_path):
+async def test_run_now_triggers_wakeup(tmp_path):
     db_path = tmp_path / "core-prod.db"
     core = AsyncMailCore(db_path=str(db_path), start_active=True)
     await core.persistence.init_db()
     result = await core.handle_command("run now", {})
-    assert result["ok"] is False
-    assert "test_mode" in result["error"]
+    assert result["ok"] is True
+    assert core._wake_event.is_set()
+    core._wake_event.clear()
 
 
 @pytest.mark.asyncio
@@ -153,7 +154,7 @@ async def test_add_messages_and_dispatch(tmp_path):
     assert result["queued"] == 1
     assert result["rejected"] == []
 
-    await core.handle_command("run now", {})
+    await core._process_smtp_cycle()
 
     # Message sent and logged
     assert len(core.pool.smtp.sent) == 1
@@ -223,7 +224,7 @@ async def test_rate_limited_message_is_deferred(tmp_path):
         ]
     }
     await core.handle_command("addMessages", payload)
-    await core.handle_command("run now", {})
+    await core._process_smtp_cycle()
     assert core.metrics.deferred_accounts == ["acc"]
     ready = await core.persistence.fetch_ready_messages(limit=5, now_ts=core._utc_now_epoch())
     assert ready == []
@@ -246,7 +247,7 @@ async def test_send_failure_sets_error(tmp_path):
         ]
     }
     await core.handle_command("addMessages", payload)
-    await core.handle_command("run now", {})
+    await core._process_smtp_cycle()
     messages = await core.persistence.list_messages()
     assert messages[0]["error_ts"] is not None
     assert core.metrics.error_accounts == ["acc"]

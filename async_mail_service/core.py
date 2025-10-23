@@ -89,6 +89,7 @@ class AsyncMailCore:
         self._active = start_active
         self._rules: List[Dict[str, Any]] = []
 
+        self._wake_event = asyncio.Event()
         self._result_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=result_queue_size)
         self._task_smtp: Optional[asyncio.Task] = None
         self._task_client: Optional[asyncio.Task] = None
@@ -200,10 +201,7 @@ class AsyncMailCore:
         """Execute one of the external control commands."""
         payload = payload or {}
         if cmd == "run now":
-            if not self._test_mode:
-                return {"ok": False, "error": "run now is available only when test_mode is enabled"}
-            await self._process_smtp_cycle()
-            await self._process_client_cycle()
+            self._wake_event.set()
             return {"ok": True}
         if cmd == "suspend":
             self._active = False
@@ -369,6 +367,7 @@ class AsyncMailCore:
     async def stop(self) -> None:
         """Stop the background tasks gracefully."""
         self._stop.set()
+        self._wake_event.set()
         await asyncio.gather(
             *(task for task in [self._task_smtp, self._task_client, self._task_cleanup] if task),
             return_exceptions=True,
@@ -384,7 +383,7 @@ class AsyncMailCore:
                 self.logger.exception("Unhandled error in SMTP dispatch loop: %s", exc)
                 processed = False
             if not processed:
-                await asyncio.sleep(self._send_loop_interval)
+                await self._wait_for_wakeup(self._send_loop_interval)
 
     async def _process_smtp_cycle(self) -> bool:
         """Process one batch of messages ready for delivery."""
@@ -502,7 +501,7 @@ class AsyncMailCore:
                 await self._process_client_cycle()
             except Exception as exc:  # pragma: no cover - defensive
                 self.logger.exception("Unhandled error in client report loop: %s", exc)
-            await asyncio.sleep(interval)
+            await self._wait_for_wakeup(interval)
 
     async def _process_client_cycle(self) -> None:
         """Perform one delivery report cycle."""
@@ -558,6 +557,21 @@ class AsyncMailCore:
             self.logger.exception("Failed to refresh queue gauge")
             return
         self.metrics.set_pending(count)
+
+    async def _wait_for_wakeup(self, timeout: float) -> None:
+        """Pause the loop while allowing external wake-ups via 'run now'."""
+        if self._stop.is_set():
+            return
+        timeout = max(0.0, float(timeout))
+        if timeout == 0:
+            await asyncio.sleep(0)
+            return
+        try:
+            async with asyncio.timeout(timeout):
+                await self._wake_event.wait()
+        except asyncio.TimeoutError:
+            return
+        self._wake_event.clear()
 
     # ----------------------------------------------------------------- messaging
     async def results(self):
