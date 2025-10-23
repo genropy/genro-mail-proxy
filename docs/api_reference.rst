@@ -18,10 +18,11 @@ All endpoints require the ``X-API-Token`` header when
 Core endpoints
 --------------
 
-``POST /commands/run-now`` *(test mode only)*
-   Immediately trigger a fetch/delivery cycle when the service instance has
-   been started with ``test_mode=True``. Regular deployments rely on the
-   background SMTP loop and do not expose this shortcut.
+``POST /commands/run-now``
+   Wake the dispatcher and reporting loops so they execute a cycle immediately
+   instead of waiting for the next scheduled interval. Useful for maintenance
+   scripts and for ``test_mode`` instances where the interval is effectively
+   infinite.
 
 ``POST /commands/suspend`` / ``POST /commands/activate``
    Toggle the scheduler.

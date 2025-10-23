@@ -12,7 +12,7 @@ and environment variables. Main sections/keys::
   [server]      host, port, api_token
   [client]      client_sync_url, client_sync_user, client_sync_password, client_sync_token
   [scheduler]   active, timezone, rules (JSON-encoded)
-  [delivery]    send_interval_seconds, default_priority, delivery_report_retention_seconds
+  [delivery]    send_interval_seconds, test_mode, default_priority, delivery_report_retention_seconds
 
 ``api_token`` secures the FastAPI endpoints: every HTTP request must include
 ``X-API-Token: <value>``. The ``[client]`` section configures the outbound
@@ -44,17 +44,17 @@ response from Genropy is:
    {"sent": 12, "error": 1, "deferred": 0}
 
 Genropy will subsequently push new messages through ``/commands/add-messages``.
-For automated deployments the background SMTP loop already polls the queue every
-``send_interval_seconds``; the ``/commands/run-now`` shortcut is intended only
-for instances created with ``test_mode=True`` (for example during unit tests or
-manual maintenance) where the background tasks are disabled.
+For automated deployments the background SMTP and reporting loops poll the queue
+every ``send_interval_seconds``. The ``/commands/run-now`` shortcut can be used
+to force an immediate iteration, waking the loops without waiting for the
+scheduled interval.
 
 
 Endpoints
 ---------
 
 - GET /status
-- POST /commands/run-now (available only when the service runs with ``test_mode=True``)
+- POST /commands/run-now
 - POST /commands/suspend
 - POST /commands/activate
 - POST /commands/add-messages
@@ -71,16 +71,16 @@ Endpoints
 Test mode
 ---------
 
-Unit tests and manual maintenance scripts can instantiate
-``async_mail_service.core.AsyncMailCore`` with ``test_mode=True``. In this
-configuration the background dispatcher/reporting/cleanup tasks are not started;
-instead, callers typically execute the internal ``_process_smtp_cycle`` and
-``_process_client_cycle`` helpers directly when they need to drain the queue.
-Production services should leave ``test_mode`` at its default ``False`` value so
-the periodic loops continue to process the queue automatically. The
-``/commands/run-now`` endpoint is available in every mode and simply wakes those
-background loops, causing them to run their next cycle without waiting for the
-regular interval.
+Unit tests and maintenance scripts can instantiate
+``async_mail_service.core.AsyncMailCore`` (or set ``[delivery] test_mode = true`` in
+``config.ini``) with ``test_mode=True``. In this mode
+the dispatcher and reporting tasks are still created, but their send interval is
+stretched to infinity so they wait for an explicit wake-up. Calling
+``/commands/run-now`` (or ``handle_command("run now", {})``) raises that wake-up,
+making the loops process the next cycle immediately while still exercising the
+same code paths used in production. Production services should leave
+``test_mode`` at its default ``False`` value so the periodic loops continue to
+process the queue automatically without manual intervention.
 
 REST Examples (curl)
 --------------------

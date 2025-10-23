@@ -17,7 +17,7 @@ def load_settings() -> dict[str, object]:
       [storage] db_path
       [server] host, port, api_token
       [client] client_sync_url, client_sync_user, client_sync_password, client_sync_token
-      [delivery] send_interval_seconds, default_priority, delivery_report_retention_seconds
+      [delivery] send_interval_seconds, test_mode, default_priority, delivery_report_retention_seconds
     """
     config_path = Path(os.getenv("ASYNC_MAIL_CONFIG", "config.ini"))
     parser = configparser.ConfigParser()
@@ -63,6 +63,7 @@ def load_settings() -> dict[str, object]:
         "client_sync_password": get("client", "client_sync_password", os.getenv("CLIENT_SYNC_PASSWORD")),
         "client_sync_token": get("client", "client_sync_token", os.getenv("CLIENT_SYNC_TOKEN")),
         "send_loop_interval": get_float("delivery", "send_interval_seconds", os.getenv("SEND_LOOP_INTERVAL")),
+        "test_mode": get_bool("delivery", "test_mode", os.getenv("TEST_MODE"), False),
         "default_priority": get_int("delivery", "default_priority", os.getenv("DEFAULT_PRIORITY"), default=2),
         "report_retention_seconds": get_int(
             "delivery",
@@ -102,6 +103,7 @@ async def run_service(settings: dict[str, object]):
         client_sync_token=settings.get("client_sync_token"),
         default_priority=settings.get("default_priority"),
         report_retention_seconds=settings.get("report_retention_seconds"),
+        test_mode=bool(settings.get("test_mode")),
     )
     send_loop_interval = settings.get("send_loop_interval")
     if send_loop_interval is not None:

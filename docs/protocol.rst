@@ -34,11 +34,10 @@ REST command surface
      - Queue one or more messages for delivery
      - :ref:`Message batch payload <message-batch>`
      - ``queued`` count and ``rejected`` array
-   * - ``POST /commands/run-now`` †
-     - Trigger a one-off delivery/reporting cycle when the service runs with
-       ``test_mode=True``
-     - None
-     - ``{"ok": true}`` or ``{"ok": false, "error": ...}``
+* - ``POST /commands/run-now`` †
+  - Wake the dispatcher/reporting loops to run a one-off cycle immediately
+  - None
+  - ``{"ok": true}`` or ``{"ok": false, "error": ...}``
    * - ``POST /commands/suspend`` / ``POST /commands/activate``
      - Toggle the scheduler
      - Optional JSON (unused)
@@ -64,9 +63,9 @@ REST command surface
      - None
      - Text payload in Prometheus exposition format
 
-† ``/commands/run-now`` is exposed purely for testing and maintenance. In
-production the SMTP loop automatically drains the queue according to
-``send_interval_seconds``.
+† ``/commands/run-now`` wakes the dispatcher/reporting loops so they run
+immediately, rather than waiting for the next ``send_interval_seconds`` window.
+It is typically used during maintenance or tests, but is available in all modes.
 
 .. _message-batch:
 

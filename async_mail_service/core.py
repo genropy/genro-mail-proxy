@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
@@ -78,7 +79,7 @@ class AsyncMailCore:
         self._queue_put_timeout = queue_put_timeout
         self._max_enqueue_batch = max_enqueue_batch
         self._attachment_timeout = attachment_timeout
-        self._send_loop_interval = max(0.05, float(send_loop_interval))
+        base_send_interval = max(0.05, float(send_loop_interval))
         self._smtp_batch_size = max(1, int(message_queue_size))
         self._report_retention_seconds = (
             report_retention_seconds if report_retention_seconds is not None else 7 * 24 * 3600
@@ -89,6 +90,7 @@ class AsyncMailCore:
         self._active = start_active
         self._rules: List[Dict[str, Any]] = []
 
+        self._send_loop_interval = math.inf if self._test_mode else base_send_interval
         self._wake_event = asyncio.Event()
         self._result_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=result_queue_size)
         self._task_smtp: Optional[asyncio.Task] = None
@@ -358,11 +360,10 @@ class AsyncMailCore:
         """Start the background scheduler and maintenance tasks."""
         await self.init()
         self._stop.clear()
-        if self._test_mode:
-            return
         self._task_smtp = asyncio.create_task(self._smtp_dispatch_loop(), name="smtp-dispatch-loop")
         self._task_client = asyncio.create_task(self._client_report_loop(), name="client-report-loop")
-        self._task_cleanup = asyncio.create_task(self._cleanup_loop(), name="smtp-cleanup-loop")
+        if not self._test_mode:
+            self._task_cleanup = asyncio.create_task(self._cleanup_loop(), name="smtp-cleanup-loop")
 
     async def stop(self) -> None:
         """Stop the background tasks gracefully."""
@@ -376,7 +377,11 @@ class AsyncMailCore:
     # --------------------------------------------------------------- SMTP logic
     async def _smtp_dispatch_loop(self) -> None:
         """Continuously pick messages from storage and attempt delivery."""
+        first_iteration = True
         while not self._stop.is_set():
+            if first_iteration and self._test_mode:
+                await self._wait_for_wakeup(self._send_loop_interval)
+            first_iteration = False
             try:
                 processed = await self._process_smtp_cycle()
             except Exception as exc:  # pragma: no cover - defensive
@@ -495,8 +500,12 @@ class AsyncMailCore:
     # ----------------------------------------------------------- client reporting
     async def _client_report_loop(self) -> None:
         """Background coroutine that periodically pushes delivery reports."""
+        first_iteration = True
         while not self._stop.is_set():
-            interval = self._current_interval_from_schedule()
+            if first_iteration and self._test_mode:
+                await self._wait_for_wakeup(math.inf)
+            first_iteration = False
+            interval = math.inf if self._test_mode else self._current_interval_from_schedule()
             try:
                 await self._process_client_cycle()
             except Exception as exc:  # pragma: no cover - defensive
@@ -558,11 +567,20 @@ class AsyncMailCore:
             return
         self.metrics.set_pending(count)
 
-    async def _wait_for_wakeup(self, timeout: float) -> None:
+    async def _wait_for_wakeup(self, timeout: float | None) -> None:
         """Pause the loop while allowing external wake-ups via 'run now'."""
         if self._stop.is_set():
             return
-        timeout = max(0.0, float(timeout))
+        if timeout is None:
+            await self._wake_event.wait()
+            self._wake_event.clear()
+            return
+        timeout = float(timeout)
+        if math.isinf(timeout):
+            await self._wake_event.wait()
+            self._wake_event.clear()
+            return
+        timeout = max(0.0, timeout)
         if timeout == 0:
             await asyncio.sleep(0)
             return

@@ -1,3 +1,5 @@
+import asyncio
+import math
 import types
 from typing import Any, Dict, List
 
@@ -132,6 +134,25 @@ async def test_run_now_triggers_wakeup(tmp_path):
     assert result["ok"] is True
     assert core._wake_event.is_set()
     core._wake_event.clear()
+
+
+@pytest.mark.asyncio
+async def test_test_mode_start_waits_for_run_now(tmp_path):
+    db_path = tmp_path / "core-test.db"
+    core = AsyncMailCore(db_path=str(db_path), start_active=True, test_mode=True)
+    await core.start()
+    try:
+        assert math.isinf(core._send_loop_interval)
+        assert core._task_smtp is not None
+        assert core._task_client is not None
+        assert not core._task_smtp.done()
+        assert not core._task_client.done()
+        result = await core.handle_command("run now", {})
+        assert result["ok"] is True
+        await asyncio.sleep(0)
+        assert not core._wake_event.is_set()
+    finally:
+        await core.stop()
 
 
 @pytest.mark.asyncio
