@@ -268,6 +268,19 @@ class Persistence:
             )
             await db.commit()
 
+    async def update_message_payload(self, msg_id: str, payload: Dict[str, Any]) -> None:
+        """Update the payload field of a message (used for retry count tracking)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE messages
+                SET payload=?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                (json.dumps(payload), msg_id),
+            )
+            await db.commit()
+
     async def delete_message(self, msg_id: str) -> bool:
         """Remove a message regardless of its state."""
         async with aiosqlite.connect(self.db_path) as db:

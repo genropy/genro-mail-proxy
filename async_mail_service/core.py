@@ -9,6 +9,7 @@ from email.message import EmailMessage
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
 
 import aiohttp
+import aiosmtplib
 
 from .attachments import AttachmentManager
 from .logger import get_logger
@@ -27,6 +28,10 @@ PRIORITY_LABELS = {
 LABEL_TO_PRIORITY = {label: value for value, label in PRIORITY_LABELS.items()}
 DEFAULT_PRIORITY = 2
 
+# Default retry configuration
+DEFAULT_MAX_RETRIES = 5
+DEFAULT_RETRY_DELAYS = [60, 300, 900, 3600, 7200]  # 1min, 5min, 15min, 1h, 2h
+
 
 class AccountConfigurationError(RuntimeError):
     """Raised when a message is missing the information required to resolve an SMTP account."""
@@ -34,6 +39,75 @@ class AccountConfigurationError(RuntimeError):
     def __init__(self, message: str = "Missing SMTP account configuration"):
         super().__init__(message)
         self.code = "missing_account_configuration"
+
+
+def _classify_smtp_error(exc: Exception) -> tuple[bool, Optional[int]]:
+    """
+    Classify an SMTP error as temporary or permanent.
+
+    Returns:
+        tuple: (is_temporary, smtp_code)
+            - is_temporary: True if the error should trigger a retry
+            - smtp_code: The SMTP error code if available, None otherwise
+    """
+    # Extract SMTP code from aiosmtplib exceptions
+    smtp_code = None
+    if isinstance(exc, aiosmtplib.SMTPException):
+        # aiosmtplib stores code in different attributes depending on exception type
+        smtp_code = getattr(exc, 'smtp_code', None) or getattr(exc, 'code', None)
+
+    # Network/timeout errors are temporary
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError)):
+        return True, smtp_code
+
+    # SMTP-specific temporary errors (4xx codes)
+    if smtp_code:
+        # 4xx codes are temporary failures
+        if 400 <= smtp_code < 500:
+            return True, smtp_code
+        # 5xx codes are permanent failures
+        if 500 <= smtp_code < 600:
+            return False, smtp_code
+
+    # Check error message for common temporary error patterns
+    error_msg = str(exc).lower()
+    temporary_patterns = [
+        '421',  # Service not available
+        '450',  # Mailbox unavailable
+        '451',  # Local error in processing
+        '452',  # Insufficient system storage
+        'timeout',
+        'connection refused',
+        'connection reset',
+        'temporarily unavailable',
+        'try again',
+        'throttl',  # throttled/throttling
+    ]
+    for pattern in temporary_patterns:
+        if pattern in error_msg:
+            return True, smtp_code
+
+    # Default: treat unknown errors as temporary (safer for retry)
+    return True, smtp_code
+
+
+def _calculate_retry_delay(retry_count: int, delays: List[int] = None) -> int:
+    """
+    Calculate the delay in seconds before the next retry attempt.
+
+    Args:
+        retry_count: Number of previous retry attempts (0-indexed)
+        delays: Optional list of delays in seconds for each retry
+
+    Returns:
+        Delay in seconds before next retry
+    """
+    if delays is None:
+        delays = DEFAULT_RETRY_DELAYS
+    if retry_count >= len(delays):
+        # Use the last delay for all subsequent retries
+        return delays[-1]
+    return delays[retry_count]
 
 
 class AsyncMailCore:
@@ -63,6 +137,8 @@ class AsyncMailCore:
         report_retention_seconds: int | None = None,
         test_mode: bool = False,
         log_delivery_activity: bool = False,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        retry_delays: Optional[List[int]] = None,
     ):
         """Prepare the runtime collaborators and scheduler state."""
         self.default_host = None
@@ -92,7 +168,8 @@ class AsyncMailCore:
         self._rules: List[Dict[str, Any]] = []
 
         self._send_loop_interval = math.inf if self._test_mode else base_send_interval
-        self._wake_event = asyncio.Event()
+        self._wake_event = asyncio.Event()  # Wake event for SMTP dispatch loop
+        self._wake_client_event = asyncio.Event()  # Wake event for client report loop
         self._result_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=result_queue_size)
         self._task_smtp: Optional[asyncio.Task] = None
         self._task_client: Optional[asyncio.Task] = None
@@ -108,6 +185,8 @@ class AsyncMailCore:
         priority_value, _ = self._normalise_priority(default_priority, DEFAULT_PRIORITY)
         self._default_priority = priority_value
         self._log_delivery_activity = bool(log_delivery_activity)
+        self._max_retries = max(0, int(max_retries))
+        self._retry_delays = retry_delays or DEFAULT_RETRY_DELAYS
 
     # --------------------------------------------------------------------- utils
     @staticmethod
@@ -411,6 +490,10 @@ class AsyncMailCore:
                 self.logger.debug("Processing SMTP cycle...")
                 processed = await self._process_smtp_cycle()
                 self.logger.debug(f"SMTP cycle processed={processed}")
+                # If messages were sent, trigger immediate client report sync
+                if processed:
+                    self.logger.debug("Messages sent, triggering immediate client report sync")
+                    self._wake_client_event.set()
             except Exception as exc:  # pragma: no cover - defensive
                 self.logger.exception("Unhandled error in SMTP dispatch loop: %s", exc)
                 processed = False
@@ -516,16 +599,81 @@ class AsyncMailCore:
             async with asyncio.timeout(30.0):
                 await smtp.send_message(msg, sender=envelope_sender)
         except Exception as exc:
-            error_ts = self._utc_now_epoch()
-            await self.persistence.mark_error(msg_id or "", error_ts, str(exc))
-            self.metrics.inc_error(resolved_account_id)
-            return {
-                "id": msg_id,
-                "status": "error",
-                "error": str(exc),
-                "timestamp": self._utc_now_iso(),
-                "account": resolved_account_id,
-            }
+            # Classify the error as temporary or permanent
+            is_temporary, smtp_code = _classify_smtp_error(exc)
+
+            # Get current retry count from payload
+            retry_count = payload.get("retry_count", 0)
+
+            # Determine if we should retry
+            should_retry = is_temporary and retry_count < self._max_retries
+
+            if should_retry:
+                # Calculate next retry timestamp
+                delay = _calculate_retry_delay(retry_count, self._retry_delays)
+                deferred_until = self._utc_now_epoch() + delay
+
+                # Update payload with incremented retry count
+                updated_payload = dict(payload)
+                updated_payload["retry_count"] = retry_count + 1
+
+                # Store updated payload and defer the message
+                await self.persistence.update_message_payload(msg_id or "", updated_payload)
+                await self.persistence.set_deferred(msg_id or "", deferred_until)
+                self.metrics.inc_deferred(resolved_account_id)
+
+                # Log the retry attempt
+                error_info = f"{exc} (SMTP {smtp_code})" if smtp_code else str(exc)
+                self.logger.warning(
+                    "Temporary error for message %s (attempt %d/%d): %s - retrying in %ds",
+                    msg_id,
+                    retry_count + 1,
+                    self._max_retries,
+                    error_info,
+                    delay,
+                )
+
+                return {
+                    "id": msg_id,
+                    "status": "deferred",
+                    "deferred_until": deferred_until,
+                    "error": error_info,
+                    "retry_count": retry_count + 1,
+                    "timestamp": self._utc_now_iso(),
+                    "account": resolved_account_id,
+                }
+            else:
+                # Permanent error or max retries exceeded - mark as failed
+                error_ts = self._utc_now_epoch()
+                error_info = f"{exc} (SMTP {smtp_code})" if smtp_code else str(exc)
+
+                if retry_count >= self._max_retries:
+                    error_info = f"Max retries ({self._max_retries}) exceeded: {error_info}"
+                    self.logger.error(
+                        "Message %s failed permanently after %d attempts: %s",
+                        msg_id,
+                        retry_count,
+                        error_info,
+                    )
+                else:
+                    self.logger.error(
+                        "Message %s failed with permanent error: %s",
+                        msg_id,
+                        error_info,
+                    )
+
+                await self.persistence.mark_error(msg_id or "", error_ts, error_info)
+                self.metrics.inc_error(resolved_account_id)
+
+                return {
+                    "id": msg_id,
+                    "status": "error",
+                    "error": error_info,
+                    "smtp_code": smtp_code,
+                    "retry_count": retry_count,
+                    "timestamp": self._utc_now_iso(),
+                    "account": resolved_account_id,
+                }
 
         sent_ts = self._utc_now_epoch()
         await self.persistence.mark_sent(msg_id or "", sent_ts)
@@ -540,18 +688,25 @@ class AsyncMailCore:
 
     # ----------------------------------------------------------- client reporting
     async def _client_report_loop(self) -> None:
-        """Background coroutine that periodically pushes delivery reports."""
+        """
+        Background coroutine that pushes delivery reports.
+
+        Optimization: When SMTP loop sends messages, it triggers this loop immediately
+        via _wake_client_event to reduce delivery report latency. Otherwise, this loop
+        waits for the normal schedule interval.
+        """
         first_iteration = True
         while not self._stop.is_set():
             if first_iteration and self._test_mode:
-                await self._wait_for_wakeup(math.inf)
+                await self._wait_for_client_wakeup(math.inf)
             first_iteration = False
             interval = math.inf if self._test_mode else self._current_interval_from_schedule()
             try:
                 await self._process_client_cycle()
             except Exception as exc:  # pragma: no cover - defensive
                 self.logger.exception("Unhandled error in client report loop: %s", exc)
-            await self._wait_for_wakeup(interval)
+            # Wait for wake event (triggered by SMTP loop) or interval timeout
+            await self._wait_for_client_wakeup(interval)
 
     async def _process_client_cycle(self) -> None:
         """Perform one delivery report cycle."""
@@ -651,6 +806,30 @@ class AsyncMailCore:
             self.logger.debug(f"Timeout after {timeout}s")
             return
         self._wake_event.clear()
+
+    async def _wait_for_client_wakeup(self, timeout: float | None) -> None:
+        """Pause the client report loop while allowing immediate wake-ups when messages are sent."""
+        if self._stop.is_set():
+            return
+        if timeout is None:
+            await self._wake_client_event.wait()
+            self._wake_client_event.clear()
+            return
+        timeout = float(timeout)
+        if math.isinf(timeout):
+            await self._wake_client_event.wait()
+            self._wake_client_event.clear()
+            return
+        timeout = max(0.0, timeout)
+        if timeout == 0:
+            await asyncio.sleep(0)
+            return
+        try:
+            async with asyncio.timeout(timeout):
+                await self._wake_client_event.wait()
+        except asyncio.TimeoutError:
+            return
+        self._wake_client_event.clear()
 
     # ----------------------------------------------------------------- messaging
     async def results(self):

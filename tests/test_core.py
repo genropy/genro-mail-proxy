@@ -12,11 +12,13 @@ class DummySMTP:
     def __init__(self):
         self.sent: List[Dict[str, Any]] = []
         self.raise_error: Exception | None = None
+        self.raise_error_persistent: bool = False  # If True, error persists across sends
 
     async def send_message(self, message, from_addr=None, **_kwargs):
         if self.raise_error:
             exc = self.raise_error
-            self.raise_error = None
+            if not self.raise_error_persistent:
+                self.raise_error = None
             raise exc
         self.sent.append({"message": message, "from": from_addr})
 
@@ -86,7 +88,7 @@ class DummyReporter:
         self.payloads.append(payload)
 
 
-async def make_core(tmp_path) -> AsyncMailCore:
+async def make_core(tmp_path, max_retries=5) -> AsyncMailCore:
     db_path = tmp_path / "core.db"
     reporter = DummyReporter()
     core = AsyncMailCore(
@@ -95,6 +97,7 @@ async def make_core(tmp_path) -> AsyncMailCore:
         report_delivery_callable=reporter,
         report_retention_seconds=2,
         test_mode=True,
+        max_retries=max_retries,
     )
     await core.persistence.init_db()
     core.pool = DummyPool()
@@ -253,6 +256,7 @@ async def test_rate_limited_message_is_deferred(tmp_path):
 
 @pytest.mark.asyncio
 async def test_send_failure_sets_error(tmp_path):
+    """Test that temporary errors are retried automatically."""
     core = await make_core(tmp_path)
     core.pool.smtp.raise_error = RuntimeError("boom")
     payload = {
@@ -270,5 +274,94 @@ async def test_send_failure_sets_error(tmp_path):
     await core.handle_command("addMessages", payload)
     await core._process_smtp_cycle()
     messages = await core.persistence.list_messages()
+
+    # RuntimeError("boom") is classified as temporary, so message should be deferred
+    assert messages[0]["error_ts"] is None, "Temporary errors should not set error_ts"
+    assert messages[0]["deferred_ts"] is not None, "Temporary errors should defer message"
+
+    # Check that retry_count was incremented in payload
+    msg_payload = messages[0]["message"]
+    assert msg_payload.get("retry_count", 0) == 1, "Retry count should be 1"
+
+
+@pytest.mark.asyncio
+async def test_temporary_error_retry_exhaustion(tmp_path):
+    """Test that messages fail permanently after max retries."""
+    core = await make_core(tmp_path, max_retries=3)
+    core.pool.smtp.raise_error = RuntimeError("temporary error")
+    core.pool.smtp.raise_error_persistent = True  # Keep raising error for all attempts
+
+    payload = {
+        "messages": [
+            {
+                "id": "msg-retry-exhausted",
+                "account_id": "acc",
+                "from": "sender@example.com",
+                "to": ["dest@example.com"],
+                "subject": "Hi",
+                "body": "Body",
+            }
+        ]
+    }
+    await core.handle_command("addMessages", payload)
+
+    # Simulate 4 attempts (initial + 3 retries)
+    for attempt in range(4):
+        # If not the first attempt, clear deferred_ts to make message ready for processing
+        if attempt > 0:
+            # Clear deferred_ts so the message is immediately ready
+            await core.persistence.clear_deferred("msg-retry-exhausted")
+
+        # Process the SMTP cycle
+        processed = await core._process_smtp_cycle()
+        messages = await core.persistence.list_messages()
+
+        if attempt < 3:
+            # Should be deferred for retries
+            assert processed, f"Attempt {attempt}: should have processed a message"
+            assert messages[0]["error_ts"] is None, f"Attempt {attempt}: should not have error_ts"
+            assert messages[0]["deferred_ts"] is not None, f"Attempt {attempt}: should have deferred_ts, got {messages[0]}"
+            # Verify retry count
+            msg_payload = messages[0]["message"]
+            assert msg_payload.get("retry_count", 0) == attempt + 1, f"Attempt {attempt}: expected retry_count {attempt+1}, got {msg_payload.get('retry_count', 0)}"
+        else:
+            # After max retries, should be marked as error
+            assert processed, "Final attempt should have processed the message"
+            assert messages[0]["error_ts"] is not None, "Should have error_ts after max retries"
+            assert "Max retries" in messages[0]["error"], f"Error should mention max retries, got: {messages[0]['error']}"
+            break
+
+
+@pytest.mark.asyncio
+async def test_permanent_error_no_retry(tmp_path):
+    """Test that permanent 5xx SMTP errors are not retried."""
+    import aiosmtplib
+
+    core = await make_core(tmp_path)
+
+    # Create a permanent SMTP error (5xx)
+    smtp_error = aiosmtplib.SMTPResponseException(550, "Mailbox not found")
+    smtp_error.smtp_code = 550
+    core.pool.smtp.raise_error = smtp_error
+
+    payload = {
+        "messages": [
+            {
+                "id": "msg-permanent",
+                "account_id": "acc",
+                "from": "sender@example.com",
+                "to": ["dest@example.com"],
+                "subject": "Hi",
+                "body": "Body",
+            }
+        ]
+    }
+    await core.handle_command("addMessages", payload)
+    await core._process_smtp_cycle()
+    messages = await core.persistence.list_messages()
+
+    # 5xx errors should be marked as permanent errors immediately
     assert messages[0]["error_ts"] is not None
+    assert messages[0]["deferred_ts"] is None
+    assert "550" in messages[0]["error"]
     assert core.metrics.error_accounts == ["acc"]
