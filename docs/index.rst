@@ -17,6 +17,7 @@ Prometheus metrics, and a FastAPI control plane.
    architecture_overview
    installation
    usage
+   example_client
    protocol
    api_reference
    modules

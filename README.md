@@ -37,6 +37,32 @@ docker build -t gnr-async-mail-service .
 docker run -p 8000:8000 -e SMTP_USER=... -e SMTP_PASSWORD=... -e FETCH_URL=https://your/api gnr-async-mail-service
 ```
 
+## Example client
+
+A complete integration example is provided in `example_client.py`. This demonstrates the recommended pattern for integrating with the mail service:
+
+```bash
+# Install dependencies
+pip install fastapi uvicorn aiohttp
+
+# Configure your email address
+nano example_config.ini  # Edit recipient_email
+
+# Start the example client
+python3 example_client.py
+
+# Send test email
+curl -X POST http://localhost:8081/send-test-email
+```
+
+The example shows:
+- Local-first persistence (never lose messages)
+- Async submission to mail service
+- run-now trigger for fast delivery
+- Delivery report handling via proxy_sync
+
+**See [Example Client Documentation](docs/example_client.rst)** for detailed walkthrough.
+
 ## Configuration highlights
 
 - ``[delivery]`` now exposes ``delivery_report_retention_seconds`` to control how long reported messages stay in the ``messages`` table (default seven days).
