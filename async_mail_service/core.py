@@ -135,6 +135,7 @@ class AsyncMailCore:
         report_delivery_callable: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
         send_loop_interval: float = 0.5,
         report_retention_seconds: int | None = None,
+        batch_size_per_account: int = 50,
         test_mode: bool = False,
         log_delivery_activity: bool = False,
         max_retries: int = DEFAULT_MAX_RETRIES,
@@ -187,6 +188,7 @@ class AsyncMailCore:
         self._log_delivery_activity = bool(log_delivery_activity)
         self._max_retries = max(0, int(max_retries))
         self._retry_delays = retry_delays or DEFAULT_RETRY_DELAYS
+        self._batch_size_per_account = max(1, int(batch_size_per_account))
 
     # --------------------------------------------------------------------- utils
     @staticmethod
@@ -471,6 +473,7 @@ class AsyncMailCore:
         """Stop the background tasks gracefully."""
         self._stop.set()
         self._wake_event.set()
+        self._wake_client_event.set()
         await asyncio.gather(
             *(task for task in [self._task_smtp, self._task_client, self._task_cleanup] if task),
             return_exceptions=True,
@@ -502,7 +505,7 @@ class AsyncMailCore:
                 await self._wait_for_wakeup(self._send_loop_interval)
 
     async def _process_smtp_cycle(self) -> bool:
-        """Process one batch of messages ready for delivery."""
+        """Process one batch of messages ready for delivery, respecting per-account batch limits."""
         now_ts = self._utc_now_epoch()
         self.logger.debug(f"Fetching ready messages (now_ts={now_ts}, limit={self._smtp_batch_size})")
         batch = await self.persistence.fetch_ready_messages(limit=self._smtp_batch_size, now_ts=now_ts)
@@ -510,11 +513,44 @@ class AsyncMailCore:
         if not batch:
             await self._refresh_queue_gauge()
             return False
+
+        # Group messages by account_id and apply per-account batch limit
+        from collections import defaultdict
+        messages_by_account = defaultdict(list)
         for entry in batch:
-            self.logger.debug(f"Dispatching message {entry.get('id')}")
-            await self._dispatch_message(entry, now_ts)
+            account_id = entry.get("message", {}).get("account_id") or "default"
+            messages_by_account[account_id].append(entry)
+
+        # Process messages respecting per-account batch size
+        processed_any = False
+        for account_id, account_messages in messages_by_account.items():
+            # Get account-specific batch_size if available, otherwise use global default
+            account_batch_size = self._batch_size_per_account
+            if account_id and account_id != "default":
+                try:
+                    account_data = await self.persistence.get_account(account_id)
+                    if account_data and account_data.get("batch_size"):
+                        account_batch_size = int(account_data["batch_size"])
+                except Exception:
+                    pass  # Fall back to global default on any error
+
+            # Limit messages for this account to its batch_size
+            messages_to_send = account_messages[:account_batch_size]
+            skipped_count = len(account_messages) - len(messages_to_send)
+
+            if skipped_count > 0:
+                self.logger.info(
+                    f"Account {account_id}: processing {len(messages_to_send)} messages, "
+                    f"deferring {skipped_count} messages to next cycle (batch_size={account_batch_size})"
+                )
+
+            for entry in messages_to_send:
+                self.logger.debug(f"Dispatching message {entry.get('id')} for account {account_id}")
+                await self._dispatch_message(entry, now_ts)
+                processed_any = True
+
         await self._refresh_queue_gauge()
-        return True
+        return processed_any
 
     async def _dispatch_message(self, entry: Dict[str, Any], now_ts: int) -> None:
         msg_id = entry.get("id")

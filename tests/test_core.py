@@ -365,3 +365,126 @@ async def test_permanent_error_no_retry(tmp_path):
     assert messages[0]["deferred_ts"] is None
     assert "550" in messages[0]["error"]
     assert core.metrics.error_accounts == ["acc"]
+
+
+@pytest.mark.asyncio
+async def test_batch_size_per_account_limiting(tmp_path):
+    """Test that batch_size_per_account limits messages sent per account per cycle."""
+    core = await make_core(tmp_path)
+    core._batch_size_per_account = 2  # Set limit to 2 messages per account per cycle
+
+    # Add 5 messages for account 'acc'
+    messages = []
+    for i in range(5):
+        messages.append({
+            "id": f"msg-acc-{i}",
+            "account_id": "acc",
+            "from": "sender@example.com",
+            "to": ["dest@example.com"],
+            "subject": f"Message {i}",
+            "body": "Body",
+        })
+
+    await core.handle_command("addMessages", {"messages": messages})
+
+    # First cycle should process only 2 messages
+    await core._process_smtp_cycle()
+    assert len(core.pool.smtp.sent) == 2
+
+    # Second cycle should process 2 more
+    await core._process_smtp_cycle()
+    assert len(core.pool.smtp.sent) == 4
+
+    # Third cycle should process the last message
+    await core._process_smtp_cycle()
+    assert len(core.pool.smtp.sent) == 5
+
+
+@pytest.mark.asyncio
+async def test_batch_size_per_account_multiple_accounts(tmp_path):
+    """Test that batch_size_per_account is applied per account independently."""
+    core = await make_core(tmp_path)
+
+    # Add second account
+    await core.handle_command("addAccount", {"id": "acc2", "host": "smtp2.local", "port": 25})
+
+    core._batch_size_per_account = 2  # Set limit to 2 messages per account
+
+    # Add 3 messages for 'acc' and 3 for 'acc2'
+    messages = []
+    for i in range(3):
+        messages.append({
+            "id": f"msg-acc-{i}",
+            "account_id": "acc",
+            "from": "sender@example.com",
+            "to": ["dest@example.com"],
+            "subject": f"Message acc {i}",
+            "body": "Body",
+        })
+        messages.append({
+            "id": f"msg-acc2-{i}",
+            "account_id": "acc2",
+            "from": "sender@example.com",
+            "to": ["dest@example.com"],
+            "subject": f"Message acc2 {i}",
+            "body": "Body",
+        })
+
+    await core.handle_command("addMessages", {"messages": messages})
+
+    # First cycle should process 2 messages per account = 4 total
+    await core._process_smtp_cycle()
+    assert len(core.pool.smtp.sent) == 4
+
+    # Second cycle should process 1 more per account = 2 more total
+    await core._process_smtp_cycle()
+    assert len(core.pool.smtp.sent) == 6
+
+
+@pytest.mark.asyncio
+async def test_batch_size_per_account_override(tmp_path):
+    """Test that account-specific batch_size overrides the global default."""
+    core = await make_core(tmp_path)
+    core._batch_size_per_account = 10  # Global default
+
+    # Add second account with custom batch_size
+    await core.handle_command("addAccount", {
+        "id": "acc2",
+        "host": "smtp2.local",
+        "port": 25,
+        "batch_size": 1  # Override: only 1 message per cycle
+    })
+
+    # Add 3 messages for each account
+    messages = []
+    for i in range(3):
+        messages.append({
+            "id": f"msg-acc-{i}",
+            "account_id": "acc",
+            "from": "sender@example.com",
+            "to": ["dest@example.com"],
+            "subject": f"Message acc {i}",
+            "body": "Body",
+        })
+        messages.append({
+            "id": f"msg-acc2-{i}",
+            "account_id": "acc2",
+            "from": "sender@example.com",
+            "to": ["dest@example.com"],
+            "subject": f"Message acc2 {i}",
+            "body": "Body",
+        })
+
+    await core.handle_command("addMessages", {"messages": messages})
+
+    # First cycle: acc sends 3 (limited by 10), acc2 sends 1 (limited by its override)
+    await core._process_smtp_cycle()
+    assert len(core.pool.smtp.sent) == 4  # 3 from acc + 1 from acc2
+
+    # Second cycle: acc has 0 left, acc2 sends 1 more
+    await core._process_smtp_cycle()
+    assert len(core.pool.smtp.sent) == 5  # +1 from acc2
+
+    # Third cycle: acc2 sends the last one
+    await core._process_smtp_cycle()
+    assert len(core.pool.smtp.sent) == 6  # +1 from acc2

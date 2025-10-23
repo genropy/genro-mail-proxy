@@ -82,6 +82,12 @@ def load_settings() -> dict[str, object]:
             os.getenv("DELIVERY_REPORT_RETENTION_SECONDS"),
             default=7 * 24 * 3600,
         ),
+        "batch_size_per_account": get_int(
+            "delivery",
+            "batch_size_per_account",
+            os.getenv("BATCH_SIZE_PER_ACCOUNT"),
+            default=50,
+        ),
         "log_delivery_activity": get_bool(
             "logging",
             "delivery_activity",
@@ -120,6 +126,7 @@ async def run_service(settings: dict[str, object]):
         client_sync_token=settings.get("client_sync_token"),
         default_priority=settings.get("default_priority"),
         report_retention_seconds=settings.get("report_retention_seconds"),
+        batch_size_per_account=settings.get("batch_size_per_account"),
         test_mode=bool(settings.get("test_mode")),
         log_delivery_activity=bool(settings.get("log_delivery_activity")),
     )
@@ -150,6 +157,7 @@ if __name__ == "__main__":
         client_sync_token=settings.get("client_sync_token"),
         default_priority=settings.get("default_priority"),
         report_retention_seconds=settings.get("report_retention_seconds"),
+        batch_size_per_account=settings.get("batch_size_per_account"),
         test_mode=bool(settings.get("test_mode")),
         log_delivery_activity=bool(settings.get("log_delivery_activity")),
     )

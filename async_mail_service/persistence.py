@@ -40,6 +40,10 @@ class Persistence:
                 await db.execute("ALTER TABLE accounts ADD COLUMN use_tls INTEGER")
             except aiosqlite.OperationalError:
                 pass
+            try:
+                await db.execute("ALTER TABLE accounts ADD COLUMN batch_size INTEGER")
+            except aiosqlite.OperationalError:
+                pass
 
             await db.execute(
                 """
@@ -98,8 +102,8 @@ class Persistence:
             await db.execute(
                 """
                 INSERT OR REPLACE INTO accounts
-                (id, host, port, user, password, ttl, limit_per_minute, limit_per_hour, limit_per_day, limit_behavior, use_tls)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, host, port, user, password, ttl, limit_per_minute, limit_per_hour, limit_per_day, limit_behavior, use_tls, batch_size)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     acc["id"],
@@ -113,6 +117,7 @@ class Persistence:
                     acc.get("limit_per_day"),
                     acc.get("limit_behavior", "defer"),
                     None if acc.get("use_tls") is None else (1 if acc.get("use_tls") else 0),
+                    acc.get("batch_size"),
                 ),
             )
             await db.commit()
@@ -123,7 +128,7 @@ class Persistence:
             async with db.execute(
                 """
                 SELECT id, host, port, user, ttl, limit_per_minute, limit_per_hour,
-                       limit_per_day, limit_behavior, use_tls, created_at
+                       limit_per_day, limit_behavior, use_tls, batch_size, created_at
                 FROM accounts
                 """
             ) as cur:
