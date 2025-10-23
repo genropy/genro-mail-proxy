@@ -18,6 +18,7 @@ def load_settings() -> dict[str, object]:
       [server] host, port, api_token
       [client] client_sync_url, client_sync_user, client_sync_password, client_sync_token
       [delivery] send_interval_seconds, test_mode, default_priority, delivery_report_retention_seconds
+      [logging] delivery_activity
     """
     config_path = Path(os.getenv("ASYNC_MAIL_CONFIG", "config.ini"))
     parser = configparser.ConfigParser()
@@ -71,6 +72,12 @@ def load_settings() -> dict[str, object]:
             os.getenv("DELIVERY_REPORT_RETENTION_SECONDS"),
             default=7 * 24 * 3600,
         ),
+        "log_delivery_activity": get_bool(
+            "logging",
+            "delivery_activity",
+            os.getenv("LOG_DELIVERY_ACTIVITY"),
+            default=False,
+        ),
     }
 
     rules_raw = get("scheduler", "rules", os.getenv("SCHEDULER_RULES"))
@@ -104,6 +111,7 @@ async def run_service(settings: dict[str, object]):
         default_priority=settings.get("default_priority"),
         report_retention_seconds=settings.get("report_retention_seconds"),
         test_mode=bool(settings.get("test_mode")),
+        log_delivery_activity=bool(settings.get("log_delivery_activity")),
     )
     send_loop_interval = settings.get("send_loop_interval")
     if send_loop_interval is not None:

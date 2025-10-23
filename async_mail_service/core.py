@@ -62,6 +62,7 @@ class AsyncMailCore:
         send_loop_interval: float = 0.5,
         report_retention_seconds: int | None = None,
         test_mode: bool = False,
+        log_delivery_activity: bool = False,
     ):
         """Prepare the runtime collaborators and scheduler state."""
         self.default_host = None
@@ -106,6 +107,7 @@ class AsyncMailCore:
         self.attachments = AttachmentManager()
         priority_value, _ = self._normalise_priority(default_priority, DEFAULT_PRIORITY)
         self._default_priority = priority_value
+        self._log_delivery_activity = bool(log_delivery_activity)
 
     # --------------------------------------------------------------------- utils
     @staticmethod
@@ -158,6 +160,22 @@ class AsyncMailCore:
         priority = max(0, min(priority, max(PRIORITY_LABELS)))
         label = PRIORITY_LABELS.get(priority, PRIORITY_LABELS[fallback])
         return priority, label
+
+    @staticmethod
+    def _summarise_addresses(value: Any) -> str:
+        """Return a compact textual representation of recipient-like values."""
+        if not value:
+            return "-"
+        if isinstance(value, str):
+            items = [part.strip() for part in value.split(",") if part.strip()]
+        elif isinstance(value, (list, tuple, set)):
+            items = [str(item).strip() for item in value if item]
+        else:
+            items = [str(value).strip()]
+        preview = ", ".join(item for item in items if item)
+        if len(preview) > 200:
+            return f"{preview[:197]}..."
+        return preview or "-"
 
     # ---------------------------------------------------------------- scheduling
     def _has_enabled_rules(self) -> bool:
@@ -405,6 +423,14 @@ class AsyncMailCore:
     async def _dispatch_message(self, entry: Dict[str, Any], now_ts: int) -> None:
         msg_id = entry.get("id")
         message = entry.get("message") or {}
+        if self._log_delivery_activity:
+            recipients_preview = self._summarise_addresses(message.get("to"))
+            self.logger.info(
+                "Attempting delivery for message %s to %s (account=%s)",
+                msg_id or "-",
+                recipients_preview,
+                message.get("account_id") or "default",
+            )
         if msg_id:
             await self.persistence.clear_deferred(msg_id)
         try:
@@ -605,8 +631,47 @@ class AsyncMailCore:
         except asyncio.TimeoutError:  # pragma: no cover - defensive
             self.logger.error("Timed out while enqueuing item into %s queue; dropping item", queue_name)
 
+    def _log_delivery_event(self, event: Dict[str, Any]) -> None:
+        """Emit a console log describing the outcome of a delivery attempt."""
+        if not self._log_delivery_activity:
+            return
+        status = (event.get("status") or "unknown").lower()
+        msg_id = event.get("id") or "-"
+        account = event.get("account") or event.get("account_id") or "default"
+        if status == "sent":
+            self.logger.info("Delivery succeeded for message %s (account=%s)", msg_id, account)
+            return
+        if status == "deferred":
+            deferred_until = event.get("deferred_until")
+            if isinstance(deferred_until, (int, float)):
+                deferred_repr = (
+                    datetime.fromtimestamp(float(deferred_until), timezone.utc)
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                )
+            else:
+                deferred_repr = deferred_until or "-"
+            self.logger.info(
+                "Delivery deferred for message %s (account=%s) until %s",
+                msg_id,
+                account,
+                deferred_repr,
+            )
+            return
+        if status == "error":
+            reason = event.get("error") or event.get("error_code") or "unknown error"
+            self.logger.warning(
+                "Delivery failed for message %s (account=%s): %s",
+                msg_id,
+                account,
+                reason,
+            )
+            return
+        self.logger.info("Delivery event for message %s (account=%s): %s", msg_id, account, status)
+
     async def _publish_result(self, event: Dict[str, Any]) -> None:
         """Publish a delivery event while observing queue backpressure."""
+        self._log_delivery_event(event)
         await self._put_with_backpressure(self._result_queue, event, "result")
 
     # ---------------------------------------------------------- SMTP primitives
@@ -700,6 +765,18 @@ class AsyncMailCore:
     async def _send_delivery_reports(self, payloads: List[Dict[str, Any]]) -> None:
         """Send delivery report payloads to the configured proxy or callback."""
         if self._report_delivery_callable is not None:
+            if self._log_delivery_activity:
+                batch_size = len(payloads)
+                ids_preview = ", ".join(
+                    str(item.get("id")) for item in payloads[:5] if item.get("id")
+                )
+                if len(payloads) > 5:
+                    ids_preview = f"{ids_preview}, ..." if ids_preview else "..."
+                self.logger.info(
+                    "Forwarding %d delivery report(s) via custom callable (ids=%s)",
+                    batch_size,
+                    ids_preview or "-",
+                )
             for payload in payloads:
                 await self._report_delivery_callable(payload)
             return
@@ -714,11 +791,22 @@ class AsyncMailCore:
         elif self._client_sync_user:
             auth = aiohttp.BasicAuth(self._client_sync_user, self._client_sync_password or "")
         batch_size = len(payloads)
-        self.logger.info(
-            "Posting delivery reports to client sync endpoint %s (count=%d)",
-            self._client_sync_url,
-            batch_size,
-        )
+        if self._log_delivery_activity:
+            ids_preview = ", ".join(str(item.get("id")) for item in payloads[:5] if item.get("id"))
+            if len(payloads) > 5:
+                ids_preview = f"{ids_preview}, ..." if ids_preview else "..."
+            self.logger.info(
+                "Posting delivery reports to client sync endpoint %s (count=%d, ids=%s)",
+                self._client_sync_url,
+                batch_size,
+                ids_preview or "-",
+            )
+        else:
+            self.logger.info(
+                "Posting delivery reports to client sync endpoint %s (count=%d)",
+                self._client_sync_url,
+                batch_size,
+            )
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 self._client_sync_url,
@@ -727,7 +815,10 @@ class AsyncMailCore:
                 headers=headers or None,
             ) as resp:
                 resp.raise_for_status()
-        self.logger.debug("Delivery report batch delivered (%d items)", batch_size)
+        if self._log_delivery_activity:
+            self.logger.info("Client sync acknowledged delivery report batch (%d items)", batch_size)
+        else:
+            self.logger.debug("Delivery report batch delivered (%d items)", batch_size)
 
     # ------------------------------------------------------------- validations
     async def _validate_enqueue_payload(self, payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:

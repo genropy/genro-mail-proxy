@@ -13,6 +13,7 @@ and environment variables. Main sections/keys::
   [client]      client_sync_url, client_sync_user, client_sync_password, client_sync_token
   [scheduler]   active, timezone, rules (JSON-encoded)
   [delivery]    send_interval_seconds, test_mode, default_priority, delivery_report_retention_seconds
+  [logging]     delivery_activity
 
 ``api_token`` secures the FastAPI endpoints: every HTTP request must include
 ``X-API-Token: <value>``. The ``[client]`` section configures the outbound
@@ -20,6 +21,10 @@ and environment variables. Main sections/keys::
 Credentials are sent using HTTP basic authentication (the same format obtained
 with ``https://user:password@host/path`` URLs) unless ``client_sync_token`` is
 provided.
+
+Enable ``[logging] delivery_activity = true`` to surface each SMTP attempt and every
+client sync exchange directly in the console logs, useful during troubleshooting or
+integration debugging.
 
 Proxy sync exchange
 -------------------
