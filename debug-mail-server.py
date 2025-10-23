@@ -36,7 +36,7 @@ class DebugHandler:
 async def main():
     controller = Controller(DebugHandler(), 
                             hostname=LISTEN_IP,
-                            port=LISTEN_PORT)s
+                            port=LISTEN_PORT)
     controller.start()
     
     print(f"Debug SMTP server running on {LISTEN_IP}:{LISTEN_PORT}")
