@@ -129,7 +129,8 @@ async def run_service(settings: dict[str, object]):
 
 if __name__ == "__main__":
     settings = load_settings()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     service = loop.run_until_complete(run_service(settings))
     app = create_app(service, api_token=settings.get("api_token"))
     uvicorn.run(app, host=str(settings["http_host"]), port=int(settings["http_port"]))

@@ -547,7 +547,14 @@ class AsyncMailCore:
         if not reports:
             # Still allow the client sync endpoint to trigger its own fetch if needed
             if self._client_sync_url and self._report_delivery_callable is None:
-                await self._send_delivery_reports([])
+                try:
+                    await self._send_delivery_reports([])
+                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    self.logger.warning(
+                        "Client sync endpoint %s not reachable: %s",
+                        self._client_sync_url,
+                        exc,
+                    )
             await self._apply_retention()
             return
 
@@ -563,7 +570,12 @@ class AsyncMailCore:
             }
             for item in reports
         ]
-        await self._send_delivery_reports(payloads)
+        try:
+            await self._send_delivery_reports(payloads)
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            target = self._client_sync_url or "custom callable"
+            self.logger.warning("Client sync delivery failed (%s): %s", target, exc)
+            return
         reported_ts = self._utc_now_epoch()
         await self.persistence.mark_reported((item["id"] for item in reports), reported_ts)
         await self._apply_retention()
