@@ -318,12 +318,6 @@ class AsyncMailCore:
         if not validated:
             return {"ok": False, "error": "all messages rejected", "rejected": rejected}
 
-        existing_ids = await self.persistence.existing_message_ids(msg.get("id") for msg in validated)
-        for msg in list(validated):
-            if msg["id"] in existing_ids:
-                rejected.append({"id": msg["id"], "reason": "duplicate id"})
-                validated.remove(msg)
-
         entries = [
             {
                 "id": msg["id"],
@@ -335,9 +329,10 @@ class AsyncMailCore:
             for msg in validated
         ]
         inserted = await self.persistence.insert_messages(entries)
+        # Messages not inserted were already sent (sent_ts IS NOT NULL)
         for msg in validated:
             if msg["id"] not in inserted:
-                rejected.append({"id": msg["id"], "reason": "duplicate id"})
+                rejected.append({"id": msg["id"], "reason": "already sent"})
 
         await self._refresh_queue_gauge()
 

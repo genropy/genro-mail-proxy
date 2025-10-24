@@ -160,7 +160,12 @@ class Persistence:
         return data
 
     async def insert_messages(self, entries: Sequence[Dict[str, Any]]) -> List[str]:
-        """Persist a batch of messages, returning the ids that were stored."""
+        """Persist a batch of messages, returning the ids that were stored.
+
+        If a message with the same id already exists but has NOT been sent (sent_ts IS NULL),
+        it will be replaced with the new data. This allows clients to correct errors or
+        retry with different parameters. Messages that have been sent are never replaced.
+        """
         if not entries:
             return []
         inserted: List[str] = []
@@ -171,16 +176,26 @@ class Persistence:
                 account_id = entry.get("account_id")
                 priority = int(entry.get("priority", 2))
                 deferred_ts = entry.get("deferred_ts")
-                try:
-                    cursor = await db.execute(
-                        """
-                        INSERT INTO messages (id, account_id, priority, payload, deferred_ts)
-                        VALUES (?, ?, ?, ?, ?)
-                        """,
-                        (msg_id, account_id, priority, payload, deferred_ts),
-                    )
-                except aiosqlite.IntegrityError:
-                    continue
+
+                cursor = await db.execute(
+                    """
+                    INSERT INTO messages (id, account_id, priority, payload, deferred_ts)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        account_id = excluded.account_id,
+                        priority = excluded.priority,
+                        payload = excluded.payload,
+                        deferred_ts = excluded.deferred_ts,
+                        error_ts = NULL,
+                        error = NULL,
+                        reported_ts = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE sent_ts IS NULL
+                    """,
+                    (msg_id, account_id, priority, payload, deferred_ts),
+                )
+
+                # Check if operation succeeded (INSERT or UPDATE)
                 if cursor.rowcount:
                     inserted.append(msg_id)
             await db.commit()

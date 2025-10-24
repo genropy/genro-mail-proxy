@@ -202,6 +202,7 @@ async def test_add_messages_rejects_invalid(tmp_path):
 
 @pytest.mark.asyncio
 async def test_duplicate_messages_rejected(tmp_path):
+    """Test that duplicate messages are replaced if not sent, rejected if already sent."""
     core = await make_core(tmp_path)
     base_msg = {
         "id": "dup",
@@ -211,11 +212,30 @@ async def test_duplicate_messages_rejected(tmp_path):
         "subject": "Hello",
         "body": "Body",
     }
+
+    # First insert - should succeed
     first = await core.handle_command("addMessages", {"messages": [base_msg]})
     assert first["ok"] is True
-    second = await core.handle_command("addMessages", {"messages": [base_msg]})
+    assert first["queued"] == 1
+    assert len(first["rejected"]) == 0
+
+    # Second insert (before sending) - should replace the message
+    modified_msg = dict(base_msg)
+    modified_msg["subject"] = "Modified subject"
+    second = await core.handle_command("addMessages", {"messages": [modified_msg]})
     assert second["ok"] is True
-    assert second["rejected"][0]["reason"] == "duplicate id"
+    assert second["queued"] == 1  # Replaced, not duplicate
+    assert len(second["rejected"]) == 0
+
+    # Send the message
+    await core._process_smtp_cycle()
+
+    # Third insert (after sending) - should be rejected
+    third = await core.handle_command("addMessages", {"messages": [base_msg]})
+    assert third["ok"] is True
+    assert third["queued"] == 0
+    assert len(third["rejected"]) == 1
+    assert third["rejected"][0]["reason"] == "already sent"
 
 
 @pytest.mark.asyncio
