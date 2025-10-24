@@ -122,8 +122,11 @@ async def test_run_now_triggers_wakeup(tmp_path):
     await core.persistence.init_db()
     result = await core.handle_command("run now", {})
     assert result["ok"] is True
-    assert core._wake_event.is_set()
-    core._wake_event.clear()
+    # "run now" wakes up only the client loop (for immediate report delivery)
+    # SMTP loop runs every 0.5s by default, which is fast enough
+    assert not core._wake_event.is_set()
+    assert core._wake_client_event.is_set()
+    core._wake_client_event.clear()
 
 
 @pytest.mark.asyncio

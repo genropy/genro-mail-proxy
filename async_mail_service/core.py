@@ -256,7 +256,7 @@ class AsyncMailCore:
         """Execute one of the external control commands."""
         payload = payload or {}
         if cmd == "run now":
-            self._wake_event.set()
+            self._wake_client_event.set()
             return {"ok": True}
         if cmd == "suspend":
             self._active = False
