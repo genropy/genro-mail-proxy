@@ -232,12 +232,15 @@ class Persistence:
             await db.commit()
 
     async def mark_sent(self, msg_id: str, sent_ts: int) -> None:
-        """Mark a message as sent."""
+        """Mark a message as sent.
+
+        Resets reported_ts so the message will be reported with final state.
+        """
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
                 UPDATE messages
-                SET sent_ts=?, error_ts=NULL, error=NULL, deferred_ts=NULL, updated_at=CURRENT_TIMESTAMP
+                SET sent_ts=?, error_ts=NULL, error=NULL, deferred_ts=NULL, reported_ts=NULL, updated_at=CURRENT_TIMESTAMP
                 WHERE id=?
                 """,
                 (sent_ts, msg_id),
@@ -245,12 +248,15 @@ class Persistence:
             await db.commit()
 
     async def mark_error(self, msg_id: str, error_ts: int, error: str) -> None:
-        """Mark a message as failed."""
+        """Mark a message as failed.
+
+        Resets reported_ts and deferred_ts so the message will be reported with final error state.
+        """
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
                 UPDATE messages
-                SET error_ts=?, error=?, sent_ts=NULL, updated_at=CURRENT_TIMESTAMP
+                SET error_ts=?, error=?, sent_ts=NULL, deferred_ts=NULL, reported_ts=NULL, updated_at=CURRENT_TIMESTAMP
                 WHERE id=?
                 """,
                 (error_ts, error, msg_id),
@@ -298,14 +304,18 @@ class Persistence:
         return {row[0] for row in rows}
 
     async def fetch_reports(self, limit: int) -> List[Dict[str, Any]]:
-        """Return messages that need to be reported back to the client."""
+        """Return messages that need to be reported back to the client.
+
+        Only returns messages in final states (sent or error).
+        Messages with only deferred_ts are not reported (internal retry logic).
+        """
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
                 """
                 SELECT id, account_id, priority, payload, sent_ts, error_ts, error, deferred_ts
                 FROM messages
                 WHERE reported_ts IS NULL
-                  AND (sent_ts IS NOT NULL OR error_ts IS NOT NULL OR deferred_ts IS NOT NULL)
+                  AND (sent_ts IS NOT NULL OR error_ts IS NOT NULL)
                 ORDER BY updated_at ASC, id ASC
                 LIMIT ?
                 """,
@@ -333,12 +343,18 @@ class Persistence:
             await db.commit()
 
     async def remove_reported_before(self, threshold_ts: int) -> int:
-        """Delete reported messages older than ``threshold_ts``."""
+        """Delete reported messages older than ``threshold_ts``.
+
+        Only deletes messages in final states (sent or error).
+        Messages with only deferred_ts are kept in queue until they reach a final state.
+        """
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 """
                 DELETE FROM messages
-                WHERE reported_ts IS NOT NULL AND reported_ts < ?
+                WHERE reported_ts IS NOT NULL
+                  AND reported_ts < ?
+                  AND (sent_ts IS NOT NULL OR error_ts IS NOT NULL)
                 """,
                 (threshold_ts,),
             )

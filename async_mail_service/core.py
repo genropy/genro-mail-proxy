@@ -524,16 +524,18 @@ class AsyncMailCore:
 
         deferred_until = await self.rate_limiter.check_and_plan(acc)
         if deferred_until:
+            # Rate limit hit - defer message for later retry (internal scheduling).
+            # This is flow control, not an error, so it won't be reported to client.
             await self.persistence.set_deferred(msg_id or "", deferred_until)
             self.metrics.inc_deferred(resolved_account_id)
             self.metrics.inc_rate_limited(resolved_account_id)
-            return {
-                "id": msg_id,
-                "status": "deferred",
-                "deferred_until": deferred_until,
-                "timestamp": self._utc_now_iso(),
-                "account": resolved_account_id,
-            }
+            self.logger.debug(
+                "Message %s rate-limited for account %s, deferred until %s",
+                msg_id,
+                resolved_account_id,
+                deferred_until,
+            )
+            return None  # No result to report, message will be retried later
 
         try:
             smtp = await self.pool.get_connection(host, port, user, password, use_tls=use_tls)
