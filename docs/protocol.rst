@@ -42,10 +42,6 @@ REST command surface
      - Toggle the scheduler
      - Optional JSON (unused)
      - ``{"ok": true, "active": <bool>}``
-   * - ``POST /commands/rules`` / ``GET /commands/rules`` / ``PATCH /commands/rules/{id}`` / ``DELETE /commands/rules/{id}``
-     - Manage scheduling rules
-     - :class:`async_mail_service.api.RulePayload`
-     - Updated ``rules`` list
    * - ``POST /account`` / ``GET /accounts`` / ``DELETE /account/{id}``
      - Manage SMTP account definitions
      - :class:`async_mail_service.api.AccountPayload`

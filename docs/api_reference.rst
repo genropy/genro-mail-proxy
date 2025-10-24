@@ -34,10 +34,6 @@ Core endpoints
    entries describing invalid payloads (missing ``id``, bad addresses, unknown
    account, duplicates, ...).
 
-``POST /commands/rules`` / ``GET /commands/rules`` / ``PATCH /commands/rules/{rule_id}`` / ``DELETE /commands/rules/{rule_id}``
-   CRUD operations for scheduling rules.  Entries are described by
-   :class:`async_mail_service.api.RulePayload`.
-
 ``POST /account`` / ``GET /accounts`` / ``DELETE /account/{id}``
    Manage SMTP account credentials.
 

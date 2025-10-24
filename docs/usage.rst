@@ -11,7 +11,7 @@ and environment variables. Main sections/keys::
   [storage]     db_path
   [server]      host, port, api_token
   [client]      client_sync_url, client_sync_user, client_sync_password, client_sync_token
-  [scheduler]   active, timezone, rules (JSON-encoded)
+  [scheduler]   active, timezone
   [delivery]    send_interval_seconds, test_mode, default_priority, delivery_report_retention_seconds
   [logging]     delivery_activity
 
@@ -63,10 +63,6 @@ Endpoints
 - POST /commands/suspend
 - POST /commands/activate
 - POST /commands/add-messages
-- POST /commands/rules
-- GET /commands/rules
-- PATCH /commands/rules/{rule_id}
-- DELETE /commands/rules/{rule_id}
 - POST /account
 - GET /accounts
 - DELETE /account/{id}
