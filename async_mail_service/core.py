@@ -286,6 +286,10 @@ class AsyncMailCore:
             return {"ok": True, "messages": messages}
         if cmd == "addMessages":
             return await self._handle_add_messages(payload)
+        if cmd == "cleanupMessages":
+            older_than = payload.get("older_than_seconds") if isinstance(payload, dict) else None
+            removed = await self._cleanup_reported_messages(older_than)
+            return {"ok": True, "removed": removed}
         return {"ok": False, "error": "unknown command"}
 
     async def _handle_add_messages(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -355,6 +359,27 @@ class AsyncMailCore:
             else:
                 missing.append(mid)
         return removed, missing
+
+    async def _cleanup_reported_messages(self, older_than_seconds: Optional[int] = None) -> int:
+        """Remove reported messages older than the specified threshold.
+
+        Args:
+            older_than_seconds: Remove messages reported more than this many seconds ago.
+                              If None, uses the configured retention period.
+
+        Returns:
+            Number of messages removed.
+        """
+        if older_than_seconds is None:
+            retention = self._report_retention_seconds
+        else:
+            retention = max(0, int(older_than_seconds))
+
+        threshold = self._utc_now_epoch() - retention
+        removed = await self.persistence.remove_reported_before(threshold)
+        if removed:
+            await self._refresh_queue_gauge()
+        return removed
 
     # ----------------------------------------------------------------- lifecycle
     async def start(self) -> None:

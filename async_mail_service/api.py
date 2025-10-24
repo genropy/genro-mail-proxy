@@ -158,6 +158,16 @@ class DeleteMessagesResponse(CommandStatus):
     removed: int
     not_found: Optional[List[str]] = None
 
+
+class CleanupMessagesPayload(BaseModel):
+    """Request payload for manual cleanup of reported messages."""
+    older_than_seconds: Optional[int] = None
+
+
+class CleanupMessagesResponse(CommandStatus):
+    """Response from cleanup operation."""
+    removed: int
+
 def create_app(
     svc: AsyncMailCore,
     api_token: str | None = None,
@@ -249,6 +259,18 @@ def create_app(
             raise HTTPException(500, "Service not initialized")
         result = await service.handle_command("deleteMessages", payload.model_dump())
         return DeleteMessagesResponse.model_validate(result)
+
+    @router.post("/cleanup-messages", response_model=CleanupMessagesResponse, response_model_exclude_none=True)
+    async def cleanup_messages(payload: CleanupMessagesPayload = CleanupMessagesPayload()):
+        """Manually trigger cleanup of reported messages older than retention period.
+
+        By default uses the configured retention period. Optionally specify
+        older_than_seconds to override the retention period for this cleanup.
+        """
+        if not service:
+            raise HTTPException(500, "Service not initialized")
+        result = await service.handle_command("cleanupMessages", payload.model_dump())
+        return CleanupMessagesResponse.model_validate(result)
 
     @api.post("/account", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
     async def add_account(acc: AccountPayload):

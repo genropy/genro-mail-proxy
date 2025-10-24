@@ -495,3 +495,41 @@ async def test_batch_size_per_account_override(tmp_path):
     # Third cycle: acc2 sends the last one
     await core._process_smtp_cycle()
     assert len(core.pool.smtp.sent) == 6  # +1 from acc2
+
+@pytest.mark.asyncio
+async def test_cleanup_messages_command(tmp_path):
+    """Test manual cleanup of reported messages via command."""
+    core = await make_core(tmp_path)
+    
+    # Add and send a message
+    payload = {
+        "messages": [
+            {
+                "id": "msg-cleanup",
+                "account_id": "acc",
+                "from": "sender@example.com",
+                "to": ["dest@example.com"],
+                "subject": "Test",
+                "body": "Body",
+            }
+        ]
+    }
+    await core.handle_command("addMessages", payload)
+    await core._process_smtp_cycle()
+    
+    # Mark as reported (artificially old)
+    old_ts = core._utc_now_epoch() - 10000
+    await core.persistence.mark_reported(["msg-cleanup"], old_ts)
+    
+    # Verify message exists
+    messages = await core.persistence.list_messages()
+    assert len(messages) == 1
+    
+    # Cleanup with custom threshold (older than 5000 seconds)
+    result = await core.handle_command("cleanupMessages", {"older_than_seconds": 5000})
+    assert result["ok"] is True
+    assert result["removed"] == 1
+    
+    # Verify message was removed
+    messages = await core.persistence.list_messages()
+    assert len(messages) == 0
