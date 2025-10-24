@@ -120,7 +120,6 @@ class AsyncMailCore:
         metrics: MailMetrics | None = None,
         start_active: bool = False,
         result_queue_size: int = 1000,
-        delivery_queue_size: int = 1000,  # unused parameter, kept for backward compatibility
         message_queue_size: int = 10000,
         queue_put_timeout: float = 5.0,
         max_enqueue_batch: int = 1000,
