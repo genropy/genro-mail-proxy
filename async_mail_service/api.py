@@ -7,7 +7,8 @@ behaviour of each command.  Authentication is enforced through a configurable
 API token carried in the ``X-API-Token`` header.
 """
 
-from typing import Optional, Dict, Any, List, Literal, Union
+from typing import Optional, Dict, Any, List, Literal, Union, Callable, AsyncContextManager
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, APIRouter, Depends, status
 from fastapi.responses import Response
@@ -155,7 +156,11 @@ class DeleteMessagesResponse(CommandStatus):
     removed: int
     not_found: Optional[List[str]] = None
 
-def create_app(svc: AsyncMailCore, api_token: str | None = None) -> FastAPI:
+def create_app(
+    svc: AsyncMailCore,
+    api_token: str | None = None,
+    lifespan: Callable[[FastAPI], AsyncContextManager] | None = None
+) -> FastAPI:
     """Create and configure the FastAPI application.
 
     Parameters
@@ -166,6 +171,8 @@ def create_app(svc: AsyncMailCore, api_token: str | None = None) -> FastAPI:
     api_token:
         Optional secret used to protect every endpoint. When provided, the
         ``X-API-Token`` header must match this value on every request.
+    lifespan:
+        Optional lifespan context manager for startup/shutdown events.
 
     Returns
     -------
@@ -175,8 +182,14 @@ def create_app(svc: AsyncMailCore, api_token: str | None = None) -> FastAPI:
     """
     global service
     service = svc
-    app.state.api_token = api_token
-    api = app
+
+    # Use custom lifespan if provided, otherwise use the global app
+    if lifespan is not None:
+        api = FastAPI(title="Async Mail Service", lifespan=lifespan)
+    else:
+        api = app
+
+    api.state.api_token = api_token
     router = APIRouter(prefix="/commands", tags=["commands"], dependencies=[auth_dependency])
 
     @api.get("/status", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])

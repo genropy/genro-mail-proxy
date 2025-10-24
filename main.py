@@ -4,8 +4,10 @@ import json
 import logging
 import configparser
 from pathlib import Path
+from contextlib import asynccontextmanager
 
 import uvicorn
+from fastapi import FastAPI
 
 from async_mail_service.core import AsyncMailCore
 from async_mail_service.api import create_app
@@ -149,11 +151,15 @@ if __name__ == "__main__":
         service_kwargs["send_loop_interval"] = float(send_loop_interval)
 
     service = AsyncMailCore(**service_kwargs)
-    app = create_app(service, api_token=settings.get("api_token"))
 
-    # Use uvicorn's lifespan events to start the service
-    @app.on_event("startup")
-    async def startup():
+    # Define lifespan context manager for startup/shutdown events
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Startup: start the mail service
         await service.start()
+        yield
+        # Shutdown: cleanup if needed (currently no shutdown logic required)
+
+    app = create_app(service, api_token=settings.get("api_token"), lifespan=lifespan)
 
     uvicorn.run(app, host=str(settings["http_host"]), port=int(settings["http_port"]))
