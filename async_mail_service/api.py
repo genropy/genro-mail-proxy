@@ -51,6 +51,7 @@ class AccountPayload(BaseModel):
     limit_per_day: Optional[int] = None
     limit_behavior: Optional[str] = "defer"
     use_tls: Optional[bool] = None
+    batch_size: Optional[int] = None
 
 
 class CommandStatus(BaseModel):
@@ -104,6 +105,7 @@ class AccountInfo(BaseModel):
     limit_per_day: Optional[int] = None
     limit_behavior: Optional[str] = None
     use_tls: Optional[bool] = None
+    batch_size: Optional[int] = None
     created_at: Optional[str] = None
 
 
