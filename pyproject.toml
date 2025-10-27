@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling>=1.25"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "genro-mail-proxy"
@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Asynchronous email dispatcher microservice with scheduling, rate limiting, attachments, and a FastAPI REST API."
 readme = "README.md"
 requires-python = ">=3.10"
-license = {file = "LICENSE"}
+license = "MIT"
 authors = [
   {name = "Softwell S.r.l."},
   {name = "Giovanni Porcari"}
@@ -16,7 +16,6 @@ authors = [
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
@@ -56,20 +55,8 @@ docs = [
 [project.urls]
 Documentation = "https://genro-mail-proxy.readthedocs.io/en/latest/"
 
-[tool.hatch.build.targets.wheel]
+[tool.setuptools]
 packages = ["async_mail_service"]
 
-[tool.hatch.build.targets.sdist]
-include = [
-  "async_mail_service",
-  "docs",
-  "tests",
-  "README.md",
-  "LICENSE",
-  "requirements.txt",
-  "main.py",
-  "config.ini",
-  "docker-compose.yml",
-  "Dockerfile",
-  "verify_structure.py"
-]
+[tool.setuptools.package-data]
+async_mail_service = ["py.typed"]
