@@ -1,28 +1,32 @@
-"""Attachment helpers that normalise multiple input sources."""
+"""Attachment management using genro-storage."""
 
 from typing import Dict, Any, Optional, Tuple
 import mimetypes
-from .s3_fetcher import S3AttachmentFetcher
-from .url_fetcher import URLAttachmentFetcher
-from .inline_fetcher import InlineAttachmentFetcher
+from genro_storage import StorageManager
+from .storage_fetcher import StorageFetcher
+
 
 class AttachmentManager:
-    """Collect attachment fetchers and expose a unified interface."""
+    """Manage attachment fetching using genro-storage volumes."""
 
-    def __init__(self):
-        self._s3 = S3AttachmentFetcher()
-        self._url = URLAttachmentFetcher()
-        self._inline = InlineAttachmentFetcher()
+    def __init__(self, storage_manager: StorageManager):
+        """Initialize with a configured StorageManager.
+
+        Args:
+            storage_manager: Configured StorageManager with mounted volumes
+        """
+        self._fetcher = StorageFetcher(storage_manager)
 
     async def fetch(self, att: Dict[str, Any]) -> Optional[bytes]:
-        """Return the attachment payload or ``None`` if not available."""
-        if "s3" in att:
-            return await self._s3.fetch(att)
-        if "url" in att:
-            return await self._url.fetch(att)
-        if "content" in att:
-            return await self._inline.fetch(att)
-        return None
+        """Fetch attachment from storage.
+
+        Args:
+            att: Attachment dictionary with 'storage_path' key in format 'volume:path/to/file'
+
+        Returns:
+            File content as bytes, or None if storage_path is missing
+        """
+        return await self._fetcher.fetch(att)
 
     @staticmethod
     def guess_mime(filename: str) -> Tuple[str, str]:

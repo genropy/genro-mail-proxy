@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tup
 
 import aiohttp
 import aiosmtplib
+from genro_storage import StorageManager
 
 from .attachments import AttachmentManager
 from .logger import get_logger
@@ -177,7 +178,9 @@ class AsyncMailCore:
         self._client_sync_token = client_sync_token
         self._report_delivery_callable = report_delivery_callable
 
-        self.attachments = AttachmentManager()
+        # Storage and attachments will be initialized in init()
+        self._storage_manager: Optional[StorageManager] = None
+        self.attachments: Optional[AttachmentManager] = None
         priority_value, _ = self._normalise_priority(default_priority, DEFAULT_PRIORITY)
         self._default_priority = priority_value
         self._log_delivery_activity = bool(log_delivery_activity)
@@ -197,9 +200,31 @@ class AsyncMailCore:
         return int(datetime.now(timezone.utc).timestamp())
 
     async def init(self) -> None:
-        """Initialise persistence."""
+        """Initialise persistence and storage."""
         await self.persistence.init_db()
         await self._refresh_queue_gauge()
+
+        # Initialize storage manager with volumes from database
+        self._storage_manager = StorageManager()
+        volumes = await self.persistence.list_volumes()
+        if volumes:
+            # Convert database volume format to genro-storage mount configuration
+            mount_configs = []
+            for vol in volumes:
+                config = {
+                    'name': vol['id'],
+                    'type': vol['storage_type'],
+                }
+                # Merge storage-specific config from JSON
+                import json
+                vol_config = json.loads(vol['config']) if isinstance(vol['config'], str) else vol['config']
+                config.update(vol_config)
+                mount_configs.append(config)
+
+            self._storage_manager.configure(mount_configs)
+
+        # Initialize attachment manager with configured storage
+        self.attachments = AttachmentManager(self._storage_manager)
 
     def _normalise_priority(self, value: Any, default: Any = DEFAULT_PRIORITY) -> Tuple[int, str]:
         """Coerce user supplied priority into the internal representation."""
