@@ -33,3 +33,29 @@ Local (Python)
    source .venv/bin/activate
    pip install -r requirements.txt
    python main.py
+
+Network Requirements
+--------------------
+
+For production deployment, ensure proper network connectivity and firewall configuration.
+
+See :doc:`network_requirements` for detailed information on:
+
+- Required network connections (Genropy ↔ genro-mail-proxy ↔ SMTP servers)
+- Firewall rules and port configuration
+- Security considerations (TLS, authentication, network isolation)
+- Deployment scenarios (single host, separate hosts, Kubernetes)
+- Troubleshooting network connectivity issues
+
+Quick checklist:
+
+1. **Genropy → genro-mail-proxy**: Allow HTTP/HTTPS on port 8000 (or configured ``GMP_PORT``)
+2. **genro-mail-proxy → Genropy**: Allow HTTP/HTTPS for delivery reports (``GMP_CLIENT_SYNC_URL``)
+3. **genro-mail-proxy → SMTP**: Allow outbound TCP on port 587 (STARTTLS) or 465 (SMTPS)
+4. **DNS**: Ensure SMTP server hostnames can be resolved
+5. **Authentication**: Configure ``GMP_API_TOKEN``, ``GMP_CLIENT_SYNC_USER``/``GMP_CLIENT_SYNC_PASSWORD``
+
+Configuration
+-------------
+
+See ``config.ini.example`` for all available configuration options and environment variables.
