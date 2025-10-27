@@ -1,0 +1,92 @@
+# genro-mail-proxy Configuration Example
+# =======================================
+#
+# This service loads configuration from this INI file (default: config.ini)
+# with environment variables as fallbacks. All environment variables use the
+# GMP_ prefix (Genro Mail Proxy) to avoid conflicts in k8s environments.
+#
+# Configuration priority: INI file > Environment variables > Defaults
+
+[storage]
+# SQLite database path used by the service.
+# During local development /tmp is fine, but in production (especially under Docker)
+# mount a persistent volume and update this value so queues and logs survive restarts.
+# Environment variable: GMP_DB_PATH
+# Default: /data/mail_service.db
+db_path = /tmp/mail_service.db
+
+[server]
+# HTTP server host address
+# Environment variable: GMP_HOST
+# Default: 0.0.0.0
+# host = 0.0.0.0
+
+# HTTP server port
+# Environment variable: GMP_PORT
+# Default: 8000
+# port = 8000
+
+# API authentication token
+# Secures the FastAPI endpoints: every HTTP request must include X-API-Token: <value>
+# Environment variable: GMP_API_TOKEN
+# Default: None (no authentication required if not set)
+# api_token = your-api-token
+
+[scheduler]
+# Global on/off switch for the mail dispatcher
+# Environment variable: GMP_SCHEDULER_ACTIVE
+# Default: false
+active = true
+
+[client]
+# Endpoint invoked by the dispatcher to deliver batched reports to your application
+# Environment variable: GMP_CLIENT_SYNC_URL
+# Default: None
+client_sync_url = http://127.0.0.1:8081/email/mailproxy/mp_endpoint/proxy_sync
+
+# Client sync authentication - use either user/password OR token
+# Environment variables: GMP_CLIENT_SYNC_USER, GMP_CLIENT_SYNC_PASSWORD
+# Default: None
+client_sync_user = syncuser
+client_sync_password = syncpass
+
+# Alternative token-based authentication (preferred over user/password)
+# Environment variable: GMP_CLIENT_SYNC_TOKEN
+# Default: None
+# client_sync_token = mytoken
+
+[delivery]
+# Polling interval (in seconds) for the SMTP send loop
+# Environment variable: GMP_SEND_LOOP_INTERVAL
+# Default: None (service uses internal default)
+send_interval_seconds = 0.5
+
+# Enable test mode to run dispatcher/reporting loops only when triggered by "run now"
+# Useful for testing and development
+# Environment variable: GMP_TEST_MODE
+# Default: false
+test_mode = false
+
+# Default priority for queued messages (0=immediate, 1=high, 2=medium, 3=low)
+# Environment variable: GMP_DEFAULT_PRIORITY
+# Default: 2
+default_priority = 2
+
+# Retention window (in seconds) for messages already reported to the client
+# Environment variable: GMP_DELIVERY_REPORT_RETENTION_SECONDS
+# Default: 604800 (7 days)
+delivery_report_retention_seconds = 604800
+
+# Maximum number of messages to send per SMTP account per dispatch cycle
+# This prevents overwhelming SMTP servers and helps avoid rate limiting/blacklisting
+# Each account can override this with its own batch_size setting
+# Environment variable: GMP_BATCH_SIZE_PER_ACCOUNT
+# Default: 50
+batch_size_per_account = 50
+
+[logging]
+# When true, each SMTP attempt and client sync exchange is logged to the console
+# Useful during troubleshooting or integration debugging
+# Environment variable: GMP_LOG_DELIVERY_ACTIVITY
+# Default: false
+delivery_activity = true

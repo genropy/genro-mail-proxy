@@ -9,8 +9,13 @@ Docker
 
    docker build -t genro-mail-proxy .
    docker run -p 8000:8000 \\
-     -e SMTP_USER=... -e SMTP_PASSWORD=... \\
-     -e FETCH_URL=https://your/api genro-mail-proxy
+     -e GMP_CLIENT_SYNC_URL=https://your-app/proxy_sync \\
+     -e GMP_CLIENT_SYNC_USER=syncuser \\
+     -e GMP_CLIENT_SYNC_PASSWORD=syncpass \\
+     -e GMP_API_TOKEN=your-secret-token \\
+     genro-mail-proxy
+
+See ``config.ini.example`` for all available environment variables (all prefixed with ``GMP_``).
 
 Docker Compose
 --------------

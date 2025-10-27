@@ -5,15 +5,41 @@ Usage
 Configuration
 -------------
 
-The service loads settings from ``config.ini`` (or the path provided by ``ASYNC_MAIL_CONFIG``)
-and environment variables. Main sections/keys::
+The service loads settings from ``config.ini`` (or the path provided by ``GMP_CONFIG``)
+and environment variables. All environment variables use the ``GMP_`` prefix (Genro Mail Proxy)
+to avoid conflicts in k8s environments.
+
+Main config file sections/keys::
 
   [storage]     db_path
   [server]      host, port, api_token
   [client]      client_sync_url, client_sync_user, client_sync_password, client_sync_token
-  [scheduler]   active, timezone
-  [delivery]    send_interval_seconds, test_mode, default_priority, delivery_report_retention_seconds
+  [scheduler]   active
+  [delivery]    send_interval_seconds, test_mode, default_priority,
+                delivery_report_retention_seconds, batch_size_per_account
   [logging]     delivery_activity
+
+Environment variables (all prefixed with GMP_)::
+
+  GMP_CONFIG                              - Path to config.ini file (default: config.ini)
+  GMP_LOG_LEVEL                           - Logging level (default: INFO)
+  GMP_DB_PATH                             - Database path (default: /data/mail_service.db)
+  GMP_HOST                                - Server host (default: 0.0.0.0)
+  GMP_PORT                                - Server port (default: 8000)
+  GMP_SCHEDULER_ACTIVE                    - Enable scheduler (default: false)
+  GMP_API_TOKEN                           - API authentication token
+  GMP_CLIENT_SYNC_URL                     - Client sync URL
+  GMP_CLIENT_SYNC_USER                    - Client sync username
+  GMP_CLIENT_SYNC_PASSWORD                - Client sync password
+  GMP_CLIENT_SYNC_TOKEN                   - Client sync token (alternative to user/password)
+  GMP_SEND_LOOP_INTERVAL                  - Send loop interval in seconds
+  GMP_TEST_MODE                           - Enable test mode (default: false)
+  GMP_DEFAULT_PRIORITY                    - Default message priority (default: 2)
+  GMP_DELIVERY_REPORT_RETENTION_SECONDS   - Retention time for delivery reports (default: 604800)
+  GMP_BATCH_SIZE_PER_ACCOUNT              - Batch size per account (default: 50)
+  GMP_LOG_DELIVERY_ACTIVITY               - Log delivery activity (default: false)
+
+See ``config.ini.example`` for detailed documentation of all parameters.
 
 ``api_token`` secures the FastAPI endpoints: every HTTP request must include
 ``X-API-Token: <value>``. The ``[client]`` section configures the outbound
