@@ -87,14 +87,16 @@ Connection Details
 - Consider network segmentation (genro-mail-proxy in DMZ or separate subnet)
 - Enable firewall rules to restrict access to known Genropy IPs only
 
-**Example Configuration:**
+**Client Configuration:**
 
-.. code-block:: ini
+The Genropy client must be configured with:
 
-   # genropy application config
-   [email]
-   mail_proxy_url = http://mail-proxy.internal:8000
-   mail_proxy_token = your-secure-token-here
+- **Mail Proxy URL**: The base URL where genro-mail-proxy is accessible (e.g., ``http://mail-proxy.internal:8000``)
+- **API Token**: The authentication token matching ``GMP_API_TOKEN`` on the proxy server
+
+The client uses these parameters when making REST API calls to the proxy endpoints.
+See ``example_client.py`` for a reference implementation showing how to configure
+and use these parameters in your client application.
 
 2. genro-mail-proxy → Genropy (Delivery Reports)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
