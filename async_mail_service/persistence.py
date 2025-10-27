@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import aiosqlite
+
+# Special volumes that are always available without DB configuration
+SPECIAL_VOLUMES = {"base64"}
 
 
 class Persistence:
@@ -75,6 +78,27 @@ class Persistence:
                     reported_ts INTEGER
                 )
                 """
+            )
+
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS volumes (
+                    id TEXT NOT NULL,
+                    account_id TEXT,
+                    storage_type TEXT NOT NULL,
+                    config TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (id, account_id)
+                )
+                """
+            )
+
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_volumes_account ON volumes(account_id)"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_volumes_id ON volumes(id)"
             )
 
             await db.commit()
@@ -421,4 +445,156 @@ class Persistence:
             ) as cur:
                 row = await cur.fetchone()
         return int(row[0] if row else 0)
+
+    # Volumes ------------------------------------------------------------------
+    async def add_volumes(self, volumes: List[Dict[str, Any]]) -> None:
+        """Insert or replace storage volumes. account_id can be None for global volumes."""
+        if not volumes:
+            return
+        async with aiosqlite.connect(self.db_path) as db:
+            for vol in volumes:
+                account_id = vol.get("account_id")  # Can be None for global volumes
+                await db.execute(
+                    """
+                    INSERT OR REPLACE INTO volumes (id, account_id, storage_type, config, updated_at)
+                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    """,
+                    (vol["id"], account_id, vol["storage_type"], json.dumps(vol["config"]))
+                )
+            await db.commit()
+
+    async def list_volumes(self, account_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Return volumes accessible by account_id.
+
+        If account_id is None, returns ALL volumes.
+        If account_id is provided, returns volumes specific to that account plus global volumes.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            if account_id is None:
+                # List all volumes (admin view)
+                query = "SELECT id, account_id, storage_type, config, created_at, updated_at FROM volumes"
+                params = ()
+            else:
+                # List volumes accessible by this account (specific + global)
+                query = """
+                    SELECT id, account_id, storage_type, config, created_at, updated_at
+                    FROM volumes
+                    WHERE account_id = ? OR account_id IS NULL
+                """
+                params = (account_id,)
+
+            async with db.execute(query, params) as cur:
+                rows = await cur.fetchall()
+                cols = [c[0] for c in cur.description]
+
+        result = []
+        for row in rows:
+            vol = dict(zip(cols, row))
+            vol["config"] = json.loads(vol["config"])
+            result.append(vol)
+        return result
+
+    async def get_volume(self, volume_id: str, account_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Get volume configuration accessible by account_id.
+
+        Lookup order:
+        1. Volume specific to account_id (if provided)
+        2. Global volume (account_id IS NULL)
+
+        Returns None if no volume found.
+        """
+        # Special volumes are always available
+        if volume_id in SPECIAL_VOLUMES:
+            return {
+                "id": volume_id,
+                "account_id": None,
+                "storage_type": "memory",
+                "config": {"type": volume_id}
+            }
+
+        async with aiosqlite.connect(self.db_path) as db:
+            # Try account-specific volume first
+            if account_id:
+                async with db.execute(
+                    "SELECT id, account_id, storage_type, config FROM volumes WHERE id=? AND account_id=?",
+                    (volume_id, account_id)
+                ) as cur:
+                    row = await cur.fetchone()
+                    if row:
+                        cols = [c[0] for c in cur.description]
+                        vol = dict(zip(cols, row))
+                        vol["config"] = json.loads(vol["config"])
+                        return vol
+
+            # Try global volume
+            async with db.execute(
+                "SELECT id, account_id, storage_type, config FROM volumes WHERE id=? AND account_id IS NULL",
+                (volume_id,)
+            ) as cur:
+                row = await cur.fetchone()
+                if not row:
+                    return None
+                cols = [c[0] for c in cur.description]
+                vol = dict(zip(cols, row))
+                vol["config"] = json.loads(vol["config"])
+                return vol
+
+    async def delete_volume(self, volume_id: str, account_id: Optional[str] = None) -> bool:
+        """Delete a volume. Returns True if deleted.
+
+        If account_id is None, deletes the global volume.
+        Otherwise deletes the account-specific volume.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            if account_id is None:
+                # Delete global volume
+                cursor = await db.execute(
+                    "DELETE FROM volumes WHERE id=? AND account_id IS NULL",
+                    (volume_id,)
+                )
+            else:
+                # Delete account-specific volume
+                cursor = await db.execute(
+                    "DELETE FROM volumes WHERE id=? AND account_id=?",
+                    (volume_id, account_id)
+                )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def validate_storage_paths(self, storage_paths: List[str], account_id: Optional[str]) -> Dict[str, bool]:
+        """Validate that all storage paths have configured volumes.
+
+        Returns dict mapping storage_path -> is_valid.
+        Special volumes (like 'base64') are always valid.
+        """
+        if not storage_paths:
+            return {}
+
+        # Extract volume IDs from storage paths
+        volume_ids = set()
+        for path in storage_paths:
+            if ":" in path:
+                volume_id = path.split(":", 1)[0]
+                volume_ids.add(volume_id)
+
+        if not volume_ids:
+            return {path: False for path in storage_paths}
+
+        # Check which volumes exist
+        results = {}
+        for volume_id in volume_ids:
+            # Special volumes are always valid
+            if volume_id in SPECIAL_VOLUMES:
+                results[volume_id] = True
+                continue
+
+            # Regular volumes: check DB
+            vol = await self.get_volume(volume_id, account_id)
+            results[volume_id] = vol is not None
+
+        # Map back to storage paths
+        return {
+            path: results.get(path.split(":", 1)[0], False) if ":" in path else False
+            for path in storage_paths
+        }
 

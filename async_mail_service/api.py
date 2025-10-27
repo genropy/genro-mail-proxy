@@ -65,11 +65,9 @@ class BasicOkResponse(CommandStatus):
 
 
 class AttachmentPayload(BaseModel):
-    """Description of an attachment supported by the dispatcher."""
-    filename: Optional[str] = None
-    content: Optional[str] = None
-    url: Optional[str] = None
-    s3: Optional[Dict[str, Any]] = None
+    """Attachment specification using storage path notation."""
+    filename: str
+    storage_path: str  # e.g. "base64:...", "documents:path/file.pdf", "s3:bucket/key"
 
 
 class MessagePayload(BaseModel):
@@ -167,6 +165,35 @@ class CleanupMessagesPayload(BaseModel):
 class CleanupMessagesResponse(CommandStatus):
     """Response from cleanup operation."""
     removed: int
+
+
+class VolumePayload(BaseModel):
+    """Storage volume configuration."""
+    id: str
+    account_id: Optional[str] = None  # None = global volume
+    storage_type: Literal["s3", "gcs", "azure", "local", "http", "memory"]
+    config: Dict[str, Any]
+
+
+class AddVolumesPayload(BaseModel):
+    """Payload for adding/updating storage volumes."""
+    volumes: List[VolumePayload]
+
+
+class VolumeInfo(BaseModel):
+    """Stored volume as returned by listVolumes."""
+    id: str
+    account_id: Optional[str] = None
+    storage_type: str
+    config: Dict[str, Any]
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class VolumesResponse(CommandStatus):
+    """Response with list of volumes."""
+    volumes: List[VolumeInfo]
+
 
 def create_app(
     svc: AsyncMailCore,
@@ -310,6 +337,41 @@ def create_app(
         if not service:
             raise HTTPException(500, "Service not initialized")
         return Response(content=service.metrics.generate_latest(), media_type="text/plain; version=0.0.4")
+
+    @router.post("/add-volumes", response_model=BasicOkResponse, response_model_exclude_none=True)
+    async def add_volumes(payload: AddVolumesPayload):
+        """Add or update storage volumes (global or account-specific)."""
+        if not service:
+            raise HTTPException(500, "Service not initialized")
+        volumes = [vol.model_dump() for vol in payload.volumes]
+        await service.persistence.add_volumes(volumes)
+        return BasicOkResponse(ok=True)
+
+    @router.get("/list-volumes", response_model=VolumesResponse, response_model_exclude_none=True)
+    async def list_volumes(account_id: Optional[str] = None):
+        """List storage volumes.
+
+        If account_id is provided, returns volumes accessible by that account (specific + global).
+        If account_id is None, returns all volumes (admin view).
+        """
+        if not service:
+            raise HTTPException(500, "Service not initialized")
+        volumes = await service.persistence.list_volumes(account_id)
+        return VolumesResponse(ok=True, volumes=volumes)
+
+    @router.delete("/delete-volume", response_model=BasicOkResponse, response_model_exclude_none=True)
+    async def delete_volume(volume_id: str, account_id: Optional[str] = None):
+        """Delete a storage volume.
+
+        If account_id is None, deletes the global volume.
+        Otherwise deletes the account-specific volume.
+        """
+        if not service:
+            raise HTTPException(500, "Service not initialized")
+        deleted = await service.persistence.delete_volume(volume_id, account_id)
+        if not deleted:
+            raise HTTPException(404, f"Volume '{volume_id}' not found")
+        return BasicOkResponse(ok=True)
 
     api.include_router(router)
     return api
