@@ -35,7 +35,7 @@ dependencies = [
   "uvicorn>=0.30.0",
   "prometheus-client>=0.20.0",
   "pydantic>=2.8.0",
-  "genro-storage @ file:///Users/fporcari/Development/genro-ng/genro-storage"
+  "genro-storage>=0.1.0"
 ]
 
 [project.optional-dependencies]
