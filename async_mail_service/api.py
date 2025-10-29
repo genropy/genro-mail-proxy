@@ -231,6 +231,11 @@ def create_app(
     api.state.api_token = api_token
     router = APIRouter(prefix="/commands", tags=["commands"], dependencies=[auth_dependency])
 
+    @api.get("/health")
+    async def health():
+        """Health check endpoint for container monitoring (no authentication required)."""
+        return {"status": "ok"}
+
     @api.get("/status", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
     async def status():
         """Return a simple health status payload."""

@@ -8,11 +8,11 @@ class MailMetrics:
     def __init__(self, registry: CollectorRegistry | None = None):
         """Create counters and gauges inside the provided registry."""
         self.registry = registry or CollectorRegistry()
-        self.sent = Counter("asyncmail_sent_total", "Total sent emails", ["account_id"], registry=self.registry)
-        self.errors = Counter("asyncmail_errors_total", "Total send errors", ["account_id"], registry=self.registry)
-        self.deferred = Counter("asyncmail_deferred_total", "Total deferred emails", ["account_id"], registry=self.registry)
-        self.rate_limited = Counter("asyncmail_rate_limited_total", "Total rate limited occurrences", ["account_id"], registry=self.registry)
-        self.pending = Gauge("asyncmail_pending_messages", "Current pending messages", registry=self.registry)
+        self.sent = Counter("gmp_sent_total", "Total sent emails", ["account_id"], registry=self.registry)
+        self.errors = Counter("gmp_errors_total", "Total send errors", ["account_id"], registry=self.registry)
+        self.deferred = Counter("gmp_deferred_total", "Total deferred emails", ["account_id"], registry=self.registry)
+        self.rate_limited = Counter("gmp_rate_limited_total", "Total rate limited occurrences", ["account_id"], registry=self.registry)
+        self.pending = Gauge("gmp_pending_messages", "Current pending messages", registry=self.registry)
 
     def inc_sent(self, account_id: str):
         """Increase the ``sent`` counter for the given account."""

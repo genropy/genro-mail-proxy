@@ -34,6 +34,24 @@ Local (Python)
    pip install -r requirements.txt
    python main.py
 
+Developer Installation
+----------------------
+
+For development work, install additional testing and linting tools:
+
+.. code-block:: bash
+
+   python -m venv .venv
+   source .venv/bin/activate
+   pip install -r requirements.txt
+   pip install -r requirements-dev.txt
+
+   # Run tests
+   pytest
+
+   # Run linter
+   flake8
+
 Network Requirements
 --------------------
 
