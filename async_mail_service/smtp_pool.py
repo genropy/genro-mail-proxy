@@ -20,20 +20,20 @@ class SMTPPool:
         # For plain SMTP (use_tls=False): both use_tls and start_tls should be False
         # For TLS/SSL (use_tls=True): use_tls=True, start_tls=False (direct TLS on port 465)
         smtp = aiosmtplib.SMTP(hostname=host, port=port, start_tls=False, use_tls=use_tls, timeout=10.0)
-        # Wrap in asyncio.timeout to ensure we don't hang even if aiosmtplib timeout fails
-        async with asyncio.timeout(15.0):
+        # Wrap in asyncio.wait_for to ensure we don't hang even if aiosmtplib timeout fails
+        async def _do_connect():
             await smtp.connect()
             if user and password:
                 await smtp.login(user, password)
+        await asyncio.wait_for(_do_connect(), timeout=15.0)
         return smtp
 
     async def _is_alive(self, smtp: aiosmtplib.SMTP) -> bool:
         """Return ``True`` when the connection responds correctly to NOOP."""
         try:
             # Use timeout to prevent hanging on dead connections
-            async with asyncio.timeout(5.0):
-                code, _ = await smtp.noop()
-                return code == 250
+            code, _ = await asyncio.wait_for(smtp.noop(), timeout=5.0)
+            return code == 250
         except Exception:
             return False
 

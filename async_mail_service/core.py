@@ -560,8 +560,7 @@ class AsyncMailCore:
             smtp = await self.pool.get_connection(host, port, user, password, use_tls=use_tls)
             envelope_sender = envelope_from or msg.get("From")
             # Wrap send_message in timeout to prevent hanging (max 30s for large attachments)
-            async with asyncio.timeout(30.0):
-                await smtp.send_message(msg, sender=envelope_sender)
+            await asyncio.wait_for(smtp.send_message(msg, sender=envelope_sender), timeout=30.0)
         except Exception as exc:
             # Classify the error as temporary or permanent
             is_temporary, smtp_code = _classify_smtp_error(exc)
@@ -764,9 +763,8 @@ class AsyncMailCore:
             return
         self.logger.debug(f"Waiting {timeout}s for wake event or timeout")
         try:
-            async with asyncio.timeout(timeout):
-                await self._wake_event.wait()
-                self.logger.debug("Woken up by event")
+            await asyncio.wait_for(self._wake_event.wait(), timeout=timeout)
+            self.logger.debug("Woken up by event")
         except asyncio.TimeoutError:
             self.logger.debug(f"Timeout after {timeout}s")
             return
@@ -790,8 +788,7 @@ class AsyncMailCore:
             await asyncio.sleep(0)
             return
         try:
-            async with asyncio.timeout(timeout):
-                await self._wake_client_event.wait()
+            await asyncio.wait_for(self._wake_client_event.wait(), timeout=timeout)
         except asyncio.TimeoutError:
             return
         self._wake_client_event.clear()
