@@ -144,3 +144,13 @@ def test_metrics_endpoint_uses_service_metrics():
     response = client.get("/metrics")
     assert response.status_code == 200
     assert response.text == "metrics-data"
+
+
+def test_health_endpoint_no_auth_required():
+    """Test that /health endpoint works without authentication."""
+    svc = DummyService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    # Do not set API token header
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
