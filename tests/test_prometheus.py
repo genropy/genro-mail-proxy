@@ -11,5 +11,5 @@ def test_mail_metrics_counters_and_gauge():
     metrics.set_pending(3)
 
     output = metrics.generate_latest()
-    assert b"asyncmail_sent_total" in output
-    assert b'asyncmail_pending_messages 3.0' in output
+    assert b"gmp_sent_total" in output
+    assert b'gmp_pending_messages 3.0' in output
