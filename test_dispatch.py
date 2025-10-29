@@ -10,7 +10,6 @@ import sys
 sys.path.insert(0, '/Users/fporcari/Development/genro-ng/genro-mail-proxy')
 
 from async_mail_service.core import AsyncMailCore
-from async_mail_service.persistence import Persistence
 
 async def test():
     print("🧪 Test manuale dispatch messaggio\n")

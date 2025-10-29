@@ -5,7 +5,6 @@ Script per verificare se il loop SMTP sta effettivamente processando messaggi
 
 import asyncio
 import aiosqlite
-import time
 
 DB_PATH = "/tmp/mail_service.db"
 

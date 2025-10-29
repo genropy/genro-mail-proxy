@@ -13,7 +13,6 @@ The server will listen on localhost:1025 (SMTP without TLS)
 
 import asyncio
 import logging
-from datetime import datetime
 from aiosmtpd.controller import Controller
 from aiosmtpd.smtp import SMTP as SMTPProtocol
 

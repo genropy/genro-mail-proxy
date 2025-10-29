@@ -8,7 +8,6 @@ API token carried in the ``X-API-Token`` header.
 """
 
 from typing import Optional, Dict, Any, List, Literal, Union, Callable, AsyncContextManager
-from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, APIRouter, Depends, status
 from fastapi.responses import Response

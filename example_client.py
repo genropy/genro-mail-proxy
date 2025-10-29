@@ -17,7 +17,6 @@ Then send test messages:
     curl -X POST http://localhost:8081/send-test-email?count=5
 """
 
-import asyncio
 import configparser
 import logging
 import random
