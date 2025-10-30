@@ -7,7 +7,9 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from async_mail_service.logger import logger
+from async_mail_service.logger import get_logger
+
+logger = get_logger("VolumeConfigLoader")
 
 
 class VolumeConfigLoader:
