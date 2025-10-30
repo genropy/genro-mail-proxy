@@ -169,10 +169,10 @@ class CleanupMessagesResponse(CommandStatus):
 
 class VolumePayload(BaseModel):
     """Storage volume configuration."""
-    id: str
-    account_id: Optional[str] = None  # None = global volume
-    storage_type: Literal["s3", "gcs", "azure", "local", "http", "memory"]
+    name: str
+    backend: Literal["s3", "gcs", "azure", "local", "http", "webdav", "memory"]
     config: Dict[str, Any]
+    account_id: Optional[str] = None  # None = global volume
 
 
 class AddVolumesPayload(BaseModel):
@@ -182,10 +182,11 @@ class AddVolumesPayload(BaseModel):
 
 class VolumeInfo(BaseModel):
     """Stored volume as returned by listVolumes."""
-    id: str
-    account_id: Optional[str] = None
-    storage_type: str
+    id: int
+    name: str
+    backend: str
     config: Dict[str, Any]
+    account_id: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -343,16 +344,15 @@ def create_app(
             raise HTTPException(500, "Service not initialized")
         return Response(content=service.metrics.generate_latest(), media_type="text/plain; version=0.0.4")
 
-    @router.post("/add-volumes", response_model=BasicOkResponse, response_model_exclude_none=True)
-    async def add_volumes(payload: AddVolumesPayload):
-        """Add or update storage volumes (global or account-specific)."""
+    @api.post("/volume", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
+    async def add_volume(payload: VolumePayload):
+        """Register or update a storage volume definition."""
         if not service:
             raise HTTPException(500, "Service not initialized")
-        volumes = [vol.model_dump() for vol in payload.volumes]
-        await service.persistence.add_volumes(volumes)
+        await service.persistence.add_volumes([payload.model_dump()])
         return BasicOkResponse(ok=True)
 
-    @router.get("/list-volumes", response_model=VolumesResponse, response_model_exclude_none=True)
+    @api.get("/volumes", response_model=VolumesResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
     async def list_volumes(account_id: Optional[str] = None):
         """List storage volumes.
 
@@ -364,18 +364,24 @@ def create_app(
         volumes = await service.persistence.list_volumes(account_id)
         return VolumesResponse(ok=True, volumes=volumes)
 
-    @router.delete("/delete-volume", response_model=BasicOkResponse, response_model_exclude_none=True)
-    async def delete_volume(volume_id: str, account_id: Optional[str] = None):
-        """Delete a storage volume.
-
-        If account_id is None, deletes the global volume.
-        Otherwise deletes the account-specific volume.
-        """
+    @api.get("/volume/{name}", response_model=VolumeInfo, response_model_exclude_none=True, dependencies=[auth_dependency])
+    async def get_volume(name: str, account_id: Optional[str] = None):
+        """Get a specific storage volume by name."""
         if not service:
             raise HTTPException(500, "Service not initialized")
-        deleted = await service.persistence.delete_volume(volume_id, account_id)
+        volume = await service.persistence.get_volume(name, account_id)
+        if not volume:
+            raise HTTPException(404, f"Volume '{name}' not found")
+        return VolumeInfo(**volume)
+
+    @api.delete("/volume/{name}", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
+    async def delete_volume(name: str, account_id: Optional[str] = None):
+        """Remove a storage volume by name."""
+        if not service:
+            raise HTTPException(500, "Service not initialized")
+        deleted = await service.persistence.delete_volume(name, account_id)
         if not deleted:
-            raise HTTPException(404, f"Volume '{volume_id}' not found")
+            raise HTTPException(404, f"Volume '{name}' not found")
         return BasicOkResponse(ok=True)
 
     api.include_router(router)

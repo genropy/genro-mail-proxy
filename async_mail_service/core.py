@@ -212,13 +212,11 @@ class AsyncMailCore:
             mount_configs = []
             for vol in volumes:
                 config = {
-                    'name': vol['id'],
-                    'type': vol['storage_type'],
+                    'name': vol['name'],
+                    'type': vol['backend'],
                 }
-                # Merge storage-specific config from JSON
-                import json
-                vol_config = json.loads(vol['config']) if isinstance(vol['config'], str) else vol['config']
-                config.update(vol_config)
+                # Merge storage-specific config (already parsed as dict by persistence layer)
+                config.update(vol['config'])
                 mount_configs.append(config)
 
             self._storage_manager.configure(mount_configs)

@@ -80,25 +80,29 @@ class Persistence:
                 """
             )
 
+            # Drop old volumes table if it exists (for schema migration)
+            await db.execute("DROP TABLE IF EXISTS volumes")
+
             await db.execute(
                 """
-                CREATE TABLE IF NOT EXISTS volumes (
-                    id TEXT NOT NULL,
-                    account_id TEXT,
-                    storage_type TEXT NOT NULL,
+                CREATE TABLE volumes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL,
+                    backend TEXT NOT NULL,
                     config TEXT NOT NULL,
+                    account_id TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (id, account_id)
+                    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
                 )
                 """
             )
 
             await db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_volumes_account ON volumes(account_id)"
+                "CREATE UNIQUE INDEX idx_volumes_name ON volumes(name)"
             )
             await db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_volumes_id ON volumes(id)"
+                "CREATE INDEX idx_volumes_account ON volumes(account_id)"
             )
 
             await db.commit()
@@ -456,10 +460,10 @@ class Persistence:
                 account_id = vol.get("account_id")  # Can be None for global volumes
                 await db.execute(
                     """
-                    INSERT OR REPLACE INTO volumes (id, account_id, storage_type, config, updated_at)
+                    INSERT OR REPLACE INTO volumes (name, backend, config, account_id, updated_at)
                     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
                     """,
-                    (vol["id"], account_id, vol["storage_type"], json.dumps(vol["config"]))
+                    (vol["name"], vol["backend"], json.dumps(vol["config"]), account_id)
                 )
             await db.commit()
 
@@ -472,12 +476,12 @@ class Persistence:
         async with aiosqlite.connect(self.db_path) as db:
             if account_id is None:
                 # List all volumes (admin view)
-                query = "SELECT id, account_id, storage_type, config, created_at, updated_at FROM volumes"
+                query = "SELECT id, name, backend, config, account_id, created_at, updated_at FROM volumes"
                 params = ()
             else:
                 # List volumes accessible by this account (specific + global)
                 query = """
-                    SELECT id, account_id, storage_type, config, created_at, updated_at
+                    SELECT id, name, backend, config, account_id, created_at, updated_at
                     FROM volumes
                     WHERE account_id = ? OR account_id IS NULL
                 """
@@ -494,7 +498,7 @@ class Persistence:
             result.append(vol)
         return result
 
-    async def get_volume(self, volume_id: str, account_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    async def get_volume(self, volume_name: str, account_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Get volume configuration accessible by account_id.
 
         Lookup order:
@@ -504,20 +508,20 @@ class Persistence:
         Returns None if no volume found.
         """
         # Special volumes are always available
-        if volume_id in SPECIAL_VOLUMES:
+        if volume_name in SPECIAL_VOLUMES:
             return {
-                "id": volume_id,
-                "account_id": None,
-                "storage_type": "memory",
-                "config": {"type": volume_id}
+                "name": volume_name,
+                "backend": "memory",
+                "config": {"type": volume_name},
+                "account_id": None
             }
 
         async with aiosqlite.connect(self.db_path) as db:
             # Try account-specific volume first
             if account_id:
                 async with db.execute(
-                    "SELECT id, account_id, storage_type, config FROM volumes WHERE id=? AND account_id=?",
-                    (volume_id, account_id)
+                    "SELECT id, name, backend, config, account_id FROM volumes WHERE name=? AND account_id=?",
+                    (volume_name, account_id)
                 ) as cur:
                     row = await cur.fetchone()
                     if row:
@@ -528,8 +532,8 @@ class Persistence:
 
             # Try global volume
             async with db.execute(
-                "SELECT id, account_id, storage_type, config FROM volumes WHERE id=? AND account_id IS NULL",
-                (volume_id,)
+                "SELECT id, name, backend, config, account_id FROM volumes WHERE name=? AND account_id IS NULL",
+                (volume_name,)
             ) as cur:
                 row = await cur.fetchone()
                 if not row:
@@ -539,24 +543,24 @@ class Persistence:
                 vol["config"] = json.loads(vol["config"])
                 return vol
 
-    async def delete_volume(self, volume_id: str, account_id: Optional[str] = None) -> bool:
-        """Delete a volume. Returns True if deleted.
+    async def delete_volume(self, volume_name: str, account_id: Optional[str] = None) -> bool:
+        """Delete a volume by name. Returns True if deleted.
 
-        If account_id is None, deletes the global volume.
-        Otherwise deletes the account-specific volume.
+        If account_id is None, deletes any volume with this name (typically global).
+        If account_id is provided, only deletes if the volume belongs to that account.
         """
         async with aiosqlite.connect(self.db_path) as db:
             if account_id is None:
-                # Delete global volume
+                # Delete volume by name (any account)
                 cursor = await db.execute(
-                    "DELETE FROM volumes WHERE id=? AND account_id IS NULL",
-                    (volume_id,)
+                    "DELETE FROM volumes WHERE name=?",
+                    (volume_name,)
                 )
             else:
-                # Delete account-specific volume
+                # Delete only if belongs to this account
                 cursor = await db.execute(
-                    "DELETE FROM volumes WHERE id=? AND account_id=?",
-                    (volume_id, account_id)
+                    "DELETE FROM volumes WHERE name=? AND account_id=?",
+                    (volume_name, account_id)
                 )
             await db.commit()
             return cursor.rowcount > 0
@@ -570,27 +574,27 @@ class Persistence:
         if not storage_paths:
             return {}
 
-        # Extract volume IDs from storage paths
-        volume_ids = set()
+        # Extract volume names from storage paths
+        volume_names = set()
         for path in storage_paths:
             if ":" in path:
-                volume_id = path.split(":", 1)[0]
-                volume_ids.add(volume_id)
+                volume_name = path.split(":", 1)[0]
+                volume_names.add(volume_name)
 
-        if not volume_ids:
+        if not volume_names:
             return {path: False for path in storage_paths}
 
         # Check which volumes exist
         results = {}
-        for volume_id in volume_ids:
+        for volume_name in volume_names:
             # Special volumes are always valid
-            if volume_id in SPECIAL_VOLUMES:
-                results[volume_id] = True
+            if volume_name in SPECIAL_VOLUMES:
+                results[volume_name] = True
                 continue
 
             # Regular volumes: check DB
-            vol = await self.get_volume(volume_id, account_id)
-            results[volume_id] = vol is not None
+            vol = await self.get_volume(volume_name, account_id)
+            results[volume_name] = vol is not None
 
         # Map back to storage paths
         return {
