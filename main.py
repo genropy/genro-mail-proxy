@@ -128,8 +128,10 @@ def load_settings() -> dict[str, object]:
 
 
 async def run_service(settings: dict[str, object]):
+    config_path = Path(os.getenv("GMP_CONFIG", "config.ini"))
     service_kwargs = dict(
         db_path=settings["db_path"],
+        config_path=str(config_path) if config_path.exists() else None,
         start_active=bool(settings.get("scheduler_active")),
         client_sync_url=settings.get("client_sync_url"),
         client_sync_user=settings.get("client_sync_user"),
@@ -152,9 +154,11 @@ async def run_service(settings: dict[str, object]):
 
 if __name__ == "__main__":
     settings = load_settings()
+    config_path = Path(os.getenv("GMP_CONFIG", "config.ini"))
     # Create service instance but don't start it yet - let uvicorn handle the event loop
     service_kwargs = dict(
         db_path=settings["db_path"],
+        config_path=str(config_path) if config_path.exists() else None,
         start_active=bool(settings.get("scheduler_active")),
         client_sync_url=settings.get("client_sync_url"),
         client_sync_user=settings.get("client_sync_user"),

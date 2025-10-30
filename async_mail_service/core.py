@@ -13,6 +13,7 @@ import aiosmtplib
 from genro_storage import StorageManager
 
 from .attachments import AttachmentManager
+from .config_loader import load_volumes_from_config
 from .logger import get_logger
 from .persistence import Persistence
 from .prometheus import MailMetrics
@@ -117,6 +118,7 @@ class AsyncMailCore:
         self,
         *,
         db_path: str | None = "/data/mail_service.db",
+        config_path: str | None = None,
         logger=None,
         metrics: MailMetrics | None = None,
         start_active: bool = False,
@@ -149,6 +151,7 @@ class AsyncMailCore:
         self.logger = logger or get_logger()
         self.pool = SMTPPool()
         self.persistence = Persistence(db_path or ":memory:")
+        self._config_path = config_path
         self.rate_limiter = RateLimiter(self.persistence)
         self.metrics = metrics or MailMetrics()
         self._queue_put_timeout = queue_put_timeout
@@ -203,6 +206,21 @@ class AsyncMailCore:
         """Initialise persistence and storage."""
         await self.persistence.init_db()
         await self._refresh_queue_gauge()
+
+        # Load volumes from config.ini if config_path is provided
+        if self._config_path:
+            try:
+                count = await load_volumes_from_config(
+                    self._config_path,
+                    self.persistence,
+                    overwrite=False  # Don't replace existing volumes
+                )
+                if count > 0:
+                    self.logger.info(f"Loaded {count} volumes from config file")
+            except FileNotFoundError:
+                self.logger.warning(f"Config file not found: {self._config_path}")
+            except Exception as e:
+                self.logger.error(f"Failed to load volumes from config: {e}")
 
         # Initialize storage manager with volumes from database
         self._storage_manager = StorageManager()
@@ -335,6 +353,22 @@ class AsyncMailCore:
             if not is_valid:
                 rejected.append({"id": item.get("id"), "reason": reason})
                 continue
+
+            # Validate storage paths for attachments
+            attachments = item.get("attachments")
+            if attachments:
+                storage_paths = [att.get("storage_path") for att in attachments if att.get("storage_path")]
+                if storage_paths:
+                    account_id = item.get("account_id")
+                    validation = await self.persistence.validate_storage_paths(storage_paths, account_id)
+                    invalid_paths = [path for path, valid in validation.items() if not valid]
+                    if invalid_paths:
+                        rejected.append({
+                            "id": item.get("id"),
+                            "reason": f"Invalid/unauthorized storage volumes: {', '.join(invalid_paths)}"
+                        })
+                        continue
+
             priority, _ = self._normalise_priority(item.get("priority"), default_priority_value)
             item["priority"] = priority
             if "deferred_ts" in item and item["deferred_ts"] is None:
