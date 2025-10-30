@@ -2,18 +2,18 @@
 
 from typing import Dict, Any, Optional, Tuple
 import mimetypes
-from genro_storage import StorageManager
+from genro_storage import AsyncStorageManager
 from .storage_fetcher import StorageFetcher
 
 
 class AttachmentManager:
     """Manage attachment fetching using genro-storage volumes."""
 
-    def __init__(self, storage_manager: StorageManager):
-        """Initialize with a configured StorageManager.
+    def __init__(self, storage_manager: AsyncStorageManager):
+        """Initialize with a configured AsyncStorageManager.
 
         Args:
-            storage_manager: Configured StorageManager with mounted volumes
+            storage_manager: Configured AsyncStorageManager with mounted volumes
         """
         self._fetcher = StorageFetcher(storage_manager)
 

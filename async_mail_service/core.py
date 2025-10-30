@@ -10,7 +10,7 @@ from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tup
 
 import aiohttp
 import aiosmtplib
-from genro_storage import StorageManager
+from genro_storage import AsyncStorageManager
 
 from .attachments import AttachmentManager
 from .config_loader import load_volumes_from_config
@@ -182,7 +182,7 @@ class AsyncMailCore:
         self._report_delivery_callable = report_delivery_callable
 
         # Storage and attachments will be initialized in init()
-        self._storage_manager: Optional[StorageManager] = None
+        self._storage_manager: Optional[AsyncStorageManager] = None
         self.attachments: Optional[AttachmentManager] = None
         priority_value, _ = self._normalise_priority(default_priority, DEFAULT_PRIORITY)
         self._default_priority = priority_value
@@ -223,7 +223,7 @@ class AsyncMailCore:
                 self.logger.error(f"Failed to load volumes from config: {e}")
 
         # Initialize storage manager with volumes from database
-        self._storage_manager = StorageManager()
+        self._storage_manager = AsyncStorageManager()
         volumes = await self.persistence.list_volumes()
         if volumes:
             # Convert database volume format to genro-storage mount configuration

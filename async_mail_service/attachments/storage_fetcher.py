@@ -1,18 +1,18 @@
 """Fetch attachments from genro-storage volumes."""
 
 from typing import Dict, Any, Optional
-from genro_storage import StorageManager
+from genro_storage import AsyncStorageManager
 from .base import AttachmentFetcherBase
 
 
 class StorageFetcher(AttachmentFetcherBase):
     """Fetch attachments using genro-storage unified interface."""
 
-    def __init__(self, storage_manager: StorageManager):
-        """Initialize with a configured StorageManager instance.
+    def __init__(self, storage_manager: AsyncStorageManager):
+        """Initialize with a configured AsyncStorageManager instance.
 
         Args:
-            storage_manager: Configured StorageManager with mounted volumes
+            storage_manager: Configured AsyncStorageManager with mounted volumes
         """
         self._storage = storage_manager
 
@@ -34,4 +34,5 @@ class StorageFetcher(AttachmentFetcherBase):
             return None
 
         node = self._storage.node(storage_path)
-        return node.read_bytes()
+        # Use async read with binary mode
+        return await node.read(mode='rb')
