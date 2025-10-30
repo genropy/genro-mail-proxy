@@ -18,7 +18,38 @@ Read the parent document first for:
 - **GitHub**: https://github.com/genropy/genro-mail-proxy
 
 ### Project Purpose
-Asynchronous email dispatcher microservice with scheduling, rate limiting, attachments, and FastAPI REST API.
+Asynchronous email dispatcher microservice with scheduling, rate limiting, attachments, and FastAPI REST API. A production-ready service for email handling in the Genropy ecosystem.
+
+### Architecture
+
+- **REST API** (FastAPI) for control and message submission
+- **SQLite persistence** with automatic retry and reporting
+- **Background loops** for dispatch and client reporting
+- **Pluggable attachments** via genro-storage integration
+- **Prometheus metrics** for monitoring
+
+### Key Features
+
+- Multi-SMTP provider support
+- Priority-based queuing
+- Rate limiting (global and per-account)
+- Attachment handling (local, S3, HTTP)
+- Automatic retry on failure
+- Client notification callbacks
+
+### Development Guidelines
+
+- Follow async/await patterns consistently
+- Maintain test coverage for new features
+- Update Prometheus metrics for new operations
+- Document API changes in docstrings
+
+### Dependencies
+
+- Requires `genro-storage` for attachment handling
+- Uses SQLite for persistence (async with aiosqlite)
+- FastAPI for REST API
+- aiosmtplib for SMTP operations
 
 ### Project-Specific Guidelines
 
