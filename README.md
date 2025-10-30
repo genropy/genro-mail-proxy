@@ -74,3 +74,63 @@ The example shows:
 
 - ``[delivery]`` exposes ``delivery_report_retention_seconds`` to control how long reported messages stay in the ``messages`` table (default seven days).
 - ``/commands/add-messages`` validates each payload (``id``, ``from``, ``to`` etc.), enqueues valid messages with `priority=2` when omitted, and returns a response with queued count plus a `rejected` list containing `{"id","reason"}` entries for failures.
+
+## Attachment Handling
+
+genro-mail-proxy uses [genro-storage](https://github.com/genropy/genro-storage) for unified attachment handling across multiple storage backends.
+
+### Supported Storage Types
+
+- **base64**: Inline base64-encoded content (always available)
+- **S3**: Amazon S3 and compatible object storage
+- **HTTP/HTTPS**: Files from web servers and CDNs
+- **WebDAV**: Nextcloud, ownCloud, SharePoint
+- **Local**: Local filesystem
+
+### Attachment Path Format
+
+All attachments use the `volume:subpath` format:
+
+```
+base64:SGVsbG8gV29ybGQh
+s3-uploads:documents/report.pdf
+cdn:images/logo.png
+webdav:shared/contracts/agreement.pdf
+```
+
+### Volume Configuration
+
+Volumes can be configured via:
+
+1. **config.ini** (loaded at startup):
+
+```ini
+[volumes]
+# Shared volumes (accessible by all tenants)
+volume.shared-s3.backend = s3
+volume.shared-s3.config = {"bucket": "common-uploads", "region": "us-east-1"}
+
+# Tenant-specific volumes
+volume.tenant1-storage.backend = s3
+volume.tenant1-storage.config = {"bucket": "tenant1-files"}
+volume.tenant1-storage.account_id = tenant1
+```
+
+2. **REST API** (runtime management):
+
+```bash
+# Add volume
+curl -X POST http://localhost:8000/volume \
+  -H "X-API-Token: your-token" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "new-volume", "backend": "s3", "config": {"bucket": "my-bucket"}}'
+
+# List volumes
+curl http://localhost:8000/volumes -H "X-API-Token: your-token"
+
+# Delete volume
+curl -X DELETE http://localhost:8000/volume/volume-name \
+  -H "X-API-Token: your-token"
+```
+
+**See [VOLUMES.md](VOLUMES.md) for comprehensive volume documentation.**
