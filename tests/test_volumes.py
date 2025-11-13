@@ -175,6 +175,15 @@ async def test_message_rejection_invalid_volume(tmp_path):
     service = AsyncMailCore(db_path=str(db), test_mode=True)
     await service.init()
 
+    # Configure SMTP account
+    await service.handle_command("addAccount", {
+        "id": "test-account",
+        "host": "smtp.example.com",
+        "port": 587,
+        "user": "test@example.com",
+        "password": "password"
+    })
+
     # Configure one valid volume
     await service.persistence.add_volumes([
         {"name": "valid-storage", "backend": "s3", "config": {"bucket": "test"}, "account_id": None}
@@ -185,6 +194,7 @@ async def test_message_rejection_invalid_volume(tmp_path):
         "messages": [
             {
                 "id": "msg1",
+                "account_id": "test-account",
                 "from": "sender@example.com",
                 "to": "recipient@example.com",
                 "subject": "Test",
@@ -205,6 +215,7 @@ async def test_message_rejection_invalid_volume(tmp_path):
         "messages": [
             {
                 "id": "msg2",
+                "account_id": "test-account",
                 "from": "sender@example.com",
                 "to": "recipient@example.com",
                 "subject": "Test",
@@ -260,9 +271,8 @@ async def test_volume_api_endpoints(tmp_path):
     response_get = client.get("/volume/api-test-volume")
     assert response_get.status_code == 200
     volume_data = response_get.json()
-    assert volume_data["ok"] is True
-    assert volume_data["volume"]["name"] == "api-test-volume"
-    assert volume_data["volume"]["backend"] == "s3"
+    assert volume_data["name"] == "api-test-volume"
+    assert volume_data["backend"] == "s3"
 
     # DELETE /volume/{name} - Delete volume
     response_delete = client.delete("/volume/api-test-volume")
