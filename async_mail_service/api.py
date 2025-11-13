@@ -349,6 +349,7 @@ def create_app(
         if not service:
             raise HTTPException(500, "Service not initialized")
         await service.persistence.add_volumes([payload.model_dump()])
+        await service.reload_volumes()  # Reload volumes into storage manager
         return BasicOkResponse(ok=True)
 
     @api.get("/volumes", response_model=VolumesResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
@@ -381,6 +382,7 @@ def create_app(
         deleted = await service.persistence.delete_volume(name, account_id)
         if not deleted:
             raise HTTPException(404, f"Volume '{name}' not found")
+        await service.reload_volumes()  # Reload volumes into storage manager
         return BasicOkResponse(ok=True)
 
     api.include_router(router)

@@ -229,18 +229,44 @@ class AsyncMailCore:
             # Convert database volume format to genro-storage mount configuration
             mount_configs = []
             for vol in volumes:
+                backend = vol['backend']
+                vol_config = vol['config']
+
+                # Build config with protocol at top level (genro-storage standard field)
                 config = {
                     'name': vol['name'],
-                    'type': vol['backend'],
+                    'protocol': backend,
                 }
-                # Merge storage-specific config (already parsed as dict by persistence layer)
-                config.update(vol['config'])
+                # Merge storage-specific config at top level (genro-storage needs credentials at top level, not nested)
+                config.update(vol_config)
                 mount_configs.append(config)
 
             self._storage_manager.configure(mount_configs)
 
         # Initialize attachment manager with configured storage
         self.attachments = AttachmentManager(self._storage_manager)
+
+    async def reload_volumes(self) -> None:
+        """Reload volume configuration from database into storage manager."""
+        volumes = await self.persistence.list_volumes()
+        mount_configs = []
+        if volumes:
+            for vol in volumes:
+                backend = vol['backend']
+                vol_config = vol['config']
+
+                # Build config with protocol at top level (genro-storage standard field)
+                config = {
+                    'name': vol['name'],
+                    'protocol': backend,
+                }
+                # Merge storage-specific config at top level (genro-storage needs credentials at top level, not nested)
+                config.update(vol_config)
+                mount_configs.append(config)
+
+        # Reconfigure storage manager with updated volumes
+        self._storage_manager.configure(mount_configs)
+        self.logger.info(f"Reloaded {len(mount_configs)} volume(s) from database")
 
     def _normalise_priority(self, value: Any, default: Any = DEFAULT_PRIORITY) -> Tuple[int, str]:
         """Coerce user supplied priority into the internal representation."""
