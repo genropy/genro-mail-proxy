@@ -8,13 +8,17 @@ API token carried in the ``X-API-Token`` header.
 """
 
 from typing import Optional, Dict, Any, List, Literal, Union, Callable, AsyncContextManager
+import logging
 
-from fastapi import FastAPI, HTTPException, APIRouter, Depends, status
-from fastapi.responses import Response
+from fastapi import FastAPI, HTTPException, APIRouter, Depends, status, Request
+from fastapi.responses import Response, JSONResponse
 from fastapi.security import APIKeyHeader
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field, ConfigDict
 
 from .core import AsyncMailCore
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Async Mail Service")
 service: AsyncMailCore | None = None
@@ -231,6 +235,18 @@ def create_app(
     api.state.api_token = api_token
     router = APIRouter(prefix="/commands", tags=["commands"], dependencies=[auth_dependency])
 
+    @api.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        """Log validation errors with full details."""
+        body = await request.body()
+        logger.error(f"Validation error on {request.method} {request.url.path}")
+        logger.error(f"Request body: {body.decode('utf-8', errors='replace')}")
+        logger.error(f"Validation errors: {exc.errors()}")
+        return JSONResponse(
+            status_code=422,
+            content={"detail": exc.errors()}
+        )
+
     @api.get("/health")
     async def health():
         """Health check endpoint for container monitoring (no authentication required)."""
@@ -281,6 +297,8 @@ def create_app(
         result = await service.handle_command("addMessages", data)
         if not isinstance(result, dict) or result.get("ok") is not True:
             detail = {"error": result.get("error"), "rejected": result.get("rejected")}
+            logger.error(f"add-messages failed: {detail}")
+            logger.error(f"Request payload: {payload.model_dump()}")
             raise HTTPException(status_code=400, detail=detail)
         return AddMessagesResponse.model_validate(result)
 

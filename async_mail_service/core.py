@@ -371,13 +371,36 @@ class AsyncMailCore:
 
         validated: List[Dict[str, Any]] = []
         rejected: List[Dict[str, Any]] = []
+        rejected_for_sync: List[Dict[str, Any]] = []  # Messages to report via proxy_sync
+        now_ts = self._utc_now_epoch()
+
         for item in messages:
             if not isinstance(item, dict):
                 rejected.append({"id": None, "reason": "invalid payload"})
                 continue
             is_valid, reason = await self._validate_enqueue_payload(item)
             if not is_valid:
-                rejected.append({"id": item.get("id"), "reason": reason})
+                msg_id = item.get("id")
+                rejected.append({"id": msg_id, "reason": reason})
+                if msg_id:
+                    # Insert rejected message into DB with error for proxy_sync notification
+                    priority, _ = self._normalise_priority(item.get("priority"), default_priority_value)
+                    entry = {
+                        "id": msg_id,
+                        "account_id": item.get("account_id"),
+                        "priority": priority,
+                        "payload": item,
+                        "deferred_ts": None,
+                    }
+                    await self.persistence.insert_messages([entry])
+                    await self.persistence.mark_error(msg_id, now_ts, reason)
+                    rejected_for_sync.append({
+                        "id": msg_id,
+                        "status": "error",
+                        "error": reason,
+                        "timestamp": self._utc_now_iso(),
+                        "account": item.get("account_id"),
+                    })
                 continue
 
             # Validate storage paths for attachments
@@ -389,10 +412,28 @@ class AsyncMailCore:
                     validation = await self.persistence.validate_storage_paths(storage_paths, account_id)
                     invalid_paths = [path for path, valid in validation.items() if not valid]
                     if invalid_paths:
-                        rejected.append({
-                            "id": item.get("id"),
-                            "reason": f"Invalid/unauthorized storage volumes: {', '.join(invalid_paths)}"
-                        })
+                        msg_id = item.get("id")
+                        reason = f"Invalid/unauthorized storage volumes: {', '.join(invalid_paths)}"
+                        rejected.append({"id": msg_id, "reason": reason})
+                        if msg_id:
+                            # Insert rejected message into DB with error for proxy_sync notification
+                            priority, _ = self._normalise_priority(item.get("priority"), default_priority_value)
+                            entry = {
+                                "id": msg_id,
+                                "account_id": account_id,
+                                "priority": priority,
+                                "payload": item,
+                                "deferred_ts": None,
+                            }
+                            await self.persistence.insert_messages([entry])
+                            await self.persistence.mark_error(msg_id, now_ts, reason)
+                            rejected_for_sync.append({
+                                "id": msg_id,
+                                "status": "error",
+                                "error": reason,
+                                "timestamp": self._utc_now_iso(),
+                                "account": account_id,
+                            })
                         continue
 
             priority, _ = self._normalise_priority(item.get("priority"), default_priority_value)
@@ -401,10 +442,11 @@ class AsyncMailCore:
                 item.pop("deferred_ts")
             validated.append(item)
 
-        if not validated:
-            return {"ok": False, "error": "all messages rejected", "rejected": rejected}
+        entries = []
+        inserted = []
 
-        entries = [
+        if validated:
+            entries = [
             {
                 "id": msg["id"],
                 "account_id": msg.get("account_id"),
@@ -413,14 +455,19 @@ class AsyncMailCore:
                 "deferred_ts": msg.get("deferred_ts"),
             }
             for msg in validated
-        ]
-        inserted = await self.persistence.insert_messages(entries)
-        # Messages not inserted were already sent (sent_ts IS NOT NULL)
-        for msg in validated:
-            if msg["id"] not in inserted:
-                rejected.append({"id": msg["id"], "reason": "already sent"})
+            ]
+            inserted = await self.persistence.insert_messages(entries)
+            # Messages not inserted were already sent (sent_ts IS NOT NULL)
+            for msg in validated:
+                if msg["id"] not in inserted:
+                    rejected.append({"id": msg["id"], "reason": "already sent"})
 
         await self._refresh_queue_gauge()
+
+        # Notify client via proxy_sync for rejected messages
+        if rejected_for_sync:
+            for event in rejected_for_sync:
+                await self._publish_result(event)
 
         result: Dict[str, Any] = {
             "ok": True,
@@ -578,6 +625,20 @@ class AsyncMailCore:
             email_msg, envelope_from = await self._build_email(message)
         except KeyError as exc:
             reason = f"missing {exc}"
+            await self.persistence.mark_error(msg_id, now_ts, reason)
+            await self._publish_result(
+                {
+                    "id": msg_id,
+                    "status": "error",
+                    "error": reason,
+                    "timestamp": self._utc_now_iso(),
+                    "account": message.get("account_id"),
+                }
+            )
+            return
+        except ValueError as exc:
+            # Attachment fetch failure or other validation error
+            reason = str(exc)
             await self.persistence.mark_error(msg_id, now_ts, reason)
             await self._publish_result(
                 {
@@ -999,11 +1060,11 @@ class AsyncMailCore:
             for att, result in zip(attachments, results):
                 filename = att.get("filename", "file.bin")
                 if isinstance(result, Exception):
-                    self.logger.warning("Failed to fetch attachment %s: %s", filename, result)
-                    continue
+                    self.logger.error("Failed to fetch attachment %s: %s - message will not be sent", filename, result)
+                    raise ValueError(f"Attachment fetch failed for {filename}: {result}")
                 if result is None:
-                    self.logger.warning("Skipping attachment without data (filename=%s)", filename)
-                    continue
+                    self.logger.error("Attachment without data (filename=%s) - message will not be sent", filename)
+                    raise ValueError(f"Attachment {filename} returned no data")
                 content, resolved_filename = result
                 maintype, subtype = self.attachments.guess_mime(resolved_filename)
                 msg.add_attachment(content, maintype=maintype, subtype=subtype, filename=resolved_filename)
