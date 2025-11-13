@@ -80,12 +80,9 @@ class Persistence:
                 """
             )
 
-            # Drop old volumes table if it exists (for schema migration)
-            await db.execute("DROP TABLE IF EXISTS volumes")
-
             await db.execute(
                 """
-                CREATE TABLE volumes (
+                CREATE TABLE IF NOT EXISTS volumes (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT UNIQUE NOT NULL,
                     backend TEXT NOT NULL,
@@ -99,10 +96,10 @@ class Persistence:
             )
 
             await db.execute(
-                "CREATE UNIQUE INDEX idx_volumes_name ON volumes(name)"
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_volumes_name ON volumes(name)"
             )
             await db.execute(
-                "CREATE INDEX idx_volumes_account ON volumes(account_id)"
+                "CREATE INDEX IF NOT EXISTS idx_volumes_account ON volumes(account_id)"
             )
 
             await db.commit()
