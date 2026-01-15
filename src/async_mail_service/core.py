@@ -1,4 +1,43 @@
-"""Core orchestration logic for the asynchronous mail dispatcher."""
+"""Core orchestration logic for the asynchronous mail dispatcher.
+
+This module provides the AsyncMailCore class, the central coordinator for
+the email dispatch service. It orchestrates all major subsystems including:
+
+- Message queue management and priority-based scheduling
+- SMTP delivery with connection pooling
+- Per-account rate limiting
+- Automatic retry with exponential backoff
+- Delivery report generation and client notification
+- Attachment fetching from storage backends
+
+The core runs background loops for continuous message processing and
+periodic maintenance tasks. It exposes a command-based API for external
+control and integrates with Prometheus for metrics collection.
+
+Example:
+    Running the mail dispatcher::
+
+        from async_mail_service.core import AsyncMailCore
+
+        core = AsyncMailCore(
+            db_path="/data/mail.db",
+            start_active=True,
+            client_sync_url="https://api.example.com/delivery-report"
+        )
+
+        await core.start()
+        # Service is now processing messages
+
+        # To stop gracefully
+        await core.stop()
+
+Attributes:
+    PRIORITY_LABELS: Mapping of priority integers to human-readable labels.
+    LABEL_TO_PRIORITY: Reverse mapping from labels to priority integers.
+    DEFAULT_PRIORITY: Default message priority (2 = "medium").
+    DEFAULT_MAX_RETRIES: Maximum retry attempts for temporary failures.
+    DEFAULT_RETRY_DELAYS: Exponential backoff delay schedule in seconds.
+"""
 
 from __future__ import annotations
 
@@ -6,11 +45,18 @@ import asyncio
 import math
 from datetime import datetime, timezone
 from email.message import EmailMessage
-from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
 
 import aiohttp
 import aiosmtplib
-from genro_storage import AsyncStorageManager
+
+# Optional genro-storage import
+try:
+    from genro_storage import AsyncStorageManager
+    GENRO_STORAGE_AVAILABLE = True
+except ImportError:
+    AsyncStorageManager = None  # type: ignore[misc, assignment]
+    GENRO_STORAGE_AVAILABLE = False
 
 from .attachments import AttachmentManager
 from .config_loader import load_volumes_from_config
@@ -19,6 +65,9 @@ from .persistence import Persistence
 from .prometheus import MailMetrics
 from .rate_limit import RateLimiter
 from .smtp_pool import SMTPPool
+
+if TYPE_CHECKING:
+    from genro_storage import AsyncStorageManager as AsyncStorageManagerType
 
 PRIORITY_LABELS = {
     0: "immediate",
@@ -112,7 +161,30 @@ def _calculate_retry_delay(retry_count: int, delays: List[int] = None) -> int:
 
 
 class AsyncMailCore:
-    """Coordinate scheduling, rate limiting, persistence and delivery."""
+    """Central orchestrator for the asynchronous mail dispatch service.
+
+    Coordinates all aspects of email delivery including message queue
+    management, SMTP connections, rate limiting, retry logic, and
+    delivery reporting. Runs background loops for continuous message
+    processing and maintenance.
+
+    The core provides a command-based interface for external control,
+    supporting operations like adding messages, managing SMTP accounts,
+    and controlling the scheduler state.
+
+    Attributes:
+        default_host: Default SMTP server hostname when no account specified.
+        default_port: Default SMTP server port when no account specified.
+        default_user: Default SMTP username when no account specified.
+        default_password: Default SMTP password when no account specified.
+        default_use_tls: Whether to use TLS for default SMTP connection.
+        logger: Logger instance for diagnostic output.
+        pool: SMTP connection pool for connection reuse.
+        persistence: Database persistence layer for message and account storage.
+        rate_limiter: Per-account rate limiting controller.
+        metrics: Prometheus metrics collector.
+        attachments: Attachment manager for fetching email attachments.
+    """
 
     def __init__(
         self,
@@ -141,7 +213,34 @@ class AsyncMailCore:
         max_retries: int = DEFAULT_MAX_RETRIES,
         retry_delays: Optional[List[int]] = None,
     ):
-        """Prepare the runtime collaborators and scheduler state."""
+        """Initialize the mail dispatcher core with configuration options.
+
+        Args:
+            db_path: SQLite database path for persistence. Use ":memory:" for
+                in-memory database. Defaults to "/data/mail_service.db".
+            config_path: Optional path to INI config file for volume definitions.
+            logger: Custom logger instance. If None, uses default logger.
+            metrics: Prometheus metrics collector. If None, creates new instance.
+            start_active: Whether to start processing messages immediately.
+            result_queue_size: Maximum size of the delivery result queue.
+            message_queue_size: Maximum messages to fetch per SMTP cycle.
+            queue_put_timeout: Timeout in seconds for queue operations.
+            max_enqueue_batch: Maximum messages allowed in single addMessages call.
+            attachment_timeout: Timeout in seconds for fetching attachments.
+            client_sync_url: URL for posting delivery reports to upstream service.
+            client_sync_user: Username for client sync authentication.
+            client_sync_password: Password for client sync authentication.
+            client_sync_token: Bearer token for client sync authentication.
+            default_priority: Default priority for messages without explicit priority.
+            report_delivery_callable: Optional async callable for custom report delivery.
+            send_loop_interval: Seconds between SMTP dispatch loop iterations.
+            report_retention_seconds: How long to retain reported messages.
+            batch_size_per_account: Max messages to send per account per cycle.
+            test_mode: Enable test mode (disables automatic loop processing).
+            log_delivery_activity: Enable verbose delivery activity logging.
+            max_retries: Maximum retry attempts for temporary SMTP failures.
+            retry_delays: Custom list of retry delay intervals in seconds.
+        """
         self.default_host = None
         self.default_port = None
         self.default_user = None
@@ -182,7 +281,7 @@ class AsyncMailCore:
         self._report_delivery_callable = report_delivery_callable
 
         # Storage and attachments will be initialized in init()
-        self._storage_manager: Optional[AsyncStorageManager] = None
+        self._storage_manager: Optional["AsyncStorageManagerType"] = None
         self.attachments: Optional[AttachmentManager] = None
         priority_value, _ = self._normalise_priority(default_priority, DEFAULT_PRIORITY)
         self._default_priority = priority_value
@@ -222,32 +321,43 @@ class AsyncMailCore:
             except Exception as e:
                 self.logger.error(f"Failed to load volumes from config: {e}")
 
-        # Initialize storage manager with volumes from database
-        self._storage_manager = AsyncStorageManager()
-        volumes = await self.persistence.list_volumes()
-        if volumes:
-            # Convert database volume format to genro-storage mount configuration
-            mount_configs = []
-            for vol in volumes:
-                backend = vol['backend']
-                vol_config = vol['config']
+        # Initialize storage manager with volumes from database (if genro-storage is available)
+        if GENRO_STORAGE_AVAILABLE:
+            self._storage_manager = AsyncStorageManager()
+            volumes = await self.persistence.list_volumes()
+            if volumes:
+                # Convert database volume format to genro-storage mount configuration
+                mount_configs = []
+                for vol in volumes:
+                    backend = vol['backend']
+                    vol_config = vol['config']
 
-                # Build config with protocol at top level (genro-storage standard field)
-                config = {
-                    'name': vol['name'],
-                    'protocol': backend,
-                }
-                # Merge storage-specific config at top level (genro-storage needs credentials at top level, not nested)
-                config.update(vol_config)
-                mount_configs.append(config)
+                    # Build config with protocol at top level (genro-storage standard field)
+                    config = {
+                        'name': vol['name'],
+                        'protocol': backend,
+                    }
+                    # Merge storage-specific config at top level (genro-storage needs credentials at top level, not nested)
+                    config.update(vol_config)
+                    mount_configs.append(config)
 
-            self._storage_manager.configure(mount_configs)
+                self._storage_manager.configure(mount_configs)
+        else:
+            self._storage_manager = None
+            self.logger.info("genro-storage not installed, attachment fetching disabled")
 
-        # Initialize attachment manager with configured storage
+        # Initialize attachment manager with configured storage (works with None if storage unavailable)
         self.attachments = AttachmentManager(self._storage_manager)
 
     async def reload_volumes(self) -> None:
-        """Reload volume configuration from database into storage manager."""
+        """Reload volume configuration from database into storage manager.
+
+        This method has no effect if genro-storage is not installed.
+        """
+        if not GENRO_STORAGE_AVAILABLE or self._storage_manager is None:
+            self.logger.debug("genro-storage not available, skipping volume reload")
+            return
+
         volumes = await self.persistence.list_volumes()
         mount_configs = []
         if volumes:

@@ -1,4 +1,38 @@
-"""Configuration loader for storage volumes."""
+"""Configuration loader for storage volumes.
+
+This module provides utilities for loading storage volume configurations from
+INI-style configuration files. Volumes define the backend storage systems
+(S3, GCS, Azure, local filesystem, etc.) used for email attachments.
+
+The configuration format supports both account-specific volumes (accessible
+only by a particular SMTP account) and global volumes (shared across all
+accounts).
+
+Example:
+    Configuration file format (config.ini)::
+
+        [volumes]
+        volume.documents.backend = s3
+        volume.documents.config = {"bucket": "docs", "region": "us-east-1"}
+        volume.documents.account_id = tenant1
+
+        # Global volume (no account_id)
+        volume.shared.backend = local
+        volume.shared.config = {"path": "/data/shared"}
+
+    Loading volumes into the database::
+
+        loader = VolumeConfigLoader("/etc/mail-proxy/config.ini")
+        loader.load_config()
+        volumes = loader.parse_volumes()
+
+        # Or use the convenience function
+        count = await load_volumes_from_config(
+            "/etc/mail-proxy/config.ini",
+            persistence,
+            overwrite=False
+        )
+"""
 
 from __future__ import annotations
 
@@ -13,15 +47,32 @@ logger = get_logger("VolumeConfigLoader")
 
 
 class VolumeConfigLoader:
-    """Load storage volume configuration from config.ini."""
+    """Parser for INI-based storage volume configuration files.
+
+    Reads volume definitions from an INI configuration file and converts
+    them into a format suitable for database persistence. Supports validation
+    of required fields and JSON parsing of configuration objects.
+
+    Attributes:
+        config_path: Filesystem path to the configuration file.
+        config: ConfigParser instance holding the parsed configuration.
+    """
 
     def __init__(self, config_path: str):
-        """Initialize with path to config.ini file."""
+        """Initialize the loader with a configuration file path.
+
+        Args:
+            config_path: Absolute or relative path to the INI configuration file.
+        """
         self.config_path = config_path
         self.config = configparser.ConfigParser()
 
     def load_config(self) -> None:
-        """Load the configuration file."""
+        """Read and parse the configuration file.
+
+        Raises:
+            FileNotFoundError: If the configuration file does not exist.
+        """
         if not Path(self.config_path).exists():
             raise FileNotFoundError(f"Config file not found: {self.config_path}")
 

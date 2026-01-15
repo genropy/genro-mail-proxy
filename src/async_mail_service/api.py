@@ -1,10 +1,31 @@
-"""
-FastAPI application factory and HTTP schemas for the async mail service.
+"""FastAPI application factory and HTTP schemas for the async mail service.
 
-The module exposes a `create_app` function that builds the REST API used to
-control the dispatcher and defines the pydantic payloads that document the
-behaviour of each command.  Authentication is enforced through a configurable
-API token carried in the ``X-API-Token`` header.
+This module provides the REST API interface for the asynchronous mail dispatcher
+service. It includes:
+
+- Pydantic models defining request/response schemas for all endpoints
+- A factory function to create and configure the FastAPI application
+- Authentication via API token in the X-API-Token header
+- Endpoints for message management, SMTP account configuration, and monitoring
+
+The API supports operations including:
+- Adding and managing messages in the send queue
+- Configuring SMTP accounts with rate limiting
+- Managing storage volumes for attachments
+- Health checks and Prometheus metrics exposure
+- Manual control of the scheduler (suspend/activate/run-now)
+
+Example:
+    Creating and running the API application::
+
+        from async_mail_service.core import AsyncMailCore
+        from async_mail_service.api import create_app
+
+        core = AsyncMailCore(db_path="/data/mail.db")
+        app = create_app(core, api_token="secret-token")
+
+        # Run with uvicorn
+        uvicorn.run(app, host="0.0.0.0", port=8000)
 """
 
 from typing import Optional, Dict, Any, List, Literal, Union, Callable, AsyncContextManager

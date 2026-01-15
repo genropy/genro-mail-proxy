@@ -1,4 +1,40 @@
-"""SQLite backed persistence used by the mail dispatcher."""
+"""SQLite-backed persistence layer for the mail dispatcher.
+
+This module provides the Persistence class that handles all database
+operations for the async mail service, including:
+
+- SMTP account management (create, read, update, delete)
+- Message queue operations (insert, fetch, update status)
+- Send log for rate limiting calculations
+- Storage volume configuration
+
+The persistence layer uses aiosqlite for async SQLite operations,
+supporting both file-based databases and in-memory databases for testing.
+
+Example:
+    Basic usage of the persistence layer::
+
+        persistence = Persistence("/data/mail.db")
+        await persistence.init_db()
+
+        # Add an SMTP account
+        await persistence.add_account({
+            "id": "primary",
+            "host": "smtp.example.com",
+            "port": 465,
+            "user": "sender@example.com",
+            "password": "secret"
+        })
+
+        # Insert messages for delivery
+        await persistence.insert_messages([
+            {"id": "msg1", "account_id": "primary", "priority": 2, "payload": {...}}
+        ])
+
+Attributes:
+    SPECIAL_VOLUMES: Set of volume names that are always available without
+        database configuration (e.g., "base64" for inline attachments).
+"""
 
 from __future__ import annotations
 
@@ -12,14 +48,42 @@ SPECIAL_VOLUMES = {"base64"}
 
 
 class Persistence:
-    """Helper class responsible for reading and writing service state."""
+    """Async SQLite persistence layer for mail service state management.
+
+    Provides all database operations needed by the mail dispatcher including
+    account management, message queue operations, send logging for rate
+    limiting, and storage volume configuration.
+
+    The class uses async context managers for database connections to ensure
+    proper resource cleanup. Each operation opens and closes its own
+    connection, making it safe for concurrent use.
+
+    Attributes:
+        db_path: Path to the SQLite database file, or ":memory:" for
+            an in-memory database.
+    """
 
     def __init__(self, db_path: str = "/data/mail_service.db"):
-        """Persist data to the given database path (``:memory:`` allowed)."""
+        """Initialize the persistence layer with a database path.
+
+        Args:
+            db_path: Path to the SQLite database file. Use ":memory:" for
+                an in-memory database suitable for testing.
+        """
         self.db_path = db_path or ":memory:"
 
     async def init_db(self) -> None:
-        """Create (or migrate) the database schema."""
+        """Initialize the database schema with all required tables.
+
+        Creates or migrates the database schema including tables for:
+        - accounts: SMTP server configurations
+        - messages: Email queue with status tracking
+        - send_log: Send history for rate limiting
+        - volumes: Storage backend configurations
+
+        This method is idempotent and safely handles schema migrations
+        by adding new columns to existing tables when needed.
+        """
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
