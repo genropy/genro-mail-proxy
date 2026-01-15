@@ -1,116 +1,86 @@
+"""Tests for the attachments module."""
+
 import base64
-import sys
-import types
 import pytest
 
-class _DummySMTP:
-    async def connect(self):
-        return None
+from async_mail_service.attachments import AttachmentManager, is_storage_available
 
-    async def login(self, *_, **__):
-        return None
-
-    async def send_message(self, *_, **__):
-        return None
-
-    async def noop(self):
-        return 250, b"OK"
-
-    async def quit(self):
-        return None
-
-sys.modules.setdefault("aiosmtplib", types.SimpleNamespace(SMTP=_DummySMTP))
-sys.modules.setdefault("aioboto3", types.SimpleNamespace(Session=lambda: None))
-sys.modules.setdefault("aiohttp", types.SimpleNamespace(ClientSession=lambda: None))
-
-from async_mail_service.attachments import AttachmentManager
 
 @pytest.mark.asyncio
-async def test_inline_attachment():
-    mgr = AttachmentManager()
-    data = await mgr.fetch({"filename":"a.txt","content": base64.b64encode(b"hi").decode()})
-    assert data == b"hi"
+async def test_attachment_manager_without_storage():
+    """Test AttachmentManager works without storage_manager."""
+    mgr = AttachmentManager(None)
+    # Without storage, fetch returns None
+    data = await mgr.fetch({"filename": "a.txt", "storage_path": "vol:path/to/file"})
+    assert data is None
+
 
 @pytest.mark.asyncio
-async def test_url_attachment(monkeypatch):
-    expected = b"url-bytes"
-    requested_url = "https://example.com/file.bin"
+async def test_fetch_returns_none_for_missing_path():
+    """Test that fetch returns None when storage_path is missing."""
+    mgr = AttachmentManager(None)
+    data = await mgr.fetch({"filename": "file.bin"})
+    assert data is None
 
-    class DummyResponse:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def read(self):
-            return expected
-
-    class DummySession:
-        def __init__(self):
-            self.requested = None
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        def get(self, url):
-            self.requested = url
-            return DummyResponse()
-
-    dummy_session = DummySession()
-    monkeypatch.setattr("async_mail_service.attachments.url_fetcher.aiohttp.ClientSession", lambda: dummy_session)
-
-    mgr = AttachmentManager()
-    data = await mgr.fetch({"filename": "file.bin", "url": requested_url})
-    assert data == expected
-    assert dummy_session.requested == requested_url
-
-@pytest.mark.asyncio
-async def test_s3_attachment(monkeypatch):
-    expected = b"s3-bytes"
-    bucket = "bucket"
-    key = "path/to/file"
-
-    class DummyS3Client:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def get_object(self, Bucket, Key):
-            assert Bucket == bucket
-            assert Key == key
-            class Body:
-                async def read(inner_self):
-                    return expected
-            return {"Body": Body()}
-
-    class DummySession:
-        def client(self, name):
-            assert name == "s3"
-            return DummyS3Client()
-
-    monkeypatch.setattr("async_mail_service.attachments.s3_fetcher.aioboto3.Session", lambda: DummySession())
-
-    mgr = AttachmentManager()
-    data = await mgr.fetch({"filename": "doc.pdf", "s3": {"bucket": bucket, "key": key}})
-    assert data == expected
-
-@pytest.mark.asyncio
-async def test_fetch_returns_none_for_unknown(monkeypatch):
-    mgr = AttachmentManager()
-    assert await mgr.fetch({"filename": "file.bin"}) is None
 
 def test_guess_mime_known():
+    """Test MIME type detection for known extensions."""
     maintype, subtype = AttachmentManager.guess_mime("report.pdf")
     assert maintype == "application"
     assert subtype == "pdf"
 
+
+def test_guess_mime_html():
+    """Test MIME type detection for HTML files."""
+    maintype, subtype = AttachmentManager.guess_mime("page.html")
+    assert maintype == "text"
+    assert subtype == "html"
+
+
+def test_guess_mime_image():
+    """Test MIME type detection for images."""
+    maintype, subtype = AttachmentManager.guess_mime("photo.jpg")
+    assert maintype == "image"
+    assert subtype == "jpeg"
+
+
 def test_guess_mime_unknown():
+    """Test MIME type detection for unknown extensions."""
     maintype, subtype = AttachmentManager.guess_mime("file.unknownext")
     assert maintype == "application"
     assert subtype == "octet-stream"
+
+
+def test_is_storage_available():
+    """Test the is_storage_available function."""
+    # This test just verifies the function exists and returns a boolean
+    result = is_storage_available()
+    assert isinstance(result, bool)
+
+
+@pytest.mark.asyncio
+async def test_attachment_manager_with_mock_storage(monkeypatch):
+    """Test AttachmentManager with a mock storage manager."""
+    if not is_storage_available():
+        pytest.skip("genro-storage not installed")
+
+    from genro_storage import AsyncStorageManager
+
+    expected_content = b"test file content"
+
+    class MockNode:
+        async def read(self, mode='r'):
+            return expected_content
+
+    class MockStorageManager:
+        def configure(self, configs):
+            pass
+
+        def node(self, path):
+            return MockNode()
+
+    mock_storage = MockStorageManager()
+    mgr = AttachmentManager(mock_storage)
+
+    data = await mgr.fetch({"filename": "test.txt", "storage_path": "vol:test.txt"})
+    assert data == expected_content
