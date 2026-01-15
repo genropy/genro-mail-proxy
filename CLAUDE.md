@@ -1,67 +1,29 @@
-# Claude Code Instructions - Genro Mail Proxy
+# Claude Code Instructions - genro-mail-proxy
 
-**Parent Document**: This project follows all policies from the central [genro-next-generation CLAUDE.md](https://github.com/genropy/genro-next-generation/blob/main/CLAUDE.md)
-
-Read the parent document first for:
-- Language policy (English only)
-- Git commit authorship rules (no Claude co-author)
-- Development status lifecycle (Pre-Alpha → Alpha → Beta)
-- Temporary files policy (use temp/ directories)
-- Standardization requirements
-- All general project policies
+**Parent Document**: This project follows all policies from the central [meta-genro-modules CLAUDE.md](https://github.com/softwellsrl/meta-genro-modules/blob/main/CLAUDE.md)
 
 ## Project-Specific Context
 
 ### Current Status
-- **Development Status**: Beta
-- **Has Implementation Code**: Yes (4500+ lines)
-- **GitHub**: https://github.com/genropy/genro-mail-proxy
+- Development Status: Beta
+- Has Implementation: Yes
 
-### Project Purpose
-Asynchronous email dispatcher microservice with scheduling, rate limiting, attachments, and FastAPI REST API. A production-ready service for email handling in the Genropy ecosystem.
-
-### Architecture
-
-- **REST API** (FastAPI) for control and message submission
-- **SQLite persistence** with automatic retry and reporting
-- **Background loops** for dispatch and client reporting
-- **Pluggable attachments** via genro-storage integration
-- **Prometheus metrics** for monitoring
-
-### Key Features
-
-- Multi-SMTP provider support
-- Priority-based queuing
-- Rate limiting (global and per-account)
-- Attachment handling (local, S3, HTTP)
-- Automatic retry on failure
-- Client notification callbacks
-
-### Development Guidelines
-
-- Follow async/await patterns consistently
-- Maintain test coverage for new features
-- Update Prometheus metrics for new operations
-- Document API changes in docstrings
-
-### Dependencies
-
-- Requires `genro-storage` for attachment handling
-- Uses SQLite for persistence (async with aiosqlite)
-- FastAPI for REST API
-- aiosmtplib for SMTP operations
-
-### Project-Specific Guidelines
-
-**Beta Status Notes:**
-- Core features are implemented and functional
-- API is stabilizing but breaking changes may still occur
-- Focus on testing, refinement, and stability
-- Documentation should reflect current beta state
-- Backward compatibility not yet required
+### Project Description
+Asynchronous email dispatcher microservice with scheduling, rate limiting, attachments, and FastAPI REST API.
 
 ---
 
-**All general policies are inherited from the parent document: [genro-next-generation CLAUDE.md](https://github.com/genropy/genro-next-generation/blob/main/CLAUDE.md)**
+## Special Commands
 
-**Last Updated**: 2025-10-30
+### "mostra righe" / "mostra le righe" / "rimetti qui le righe" (show lines)
+
+When the user asks to show code lines:
+
+1. Show **only** the requested code snippet with some context lines
+2. Number the lines
+3. **DO NOT** add considerations, evaluations, or explanations
+4. Copy the code directly into the chat
+
+---
+
+**All general policies are inherited from the parent document.**
