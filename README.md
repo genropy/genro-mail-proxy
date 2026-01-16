@@ -77,32 +77,55 @@ The example shows:
 
 ## Attachment Handling
 
-genro-mail-proxy uses [genro-storage](https://github.com/genropy/genro-storage) for unified attachment handling across multiple storage backends.
+genro-mail-proxy supports multiple attachment storage backends with flexible routing. The optional [genro-storage](https://github.com/genropy/genro-storage) dependency enables S3, WebDAV and other cloud backends.
 
-### Supported Storage Types
+### Storage Path Formats
 
-- **base64**: Inline base64-encoded content (always available)
-- **S3**: Amazon S3 and compatible object storage
-- **HTTP/HTTPS**: Files from web servers and CDNs
-- **WebDAV**: Nextcloud, ownCloud, SharePoint
-- **Local**: Local filesystem
+| Format | Example | Description |
+|--------|---------|-------------|
+| `base64:content` | `base64:SGVsbG8=` | Inline base64-encoded content (always available) |
+| `volume:path` | `s3-uploads:docs/report.pdf` | genro-storage volume (requires genro-storage) |
+| `/absolute/path` | `/tmp/attachments/file.pdf` | Local filesystem absolute path |
+| `relative/path` | `uploads/doc.pdf` | Filesystem relative to configured base_dir |
+| `@params` | `@doc_id=123&version=2` | HTTP POST to default endpoint |
+| `@[url]params` | `@[https://api.example.com]id=456` | HTTP POST to specific URL |
 
-### Attachment Path Format
+### MD5 Cache Marker
 
-All attachments use the `volume:subpath` format:
+For efficient caching, filenames can include an MD5 hash marker:
 
 ```
-base64:SGVsbG8gV29ybGQh
-s3-uploads:documents/report.pdf
-cdn:images/logo.png
-webdav:shared/contracts/agreement.pdf
+report_{MD5:a1b2c3d4e5f6}.pdf
 ```
 
-### Volume Configuration
+The marker is extracted for cache lookup and removed from the final filename. This is compatible with genro-storage and Genropy which use MD5 from S3 ETag.
 
-Volumes can be configured via:
+### Attachment Configuration
 
-1. **config.ini** (loaded at startup):
+```ini
+[attachments]
+# Filesystem fetcher base directory (for relative paths)
+base_dir = /var/attachments
+
+# HTTP fetcher default endpoint
+http_endpoint = https://api.example.com/attachments
+http_auth_method = bearer  # none, bearer, or basic
+http_auth_token = your-secret-token
+# For basic auth:
+# http_auth_user = username
+# http_auth_password = password
+
+# Cache configuration
+cache_memory_max_items = 100
+cache_memory_ttl_seconds = 3600
+cache_disk_dir = /var/cache/mail-proxy
+cache_disk_ttl_seconds = 86400
+cache_memory_max_size_bytes = 1048576  # 1MB threshold for disk cache
+```
+
+### Volume Configuration (genro-storage)
+
+Volumes can be configured via config.ini or REST API:
 
 ```ini
 [volumes]
@@ -116,10 +139,8 @@ volume.tenant1-storage.config = {"bucket": "tenant1-files"}
 volume.tenant1-storage.account_id = tenant1
 ```
 
-2. **REST API** (runtime management):
-
 ```bash
-# Add volume
+# Add volume via REST API
 curl -X POST http://localhost:8000/volume \
   -H "X-API-Token: your-token" \
   -H "Content-Type: application/json" \
@@ -127,10 +148,6 @@ curl -X POST http://localhost:8000/volume \
 
 # List volumes
 curl http://localhost:8000/volumes -H "X-API-Token: your-token"
-
-# Delete volume
-curl -X DELETE http://localhost:8000/volume/volume-name \
-  -H "X-API-Token: your-token"
 ```
 
 **See [VOLUMES.md](VOLUMES.md) for comprehensive volume documentation.**

@@ -59,7 +59,8 @@ except ImportError:
     GENRO_STORAGE_AVAILABLE = False
 
 from .attachments import AttachmentManager
-from .config_loader import load_volumes_from_config
+from .attachments.cache import TieredCache
+from .config_loader import AttachmentConfig, load_attachment_config, load_volumes_from_config
 from .logger import get_logger
 from .persistence import Persistence
 from .prometheus import MailMetrics
@@ -280,8 +281,10 @@ class AsyncMailCore:
         self._client_sync_token = client_sync_token
         self._report_delivery_callable = report_delivery_callable
 
-        # Storage and attachments will be initialized in init()
+        # Storage, attachments, and cache will be initialized in init()
         self._storage_manager: Optional["AsyncStorageManagerType"] = None
+        self._attachment_cache: Optional[TieredCache] = None
+        self._attachment_config: Optional[AttachmentConfig] = None
         self.attachments: Optional[AttachmentManager] = None
         priority_value, _ = self._normalise_priority(default_priority, DEFAULT_PRIORITY)
         self._default_priority = priority_value
@@ -321,6 +324,34 @@ class AsyncMailCore:
             except Exception as e:
                 self.logger.error(f"Failed to load volumes from config: {e}")
 
+        # Load attachment configuration from config.ini
+        if self._config_path:
+            try:
+                self._attachment_config = load_attachment_config(self._config_path)
+            except FileNotFoundError:
+                self._attachment_config = AttachmentConfig()
+            except Exception as e:
+                self.logger.warning(f"Failed to load attachment config: {e}")
+                self._attachment_config = AttachmentConfig()
+        else:
+            self._attachment_config = AttachmentConfig()
+
+        # Initialize attachment cache if configured
+        if self._attachment_config.cache_enabled:
+            self._attachment_cache = TieredCache(
+                memory_max_mb=self._attachment_config.cache_memory_max_mb,
+                memory_ttl_seconds=self._attachment_config.cache_memory_ttl_seconds,
+                disk_dir=self._attachment_config.cache_disk_dir,
+                disk_max_mb=self._attachment_config.cache_disk_max_mb,
+                disk_ttl_seconds=self._attachment_config.cache_disk_ttl_seconds,
+                disk_threshold_kb=self._attachment_config.cache_disk_threshold_kb,
+            )
+            await self._attachment_cache.init()
+            self.logger.info(
+                f"Attachment cache initialized (memory={self._attachment_config.cache_memory_max_mb}MB, "
+                f"disk={self._attachment_config.cache_disk_dir})"
+            )
+
         # Initialize storage manager with volumes from database (if genro-storage is available)
         if GENRO_STORAGE_AVAILABLE:
             self._storage_manager = AsyncStorageManager()
@@ -344,10 +375,16 @@ class AsyncMailCore:
                 self._storage_manager.configure(mount_configs)
         else:
             self._storage_manager = None
-            self.logger.info("genro-storage not installed, attachment fetching disabled")
+            self.logger.info("genro-storage not installed, volume-based attachment fetching disabled")
 
-        # Initialize attachment manager with configured storage (works with None if storage unavailable)
-        self.attachments = AttachmentManager(self._storage_manager)
+        # Initialize attachment manager with all configured backends
+        self.attachments = AttachmentManager(
+            storage_manager=self._storage_manager,
+            base_dir=self._attachment_config.base_dir,
+            http_endpoint=self._attachment_config.http_endpoint,
+            http_auth_config=self._attachment_config.http_auth_config,
+            cache=self._attachment_cache,
+        )
 
     async def reload_volumes(self) -> None:
         """Reload volume configuration from database into storage manager.
@@ -579,9 +616,14 @@ class AsyncMailCore:
             for event in rejected_for_sync:
                 await self._publish_result(event)
 
+        queued_count = len([mid for mid in inserted if mid])
+        # ok is False only if ALL messages were rejected due to validation errors
+        # (not for "already sent" which is a normal case)
+        validation_failures = [r for r in rejected if r.get("reason") != "already sent"]
+        ok = queued_count > 0 or len(validation_failures) == 0
         result: Dict[str, Any] = {
-            "ok": True,
-            "queued": len([mid for mid in inserted if mid]),
+            "ok": ok,
+            "queued": queued_count,
             "rejected": rejected,
         }
         return result
@@ -1181,15 +1223,17 @@ class AsyncMailCore:
         return msg, envelope_from
 
     async def _fetch_attachment_with_timeout(self, att: Dict[str, Any]) -> Optional[Tuple[bytes, str]]:
-        """Fetch an attachment using the configured timeout budget."""
+        """Fetch an attachment using the configured timeout budget.
+
+        The AttachmentManager.fetch() now returns Tuple[bytes, clean_filename]
+        where clean_filename has any MD5 marker stripped.
+        """
         try:
-            content = await asyncio.wait_for(self.attachments.fetch(att), timeout=self._attachment_timeout)
+            result = await asyncio.wait_for(self.attachments.fetch(att), timeout=self._attachment_timeout)
         except asyncio.TimeoutError as exc:
             raise TimeoutError(f"Attachment {att.get('filename', 'file.bin')} fetch timed out") from exc
-        if content is None:
-            return None
-        filename = att.get("filename", "file.bin")
-        return content, filename
+        # result is Optional[Tuple[bytes, str]] - content and clean filename
+        return result
 
     # ------------------------------------------------------------ client bridge
     async def _send_delivery_reports(self, payloads: List[Dict[str, Any]]) -> None:

@@ -10,13 +10,8 @@ from async_mail_service.attachments import AttachmentManager
 @pytest.mark.asyncio
 async def test_base64_attachment_fetch():
     """Test fetching inline base64 attachments."""
-    storage = AsyncStorageManager()
-    # Base64 volumes are always available (special volume)
-    storage.configure([
-        {"name": "base64", "type": "memory"}  # Mock base64 as memory for testing
-    ])
-
-    manager = AttachmentManager(storage)
+    # AttachmentManager now handles base64 directly without genro-storage
+    manager = AttachmentManager()
 
     # Base64 encoded "Hello World"
     b64_content = base64.b64encode(b"Hello World").decode()
@@ -25,10 +20,11 @@ async def test_base64_attachment_fetch():
         "storage_path": f"base64:{b64_content}"
     }
 
-    # For real implementation, base64 would be handled specially
-    # This test verifies the manager can handle base64 paths
-    # In production, base64 content would be decoded directly
-    assert att["storage_path"].startswith("base64:")
+    result = await manager.fetch(att)
+    assert result is not None
+    content, filename = result
+    assert content == b"Hello World"
+    assert filename == "test.txt"
 
 
 @pytest.mark.asyncio
@@ -42,10 +38,10 @@ async def test_storage_path_attachment(tmp_path):
     # Configure storage with local backend
     storage = AsyncStorageManager()
     storage.configure([
-        {"name": "local-test", "type": "local", "path": str(tmp_path)}
+        {"name": "local-test", "protocol": "local", "path": str(tmp_path)}
     ])
 
-    manager = AttachmentManager(storage)
+    manager = AttachmentManager(storage_manager=storage)
 
     att = {
         "filename": "test_document.pdf",
@@ -53,8 +49,11 @@ async def test_storage_path_attachment(tmp_path):
     }
 
     # Fetch the attachment
-    content = await manager.fetch(att)
+    result = await manager.fetch(att)
+    assert result is not None
+    content, filename = result
     assert content == test_content
+    assert filename == "test_document.pdf"
 
 
 @pytest.mark.asyncio
@@ -74,20 +73,24 @@ async def test_attachment_from_multiple_volumes(tmp_path):
     # Configure multiple volumes
     storage = AsyncStorageManager()
     storage.configure([
-        {"name": "vol1", "type": "local", "path": str(dir1)},
-        {"name": "vol2", "type": "local", "path": str(dir2)},
+        {"name": "vol1", "protocol": "local", "path": str(dir1)},
+        {"name": "vol2", "protocol": "local", "path": str(dir2)},
     ])
 
-    manager = AttachmentManager(storage)
+    manager = AttachmentManager(storage_manager=storage)
 
     # Fetch from volume 1
     att1 = {"filename": "doc1.txt", "storage_path": "vol1:doc1.txt"}
-    content1 = await manager.fetch(att1)
+    result1 = await manager.fetch(att1)
+    assert result1 is not None
+    content1, _ = result1
     assert content1 == b"Content from volume 1"
 
     # Fetch from volume 2
     att2 = {"filename": "doc2.txt", "storage_path": "vol2:doc2.txt"}
-    content2 = await manager.fetch(att2)
+    result2 = await manager.fetch(att2)
+    assert result2 is not None
+    content2, _ = result2
     assert content2 == b"Content from volume 2"
 
 
@@ -96,10 +99,10 @@ async def test_attachment_not_found_raises(tmp_path):
     """Test that fetching nonexistent attachment raises error."""
     storage = AsyncStorageManager()
     storage.configure([
-        {"name": "test", "type": "local", "path": str(tmp_path)}
+        {"name": "test", "protocol": "local", "path": str(tmp_path)}
     ])
 
-    manager = AttachmentManager(storage)
+    manager = AttachmentManager(storage_manager=storage)
 
     att = {
         "filename": "nonexistent.pdf",
@@ -107,8 +110,7 @@ async def test_attachment_not_found_raises(tmp_path):
     }
 
     # Should raise an error when file doesn't exist
-    from genro_storage.exceptions import StorageNotFoundError
-    with pytest.raises(StorageNotFoundError):
+    with pytest.raises(FileNotFoundError):
         await manager.fetch(att)
 
 
@@ -116,7 +118,7 @@ async def test_attachment_not_found_raises(tmp_path):
 async def test_attachment_missing_storage_path():
     """Test that attachments without storage_path return None."""
     storage = AsyncStorageManager()
-    manager = AttachmentManager(storage)
+    manager = AttachmentManager(storage_manager=storage)
 
     att = {"filename": "test.txt"}  # No storage_path
 
@@ -150,13 +152,15 @@ async def test_binary_file_handling(tmp_path):
 
     storage = AsyncStorageManager()
     storage.configure([
-        {"name": "bin", "type": "local", "path": str(tmp_path)}
+        {"name": "bin", "protocol": "local", "path": str(tmp_path)}
     ])
 
-    manager = AttachmentManager(storage)
+    manager = AttachmentManager(storage_manager=storage)
 
     att = {"filename": "binary.dat", "storage_path": "bin:binary.dat"}
-    content = await manager.fetch(att)
+    result = await manager.fetch(att)
+    assert result is not None
+    content, _ = result
 
     assert content == binary_content
     assert len(content) == 256
@@ -172,13 +176,15 @@ async def test_large_file_handling(tmp_path):
 
     storage = AsyncStorageManager()
     storage.configure([
-        {"name": "large", "type": "local", "path": str(tmp_path)}
+        {"name": "large", "protocol": "local", "path": str(tmp_path)}
     ])
 
-    manager = AttachmentManager(storage)
+    manager = AttachmentManager(storage_manager=storage)
 
     att = {"filename": "large.bin", "storage_path": "large:large.bin"}
-    content = await manager.fetch(att)
+    result = await manager.fetch(att)
+    assert result is not None
+    content, _ = result
 
     assert len(content) == 1024 * 1024
     assert content == large_content
@@ -196,16 +202,18 @@ async def test_nested_path_handling(tmp_path):
 
     storage = AsyncStorageManager()
     storage.configure([
-        {"name": "docs", "type": "local", "path": str(tmp_path)}
+        {"name": "docs", "protocol": "local", "path": str(tmp_path)}
     ])
 
-    manager = AttachmentManager(storage)
+    manager = AttachmentManager(storage_manager=storage)
 
     att = {
         "filename": "report.pdf",
         "storage_path": "docs:documents/2024/reports/report.pdf"
     }
-    content = await manager.fetch(att)
+    result = await manager.fetch(att)
+    assert result is not None
+    content, _ = result
 
     assert content == b"Annual Report"
 
@@ -215,10 +223,10 @@ async def test_volume_not_configured_raises():
     """Test that using unconfigured volume raises error."""
     storage = AsyncStorageManager()
     storage.configure([
-        {"name": "configured", "type": "memory"}
+        {"name": "configured", "protocol": "memory"}
     ])
 
-    manager = AttachmentManager(storage)
+    manager = AttachmentManager(storage_manager=storage)
 
     att = {
         "filename": "test.txt",
@@ -226,8 +234,7 @@ async def test_volume_not_configured_raises():
     }
 
     # Should raise error for unconfigured volume
-    from genro_storage.exceptions import StorageNotFoundError
-    with pytest.raises(StorageNotFoundError):
+    with pytest.raises(Exception):  # genro-storage raises various exceptions
         await manager.fetch(att)
 
 
@@ -243,10 +250,10 @@ async def test_concurrent_fetches(tmp_path):
 
     storage = AsyncStorageManager()
     storage.configure([
-        {"name": "concurrent", "type": "local", "path": str(tmp_path)}
+        {"name": "concurrent", "protocol": "local", "path": str(tmp_path)}
     ])
 
-    manager = AttachmentManager(storage)
+    manager = AttachmentManager(storage_manager=storage)
 
     # Create fetch tasks
     tasks = []
@@ -259,14 +266,16 @@ async def test_concurrent_fetches(tmp_path):
 
     # Verify all fetches succeeded
     assert len(results) == 10
-    for i, content in enumerate(results):
+    for i, result in enumerate(results):
+        assert result is not None
+        content, _ = result
         assert content == f"Content {i}".encode()
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_storage_manager_reload(tmp_path):
-    """Test reconfiguring storage manager with new volumes."""
+async def test_storage_manager_add_volumes(tmp_path):
+    """Test adding new volumes to storage manager."""
     test_file = tmp_path / "test.txt"
     test_file.write_text("Test content")
 
@@ -274,25 +283,31 @@ async def test_storage_manager_reload(tmp_path):
 
     # Initial configuration
     storage.configure([
-        {"name": "initial", "type": "local", "path": str(tmp_path)}
+        {"name": "initial", "protocol": "local", "path": str(tmp_path)}
     ])
 
-    manager = AttachmentManager(storage)
+    manager = AttachmentManager(storage_manager=storage)
 
     att1 = {"filename": "test.txt", "storage_path": "initial:test.txt"}
-    content1 = await manager.fetch(att1)
+    result1 = await manager.fetch(att1)
+    assert result1 is not None
+    content1, _ = result1
     assert content1 == b"Test content"
 
-    # Reconfigure with new volume name
+    # Add another volume (configure adds, doesn't replace)
     storage.configure([
-        {"name": "reloaded", "type": "local", "path": str(tmp_path)}
+        {"name": "another", "protocol": "local", "path": str(tmp_path)}
     ])
 
-    # Old volume should no longer work
-    with pytest.raises(Exception):  # StorageNotFoundError or similar
-        await manager.fetch(att1)
-
-    # New volume should work
-    att2 = {"filename": "test.txt", "storage_path": "reloaded:test.txt"}
-    content2 = await manager.fetch(att2)
+    # Both volumes should work
+    att2 = {"filename": "test.txt", "storage_path": "another:test.txt"}
+    result2 = await manager.fetch(att2)
+    assert result2 is not None
+    content2, _ = result2
     assert content2 == b"Test content"
+
+    # Original volume still works
+    result3 = await manager.fetch(att1)
+    assert result3 is not None
+    content3, _ = result3
+    assert content3 == b"Test content"

@@ -146,24 +146,31 @@ async def test_volume_validation_base64_always_allowed(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_volume_validation_invalid_format(tmp_path):
-    """Test that malformed storage paths are rejected."""
+async def test_volume_validation_path_formats(tmp_path):
+    """Test validation of various storage path formats."""
     db = tmp_path / "format.db"
     p = Persistence(str(db))
     await p.init_db()
 
-    # Paths without colon separator
-    validation_no_colon = await p.validate_storage_paths(["invalidpath"], "tenant1")
-    assert validation_no_colon["invalidpath"] is False
+    # Relative paths without colon are now valid (filesystem paths)
+    validation_relative = await p.validate_storage_paths(["relativepath"], "tenant1")
+    assert validation_relative["relativepath"] is True
 
-    # Empty path
+    # Absolute paths are valid (filesystem paths)
+    validation_absolute = await p.validate_storage_paths(["/absolute/path"], "tenant1")
+    assert validation_absolute["/absolute/path"] is True
+
+    # HTTP paths are valid
+    validation_http = await p.validate_storage_paths(["@doc_id=123"], "tenant1")
+    assert validation_http["@doc_id=123"] is True
+
+    # Empty path is invalid
     validation_empty = await p.validate_storage_paths([""], "tenant1")
     assert validation_empty[""] is False
 
-    # Colon at end
-    validation_trailing = await p.validate_storage_paths(["volume:"], "tenant1")
-    # This should be False as it has colon but the volume doesn't exist
-    assert validation_trailing["volume:"] is False
+    # Unconfigured volume is invalid
+    validation_unconfigured = await p.validate_storage_paths(["unconfigured:file.txt"], "tenant1")
+    assert validation_unconfigured["unconfigured:file.txt"] is False
 
 
 @pytest.mark.asyncio

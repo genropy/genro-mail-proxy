@@ -47,6 +47,28 @@ import aiosqlite
 SPECIAL_VOLUMES = {"base64"}
 
 
+def is_non_volume_path(path: str) -> bool:
+    """Check if a storage path doesn't require volume validation.
+
+    Returns True for paths that are handled by non-volume fetchers:
+    - HTTP paths starting with @
+    - Absolute filesystem paths starting with /
+    - Relative paths without : (filesystem relative to base_dir)
+    """
+    if not path:
+        return False
+    # HTTP paths
+    if path.startswith("@"):
+        return True
+    # Absolute filesystem paths
+    if path.startswith("/"):
+        return True
+    # If no colon, it's a relative filesystem path
+    if ":" not in path:
+        return True
+    return False
+
+
 class Persistence:
     """Async SQLite persistence layer for mail service state management.
 
@@ -630,36 +652,58 @@ class Persistence:
         """Validate that all storage paths have configured volumes.
 
         Returns dict mapping storage_path -> is_valid.
-        Special volumes (like 'base64') are always valid.
+
+        The following paths are always valid:
+        - Special volumes (like 'base64:')
+        - HTTP paths starting with @
+        - Absolute filesystem paths starting with /
+        - Relative filesystem paths without :
+
+        Regular volume paths (volume:path) require the volume to be
+        configured in the database.
         """
         if not storage_paths:
             return {}
 
-        # Extract volume names from storage paths
+        # Separate non-volume paths (always valid) from volume paths (need DB check)
+        non_volume_results = {}
         volume_names = set()
+
         for path in storage_paths:
-            if ":" in path:
+            if not path:
+                # Empty path is always invalid
+                non_volume_results[path] = False
+            elif is_non_volume_path(path):
+                # HTTP, absolute filesystem, relative filesystem - always valid
+                non_volume_results[path] = True
+            elif ":" in path:
                 volume_name = path.split(":", 1)[0]
-                volume_names.add(volume_name)
+                if volume_name in SPECIAL_VOLUMES:
+                    # Special volumes like base64 are always valid
+                    non_volume_results[path] = True
+                else:
+                    volume_names.add(volume_name)
+            else:
+                # Path without : that wasn't caught by is_non_volume_path
+                # This shouldn't happen, but mark as valid (filesystem)
+                non_volume_results[path] = True
 
+        # No volume paths to check - return early
         if not volume_names:
-            return {path: False for path in storage_paths}
+            return non_volume_results
 
-        # Check which volumes exist
-        results = {}
+        # Check which volumes exist in DB
+        volume_results = {}
         for volume_name in volume_names:
-            # Special volumes are always valid
-            if volume_name in SPECIAL_VOLUMES:
-                results[volume_name] = True
-                continue
-
-            # Regular volumes: check DB
             vol = await self.get_volume(volume_name, account_id)
-            results[volume_name] = vol is not None
+            volume_results[volume_name] = vol is not None
 
         # Map back to storage paths
-        return {
-            path: results.get(path.split(":", 1)[0], False) if ":" in path else False
-            for path in storage_paths
-        }
+        result = dict(non_volume_results)
+        for path in storage_paths:
+            if path not in result and ":" in path:
+                volume_name = path.split(":", 1)[0]
+                result[path] = volume_results.get(volume_name, False)
+
+        return result
 

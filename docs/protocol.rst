@@ -132,7 +132,62 @@ Each entry mirrors :class:`async_mail_service.api.MessagePayload`. Key fields:
    * - ``attachments``
      - ``List[Attachment]``
      - No
-     - Supports inline/base64, HTTP(S) URLs, or S3 references
+     - See :ref:`attachment-formats` for supported storage paths
+
+.. _attachment-formats:
+
+Attachment storage formats
+--------------------------
+
+Each attachment includes a ``storage_path`` field specifying where to fetch
+the content. The following formats are supported:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Format
+     - Example
+     - Description
+   * - ``base64:content``
+     - ``base64:SGVsbG8=``
+     - Inline base64-encoded content (always available)
+   * - ``volume:path``
+     - ``s3-uploads:docs/report.pdf``
+     - genro-storage volume (requires genro-storage dependency)
+   * - ``/absolute/path``
+     - ``/tmp/attachments/file.pdf``
+     - Local filesystem absolute path
+   * - ``relative/path``
+     - ``uploads/doc.pdf``
+     - Filesystem relative to configured ``base_dir``
+   * - ``@params``
+     - ``@doc_id=123&version=2``
+     - HTTP POST to default endpoint with params as body
+   * - ``@[url]params``
+     - ``@[https://api.example.com]id=456``
+     - HTTP POST to specific URL with params as body
+
+**MD5 cache marker**: Filenames can include an MD5 hash marker for cache lookup:
+
+.. code-block:: text
+
+   report_{MD5:a1b2c3d4e5f6}.pdf
+
+The marker is extracted for cache lookup and removed from the final filename.
+This is compatible with genro-storage and Genropy which use MD5 from S3 ETag.
+
+Example attachment payload:
+
+.. code-block:: json
+
+   {
+     "attachments": [
+       {"filename": "report.pdf", "storage_path": "s3-uploads:documents/report.pdf"},
+       {"filename": "logo.png", "storage_path": "base64:iVBORw0KGgo..."},
+       {"filename": "invoice_{MD5:abc123}.pdf", "storage_path": "@doc_id=456"},
+       {"filename": "local.txt", "storage_path": "/var/attachments/local.txt"}
+     ]
+   }
 
 Delivery report payload
 -----------------------

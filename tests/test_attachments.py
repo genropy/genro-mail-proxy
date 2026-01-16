@@ -8,17 +8,17 @@ from async_mail_service.attachments import AttachmentManager, is_storage_availab
 
 @pytest.mark.asyncio
 async def test_attachment_manager_without_storage():
-    """Test AttachmentManager works without storage_manager."""
-    mgr = AttachmentManager(None)
-    # Without storage, fetch returns None
-    data = await mgr.fetch({"filename": "a.txt", "storage_path": "vol:path/to/file"})
-    assert data is None
+    """Test AttachmentManager raises error for volume paths without storage_manager."""
+    mgr = AttachmentManager(storage_manager=None)
+    # Without storage, fetch for volume path should raise RuntimeError
+    with pytest.raises(RuntimeError, match="genro-storage required"):
+        await mgr.fetch({"filename": "a.txt", "storage_path": "vol:path/to/file"})
 
 
 @pytest.mark.asyncio
 async def test_fetch_returns_none_for_missing_path():
     """Test that fetch returns None when storage_path is missing."""
-    mgr = AttachmentManager(None)
+    mgr = AttachmentManager(storage_manager=None)
     data = await mgr.fetch({"filename": "file.bin"})
     assert data is None
 
@@ -64,8 +64,6 @@ async def test_attachment_manager_with_mock_storage(monkeypatch):
     if not is_storage_available():
         pytest.skip("genro-storage not installed")
 
-    from genro_storage import AsyncStorageManager
-
     expected_content = b"test file content"
 
     class MockNode:
@@ -80,7 +78,10 @@ async def test_attachment_manager_with_mock_storage(monkeypatch):
             return MockNode()
 
     mock_storage = MockStorageManager()
-    mgr = AttachmentManager(mock_storage)
+    mgr = AttachmentManager(storage_manager=mock_storage)
 
-    data = await mgr.fetch({"filename": "test.txt", "storage_path": "vol:test.txt"})
-    assert data == expected_content
+    result = await mgr.fetch({"filename": "test.txt", "storage_path": "vol:test.txt"})
+    assert result is not None
+    content, filename = result
+    assert content == expected_content
+    assert filename == "test.txt"
