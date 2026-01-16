@@ -47,7 +47,12 @@ dependencies = [
     "uvicorn>=0.30.0",
     "prometheus-client>=0.20.0",
     "pydantic>=2.8.0",
+    "click>=8.1.0",
+    "rich>=13.0.0",
 ]
+
+[project.scripts]
+mail-proxy = "async_mail_service.cli:main"
 
 [project.optional-dependencies]
 storage = [

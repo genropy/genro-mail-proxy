@@ -98,6 +98,7 @@ class Persistence:
         """Initialize the database schema with all required tables.
 
         Creates or migrates the database schema including tables for:
+        - tenants: Multi-tenant configuration
         - accounts: SMTP server configurations
         - messages: Email queue with status tracking
         - send_log: Send history for rate limiting
@@ -107,10 +108,28 @@ class Persistence:
         by adding new columns to existing tables when needed.
         """
         async with aiosqlite.connect(self.db_path) as db:
+            # Tenants table (new for multi-tenant support)
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tenants (
+                    id TEXT PRIMARY KEY,
+                    name TEXT,
+                    client_sync_url TEXT,
+                    client_sync_auth TEXT,
+                    attachment_config TEXT,
+                    rate_limits TEXT,
+                    active INTEGER DEFAULT 1,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS accounts (
                     id TEXT PRIMARY KEY,
+                    tenant_id TEXT,
                     host TEXT NOT NULL,
                     port INTEGER NOT NULL,
                     user TEXT,
@@ -121,16 +140,27 @@ class Persistence:
                     limit_per_day INTEGER,
                     limit_behavior TEXT,
                     use_tls INTEGER,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
                 )
                 """
             )
+            # Migrations for existing databases
             try:
                 await db.execute("ALTER TABLE accounts ADD COLUMN use_tls INTEGER")
             except aiosqlite.OperationalError:
                 pass
             try:
                 await db.execute("ALTER TABLE accounts ADD COLUMN batch_size INTEGER")
+            except aiosqlite.OperationalError:
+                pass
+            try:
+                await db.execute("ALTER TABLE accounts ADD COLUMN tenant_id TEXT")
+            except aiosqlite.OperationalError:
+                pass
+            try:
+                await db.execute("ALTER TABLE accounts ADD COLUMN updated_at TEXT")
             except aiosqlite.OperationalError:
                 pass
 
@@ -190,6 +220,179 @@ class Persistence:
 
             await db.commit()
 
+    # Tenants ------------------------------------------------------------------
+    async def add_tenant(self, tenant: Dict[str, Any]) -> None:
+        """Insert or replace a tenant configuration.
+
+        Args:
+            tenant: Dict with keys: id, name, client_sync_url, client_sync_auth,
+                   attachment_config, rate_limits, active.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO tenants
+                (id, name, client_sync_url, client_sync_auth, attachment_config, rate_limits, active, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (
+                    tenant["id"],
+                    tenant.get("name"),
+                    tenant.get("client_sync_url"),
+                    json.dumps(tenant.get("client_sync_auth")) if tenant.get("client_sync_auth") else None,
+                    json.dumps(tenant.get("attachment_config")) if tenant.get("attachment_config") else None,
+                    json.dumps(tenant.get("rate_limits")) if tenant.get("rate_limits") else None,
+                    1 if tenant.get("active", True) else 0,
+                ),
+            )
+            await db.commit()
+
+    async def get_tenant(self, tenant_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch a tenant by ID.
+
+        Returns:
+            Tenant dict or None if not found.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT * FROM tenants WHERE id=?", (tenant_id,)
+            ) as cur:
+                row = await cur.fetchone()
+                if not row:
+                    return None
+                cols = [c[0] for c in cur.description]
+                tenant = dict(zip(cols, row))
+
+        # Decode JSON fields
+        for field in ("client_sync_auth", "attachment_config", "rate_limits"):
+            if tenant.get(field):
+                tenant[field] = json.loads(tenant[field])
+        tenant["active"] = bool(tenant.get("active", 1))
+        return tenant
+
+    async def list_tenants(self, active_only: bool = False) -> List[Dict[str, Any]]:
+        """Return all tenants.
+
+        Args:
+            active_only: If True, only return active tenants.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            query = "SELECT * FROM tenants"
+            if active_only:
+                query += " WHERE active = 1"
+            query += " ORDER BY id"
+            async with db.execute(query) as cur:
+                rows = await cur.fetchall()
+                cols = [c[0] for c in cur.description]
+
+        result = []
+        for row in rows:
+            tenant = dict(zip(cols, row))
+            for field in ("client_sync_auth", "attachment_config", "rate_limits"):
+                if tenant.get(field):
+                    tenant[field] = json.loads(tenant[field])
+            tenant["active"] = bool(tenant.get("active", 1))
+            result.append(tenant)
+        return result
+
+    async def update_tenant(self, tenant_id: str, updates: Dict[str, Any]) -> bool:
+        """Update a tenant's fields.
+
+        Args:
+            tenant_id: The tenant ID to update.
+            updates: Dict of fields to update.
+
+        Returns:
+            True if tenant was found and updated, False otherwise.
+        """
+        if not updates:
+            return False
+
+        # Build SET clause dynamically
+        set_parts = []
+        values = []
+        for key, value in updates.items():
+            if key in ("client_sync_auth", "attachment_config", "rate_limits"):
+                set_parts.append(f"{key} = ?")
+                values.append(json.dumps(value) if value else None)
+            elif key == "active":
+                set_parts.append("active = ?")
+                values.append(1 if value else 0)
+            elif key in ("name", "client_sync_url"):
+                set_parts.append(f"{key} = ?")
+                values.append(value)
+
+        if not set_parts:
+            return False
+
+        set_parts.append("updated_at = CURRENT_TIMESTAMP")
+        values.append(tenant_id)
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                f"UPDATE tenants SET {', '.join(set_parts)} WHERE id = ?",
+                tuple(values),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def delete_tenant(self, tenant_id: str) -> bool:
+        """Delete a tenant and all associated accounts/messages.
+
+        Returns:
+            True if tenant was deleted, False if not found.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            # First delete all accounts belonging to this tenant
+            # This will cascade to messages via account deletion
+            async with db.execute(
+                "SELECT id FROM accounts WHERE tenant_id = ?", (tenant_id,)
+            ) as cur:
+                account_rows = await cur.fetchall()
+
+            for (account_id,) in account_rows:
+                await db.execute("DELETE FROM messages WHERE account_id = ?", (account_id,))
+                await db.execute("DELETE FROM send_log WHERE account_id = ?", (account_id,))
+                await db.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+
+            # Delete volumes associated with this tenant
+            await db.execute("DELETE FROM volumes WHERE account_id = ?", (tenant_id,))
+
+            # Delete the tenant
+            cursor = await db.execute("DELETE FROM tenants WHERE id = ?", (tenant_id,))
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def get_tenant_for_account(self, account_id: str) -> Optional[Dict[str, Any]]:
+        """Get the tenant configuration for a given account.
+
+        Args:
+            account_id: The account ID.
+
+        Returns:
+            Tenant dict or None if account has no tenant.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                """
+                SELECT t.* FROM tenants t
+                JOIN accounts a ON a.tenant_id = t.id
+                WHERE a.id = ?
+                """,
+                (account_id,),
+            ) as cur:
+                row = await cur.fetchone()
+                if not row:
+                    return None
+                cols = [c[0] for c in cur.description]
+                tenant = dict(zip(cols, row))
+
+        for field in ("client_sync_auth", "attachment_config", "rate_limits"):
+            if tenant.get(field):
+                tenant[field] = json.loads(tenant[field])
+        tenant["active"] = bool(tenant.get("active", 1))
+        return tenant
+
     # Accounts -----------------------------------------------------------------
     async def add_account(self, acc: Dict[str, Any]) -> None:
         """Insert or overwrite an SMTP account definition."""
@@ -197,11 +400,12 @@ class Persistence:
             await db.execute(
                 """
                 INSERT OR REPLACE INTO accounts
-                (id, host, port, user, password, ttl, limit_per_minute, limit_per_hour, limit_per_day, limit_behavior, use_tls, batch_size)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, tenant_id, host, port, user, password, ttl, limit_per_minute, limit_per_hour, limit_per_day, limit_behavior, use_tls, batch_size, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 """,
                 (
                     acc["id"],
+                    acc.get("tenant_id"),
                     acc["host"],
                     int(acc["port"]),
                     acc.get("user"),
@@ -217,16 +421,29 @@ class Persistence:
             )
             await db.commit()
 
-    async def list_accounts(self) -> List[Dict[str, Any]]:
-        """Return all known SMTP accounts."""
+    async def list_accounts(self, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Return SMTP accounts, optionally filtered by tenant.
+
+        Args:
+            tenant_id: If provided, only return accounts for this tenant.
+        """
         async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute(
+            if tenant_id:
+                query = """
+                    SELECT id, tenant_id, host, port, user, ttl, limit_per_minute, limit_per_hour,
+                           limit_per_day, limit_behavior, use_tls, batch_size, created_at, updated_at
+                    FROM accounts WHERE tenant_id = ?
+                    ORDER BY id
                 """
-                SELECT id, host, port, user, ttl, limit_per_minute, limit_per_hour,
-                       limit_per_day, limit_behavior, use_tls, batch_size, created_at
-                FROM accounts
+                params = (tenant_id,)
+            else:
+                query = """
+                    SELECT id, tenant_id, host, port, user, ttl, limit_per_minute, limit_per_hour,
+                           limit_per_day, limit_behavior, use_tls, batch_size, created_at, updated_at
+                    FROM accounts ORDER BY id
                 """
-            ) as cur:
+                params = ()
+            async with db.execute(query, params) as cur:
                 rows = await cur.fetchall()
                 cols = [c[0] for c in cur.description]
         result = [dict(zip(cols, row)) for row in rows]
