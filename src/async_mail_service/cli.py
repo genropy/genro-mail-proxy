@@ -808,5 +808,202 @@ def init(ctx: click.Context) -> None:
     print_success(f"Database initialized at {ctx.obj['db_path']}")
 
 
+# ============================================================================
+# SERVE command
+# ============================================================================
+
+@main.command()
+@click.option("--config", "-c", type=click.Path(exists=True), help="Path to config.ini file.")
+@click.option("--name", "-n", help="Instance name (for identification).")
+@click.option("--host", "-h", default="0.0.0.0", help="Host to bind to.")
+@click.option("--port", "-p", type=int, default=8000, help="Port to listen on.")
+@click.option("--reload", is_flag=True, help="Enable auto-reload for development.")
+@click.pass_context
+def serve(
+    ctx: click.Context,
+    config: Optional[str],
+    name: Optional[str],
+    host: str,
+    port: int,
+    reload: bool,
+) -> None:
+    """Start the mail-proxy server.
+
+    Example:
+        mail-proxy serve --config /etc/mail-proxy/config.ini --name prod-mailer
+    """
+    import os
+    import uvicorn
+
+    # Set environment variables for config
+    if config:
+        os.environ["GMP_CONFIG_FILE"] = config
+    if name:
+        os.environ["GMP_INSTANCE_NAME"] = name
+
+    # Use database from CLI option if not in config
+    db_path = ctx.obj.get("db_path")
+    if db_path and db_path != "/data/mail_service.db":
+        os.environ["GMP_DB_PATH"] = db_path
+
+    instance_name = name or "mail-proxy"
+    console.print(f"\n[bold cyan]Starting {instance_name}[/bold cyan]")
+    console.print(f"  Config:  {config or 'default'}")
+    console.print(f"  DB:      {db_path}")
+    console.print(f"  Listen:  {host}:{port}")
+    console.print()
+
+    uvicorn.run(
+        "async_mail_service.api:app",
+        host=host,
+        port=port,
+        reload=reload,
+        log_level="info",
+    )
+
+
+# ============================================================================
+# CONNECT command (REPL)
+# ============================================================================
+
+@main.command()
+@click.argument("name_or_url", default="http://localhost:8000")
+@click.option("--token", "-t", envvar="GMP_API_TOKEN", help="API token for authentication.")
+def connect(name_or_url: str, token: Optional[str]) -> None:
+    """Connect to a mail-proxy server with an interactive REPL.
+
+    NAME_OR_URL can be a registered connection name or a URL.
+
+    Example:
+        mail-proxy connect http://localhost:8000 --token secret
+        mail-proxy connect prod  # if 'prod' is registered
+    """
+    import code
+    import readline  # noqa: F401 - enables history in REPL
+    import rlcompleter  # noqa: F401 - enables tab completion
+
+    from async_mail_service.client import MailProxyClient, connect as client_connect
+
+    try:
+        proxy = client_connect(name_or_url, token=token)
+
+        # Test connection
+        if not proxy.health():
+            print_error(f"Cannot connect to {name_or_url}")
+            console.print("[dim]Make sure the server is running and the URL/token are correct.[/dim]")
+            return
+
+        console.print(f"\n[bold green]Connected to {proxy.name}[/bold green]")
+        console.print(f"  URL: {proxy.url}")
+        console.print()
+
+        # Show quick help
+        console.print("[bold]Available objects:[/bold]")
+        console.print("  [cyan]proxy[/cyan]          - The connected client")
+        console.print("  [cyan]proxy.messages[/cyan] - Message management (list, pending, sent, errors, add, delete)")
+        console.print("  [cyan]proxy.accounts[/cyan] - Account management (list, get, add, delete)")
+        console.print("  [cyan]proxy.tenants[/cyan]  - Tenant management (list, get, add, delete)")
+        console.print()
+        console.print("[bold]Quick commands:[/bold]")
+        console.print("  [cyan]proxy.status()[/cyan]          - Server status")
+        console.print("  [cyan]proxy.stats()[/cyan]           - Queue statistics")
+        console.print("  [cyan]proxy.run_now()[/cyan]         - Trigger dispatch cycle")
+        console.print("  [cyan]proxy.messages.pending()[/cyan] - List pending messages")
+        console.print()
+        console.print("[dim]Type 'exit()' or Ctrl+D to quit.[/dim]")
+        console.print()
+
+        # Prepare namespace for REPL
+        namespace = {
+            "proxy": proxy,
+            "MailProxyClient": MailProxyClient,
+            "console": console,
+        }
+
+        # Start interactive REPL
+        banner = ""
+        code.interact(banner=banner, local=namespace, exitmsg="Goodbye!")
+
+    except Exception as e:
+        print_error(f"Connection failed: {e}")
+        raise SystemExit(1)
+
+
+# ============================================================================
+# REGISTER command (for named connections)
+# ============================================================================
+
+@main.command()
+@click.argument("name")
+@click.argument("url")
+@click.option("--token", "-t", help="API token for this connection.")
+def register(name: str, url: str, token: Optional[str]) -> None:
+    """Register a named connection for easy access.
+
+    Connections are stored in ~/.mail-proxy/connections.json
+
+    Example:
+        mail-proxy register prod https://mail.example.com --token secret
+        mail-proxy connect prod
+    """
+    import os
+    from pathlib import Path
+
+    config_dir = Path.home() / ".mail-proxy"
+    config_dir.mkdir(exist_ok=True)
+    connections_file = config_dir / "connections.json"
+
+    # Load existing connections
+    connections = {}
+    if connections_file.exists():
+        try:
+            connections = json.loads(connections_file.read_text())
+        except json.JSONDecodeError:
+            connections = {}
+
+    # Add/update connection
+    connections[name] = {"url": url}
+    if token:
+        connections[name]["token"] = token
+
+    # Save
+    connections_file.write_text(json.dumps(connections, indent=2))
+    print_success(f"Registered connection '{name}' -> {url}")
+
+
+@main.command("connections")
+def list_connections() -> None:
+    """List registered connections."""
+    from pathlib import Path
+
+    connections_file = Path.home() / ".mail-proxy" / "connections.json"
+
+    if not connections_file.exists():
+        console.print("[dim]No connections registered.[/dim]")
+        console.print("Use 'mail-proxy register <name> <url>' to add one.")
+        return
+
+    try:
+        connections = json.loads(connections_file.read_text())
+    except json.JSONDecodeError:
+        console.print("[dim]No connections registered.[/dim]")
+        return
+
+    if not connections:
+        console.print("[dim]No connections registered.[/dim]")
+        return
+
+    table = Table(title="Registered Connections")
+    table.add_column("Name", style="cyan")
+    table.add_column("URL")
+    table.add_column("Token", justify="center")
+
+    for name, data in connections.items():
+        has_token = "[green]✓[/green]" if data.get("token") else "[dim]-[/dim]"
+        table.add_row(name, data["url"], has_token)
+
+    console.print(table)
+
+
 if __name__ == "__main__":
     main()
