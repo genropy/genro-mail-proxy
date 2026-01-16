@@ -90,16 +90,6 @@ genro-mail-proxy supports multiple attachment storage backends with flexible rou
 | `@params` | `@doc_id=123&version=2` | HTTP POST to default endpoint |
 | `@[url]params` | `@[https://api.example.com]id=456` | HTTP POST to specific URL |
 
-### MD5 Cache Marker
-
-For efficient caching, filenames can include an MD5 hash marker:
-
-```
-report_{MD5:a1b2c3d4e5f6}.pdf
-```
-
-The marker is extracted for cache lookup and removed from the final filename. This is compatible with genro-storage and Genropy which use MD5 from S3 ETag.
-
 ### Attachment Configuration
 
 ```ini
@@ -114,40 +104,51 @@ http_auth_token = your-secret-token
 # For basic auth:
 # http_auth_user = username
 # http_auth_password = password
-
-# Cache configuration
-cache_memory_max_items = 100
-cache_memory_ttl_seconds = 3600
-cache_disk_dir = /var/cache/mail-proxy
-cache_disk_ttl_seconds = 86400
-cache_memory_max_size_bytes = 1048576  # 1MB threshold for disk cache
 ```
 
 ### Volume Configuration (genro-storage)
 
-Volumes can be configured via config.ini or REST API:
+Volumes can be configured via config.ini or REST API. **See [VOLUMES.md](VOLUMES.md) for comprehensive documentation.**
 
 ```ini
 [volumes]
-# Shared volumes (accessible by all tenants)
 volume.shared-s3.backend = s3
 volume.shared-s3.config = {"bucket": "common-uploads", "region": "us-east-1"}
-
-# Tenant-specific volumes
-volume.tenant1-storage.backend = s3
-volume.tenant1-storage.config = {"bucket": "tenant1-files"}
-volume.tenant1-storage.account_id = tenant1
 ```
 
-```bash
-# Add volume via REST API
-curl -X POST http://localhost:8000/volume \
-  -H "X-API-Token: your-token" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "new-volume", "backend": "s3", "config": {"bucket": "my-bucket"}}'
+## Attachment Cache
 
-# List volumes
-curl http://localhost:8000/volumes -H "X-API-Token: your-token"
+A two-tiered cache (memory + disk) reduces redundant fetches for frequently used attachments.
+
+### MD5 Cache Marker
+
+Filenames can include an MD5 hash marker for cache lookup:
+
+```text
+report_{MD5:a1b2c3d4e5f6}.pdf
 ```
 
-**See [VOLUMES.md](VOLUMES.md) for comprehensive volume documentation.**
+The marker is extracted for cache lookup and removed from the final filename. This is compatible with genro-storage and Genropy which use MD5 from S3 ETag.
+
+### Cache Configuration
+
+```ini
+[attachments]
+# Memory cache (LRU)
+cache_memory_max_items = 100
+cache_memory_ttl_seconds = 3600
+
+# Disk cache (optional, for large files)
+cache_disk_dir = /var/cache/mail-proxy
+cache_disk_ttl_seconds = 86400
+
+# Files larger than this threshold use disk cache
+cache_memory_max_size_bytes = 1048576  # 1MB
+```
+
+### Cache Behavior
+
+- **Small files** (< `cache_memory_max_size_bytes`): stored in memory LRU cache
+- **Large files**: stored on disk if `cache_disk_dir` is configured
+- **Cache lookup**: if filename contains `{MD5:hash}`, cache is checked before fetching
+- **Cache population**: after fetch, content is cached using computed MD5
