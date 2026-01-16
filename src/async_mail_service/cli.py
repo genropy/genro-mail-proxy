@@ -883,6 +883,14 @@ def connect(name_or_url: str, token: Optional[str]) -> None:
     import rlcompleter  # noqa: F401 - enables tab completion
 
     from async_mail_service.client import MailProxyClient, connect as client_connect
+    from async_mail_service.forms import (
+        new_tenant,
+        new_account,
+        new_message,
+        TenantForm,
+        AccountForm,
+        MessageForm,
+    )
 
     try:
         proxy = client_connect(name_or_url, token=token)
@@ -910,6 +918,11 @@ def connect(name_or_url: str, token: Optional[str]) -> None:
         console.print("  [cyan]proxy.run_now()[/cyan]         - Trigger dispatch cycle")
         console.print("  [cyan]proxy.messages.pending()[/cyan] - List pending messages")
         console.print()
+        console.print("[bold]Interactive forms:[/bold]")
+        console.print("  [cyan]new_tenant()[/cyan]   - Create tenant with interactive form")
+        console.print("  [cyan]new_account()[/cyan]  - Create account with interactive form")
+        console.print("  [cyan]new_message()[/cyan]  - Create message with interactive form")
+        console.print()
         console.print("[dim]Type 'exit()' or Ctrl+D to quit.[/dim]")
         console.print()
 
@@ -918,6 +931,13 @@ def connect(name_or_url: str, token: Optional[str]) -> None:
             "proxy": proxy,
             "MailProxyClient": MailProxyClient,
             "console": console,
+            # Interactive forms
+            "new_tenant": new_tenant,
+            "new_account": new_account,
+            "new_message": new_message,
+            "TenantForm": TenantForm,
+            "AccountForm": AccountForm,
+            "MessageForm": MessageForm,
         }
 
         # Start interactive REPL
