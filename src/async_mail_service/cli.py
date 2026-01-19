@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from datetime import datetime
 from typing import Annotated, Any, Dict, Optional
 
 import click
@@ -86,7 +87,15 @@ def main(ctx: click.Context, db: str) -> None:
     """
     ctx.ensure_object(dict)
     ctx.obj["db_path"] = db
-    ctx.obj["persistence"] = get_persistence(db)
+    # Persistence created lazily when needed (avoid blocking on --help)
+    ctx.obj["_persistence_factory"] = lambda: get_persistence(db)
+
+
+def _get_persistence(ctx: click.Context) -> Persistence:
+    """Get or create persistence instance lazily."""
+    if "persistence" not in ctx.obj:
+        ctx.obj["persistence"] = ctx.obj["_persistence_factory"]()
+    return ctx.obj["persistence"]
 
 
 # ============================================================================
@@ -105,7 +114,7 @@ def tenant() -> None:
 @click.pass_context
 def tenant_list(ctx: click.Context, active_only: bool, as_json: bool) -> None:
     """List all tenants."""
-    persistence = ctx.obj["persistence"]
+    persistence = _get_persistence(ctx)
 
     async def _list():
         await persistence.init_db()
@@ -145,7 +154,7 @@ def tenant_list(ctx: click.Context, active_only: bool, as_json: bool) -> None:
 @click.pass_context
 def tenant_show(ctx: click.Context, tenant_id: str, as_json: bool) -> None:
     """Show details for a specific tenant."""
-    persistence = ctx.obj["persistence"]
+    persistence = _get_persistence(ctx)
 
     async def _show():
         await persistence.init_db()
@@ -218,7 +227,7 @@ def tenant_add(
 
     TENANT_ID must be alphanumeric with underscores/hyphens (e.g., acme-corp).
     """
-    persistence = ctx.obj["persistence"]
+    persistence = _get_persistence(ctx)
 
     # Build sync auth config
     sync_auth = None
@@ -303,7 +312,7 @@ def tenant_update(
 
     Only provided options will be updated.
     """
-    persistence = ctx.obj["persistence"]
+    persistence = _get_persistence(ctx)
 
     updates: Dict[str, Any] = {}
 
@@ -363,7 +372,7 @@ def tenant_delete(ctx: click.Context, tenant_id: str, force: bool) -> None:
 
     This operation is irreversible!
     """
-    persistence = ctx.obj["persistence"]
+    persistence = _get_persistence(ctx)
 
     if not force:
         if not click.confirm(f"Delete tenant '{tenant_id}' and all associated data?"):
@@ -399,7 +408,7 @@ def account() -> None:
 @click.pass_context
 def account_list(ctx: click.Context, tenant: Optional[str], as_json: bool) -> None:
     """List all SMTP accounts."""
-    persistence = ctx.obj["persistence"]
+    persistence = _get_persistence(ctx)
 
     async def _list():
         await persistence.init_db()
@@ -443,7 +452,7 @@ def account_list(ctx: click.Context, tenant: Optional[str], as_json: bool) -> No
 @click.pass_context
 def account_show(ctx: click.Context, account_id: str, as_json: bool) -> None:
     """Show details for a specific account."""
-    persistence = ctx.obj["persistence"]
+    persistence = _get_persistence(ctx)
 
     async def _show():
         await persistence.init_db()
@@ -508,7 +517,7 @@ def account_add(
 
     ACCOUNT_ID must be unique and alphanumeric with underscores/hyphens.
     """
-    persistence = ctx.obj["persistence"]
+    persistence = _get_persistence(ctx)
 
     # Validate with Pydantic
     try:
@@ -556,7 +565,7 @@ def account_add(
 @click.pass_context
 def account_delete(ctx: click.Context, account_id: str, force: bool) -> None:
     """Delete an SMTP account and all associated messages."""
-    persistence = ctx.obj["persistence"]
+    persistence = _get_persistence(ctx)
 
     if not force:
         if not click.confirm(f"Delete account '{account_id}' and all associated messages?"):
@@ -598,7 +607,7 @@ def message_list(
     as_json: bool,
 ) -> None:
     """List messages in the queue."""
-    persistence = ctx.obj["persistence"]
+    persistence = _get_persistence(ctx)
 
     async def _list():
         await persistence.init_db()
@@ -674,7 +683,7 @@ def message_list(
 @click.pass_context
 def message_show(ctx: click.Context, message_id: str, as_json: bool) -> None:
     """Show details for a specific message."""
-    persistence = ctx.obj["persistence"]
+    persistence = _get_persistence(ctx)
 
     async def _show():
         await persistence.init_db()
@@ -718,7 +727,7 @@ def message_show(ctx: click.Context, message_id: str, as_json: bool) -> None:
 @click.pass_context
 def message_delete(ctx: click.Context, message_ids: tuple, force: bool) -> None:
     """Delete one or more messages from the queue."""
-    persistence = ctx.obj["persistence"]
+    persistence = _get_persistence(ctx)
 
     if not force:
         if not click.confirm(f"Delete {len(message_ids)} message(s)?"):
@@ -746,7 +755,7 @@ def message_delete(ctx: click.Context, message_ids: tuple, force: bool) -> None:
 @click.pass_context
 def stats(ctx: click.Context, tenant: Optional[str]) -> None:
     """Show queue statistics."""
-    persistence = ctx.obj["persistence"]
+    persistence = _get_persistence(ctx)
 
     async def _stats():
         await persistence.init_db()
@@ -799,7 +808,7 @@ def stats(ctx: click.Context, tenant: Optional[str]) -> None:
 @click.pass_context
 def init(ctx: click.Context) -> None:
     """Initialize the database schema."""
-    persistence = ctx.obj["persistence"]
+    persistence = _get_persistence(ctx)
 
     async def _init():
         await persistence.init_db()
@@ -812,71 +821,594 @@ def init(ctx: click.Context) -> None:
 # SERVE command
 # ============================================================================
 
+DEFAULT_CONFIG_TEMPLATE = """\
+# genro-mail-proxy configuration
+# Generated automatically - edit as needed
+
+[server]
+# Instance name for identification
+name = {name}
+
+# Database path
+db_path = {db_path}
+
+# Server binding
+host = {host}
+port = {port}
+
+# API token for authentication (leave empty for no auth)
+api_token =
+
+[scheduler]
+# Start scheduler active (true/false)
+start_active = true
+
+# Dispatch loop interval in seconds
+send_loop_interval = 0.5
+
+# Messages per account per dispatch cycle
+batch_size_per_account = 50
+
+[retry]
+# Maximum retry attempts for temporary failures
+max_retries = 5
+
+# Retry delays in seconds (comma-separated)
+retry_delays = 60, 300, 900, 3600, 7200
+
+[attachments]
+# Base directory for relative filesystem paths
+# base_dir = /var/mail-proxy/attachments
+
+# Default HTTP endpoint for @params paths
+# default_endpoint = https://api.example.com/attachments
+# auth_method = bearer
+# auth_token =
+
+# Cache settings (uncomment to enable)
+# cache_disk_dir = /var/mail-proxy/cache
+# cache_memory_max_mb = 50
+# cache_disk_max_mb = 500
+
+[client_sync]
+# URL for delivery report callbacks
+# client_sync_url = https://api.example.com/mail/delivery-report
+
+# Authentication (bearer or basic)
+# auth_method = bearer
+# auth_token =
+# auth_user =
+# auth_password =
+"""
+
+
+def _get_instance_dir(name: str) -> "Path":
+    """Get the instance directory path."""
+    from pathlib import Path
+    return Path.home() / ".mail-proxy" / name
+
+
+def _get_pid_file(name: str) -> "Path":
+    """Get the PID file path for an instance."""
+    return _get_instance_dir(name) / "server.pid"
+
+
+def _is_instance_running(name: str) -> tuple[bool, Optional[int], Optional[int]]:
+    """Check if an instance is running.
+
+    Returns:
+        (is_running, pid, port)
+    """
+    import os
+    import signal
+
+    pid_file = _get_pid_file(name)
+    if not pid_file.exists():
+        return False, None, None
+
+    try:
+        data = json.loads(pid_file.read_text())
+        pid = data.get("pid")
+        port = data.get("port")
+
+        if pid is None:
+            return False, None, port
+
+        # Check if process is alive
+        os.kill(pid, 0)  # Doesn't kill, just checks
+        return True, pid, port
+    except (json.JSONDecodeError, ProcessLookupError, PermissionError, OSError):
+        # Process not running or PID file corrupt
+        return False, None, None
+
+
+def _write_pid_file(name: str, pid: int, port: int, host: str) -> None:
+    """Write PID file for an instance."""
+    pid_file = _get_pid_file(name)
+    pid_file.write_text(json.dumps({
+        "pid": pid,
+        "port": port,
+        "host": host,
+        "started_at": datetime.now().isoformat(),
+    }, indent=2))
+
+
+def _remove_pid_file(name: str) -> None:
+    """Remove PID file for an instance."""
+    pid_file = _get_pid_file(name)
+    if pid_file.exists():
+        pid_file.unlink()
+
+
+def _ensure_config_file(name: str, port: int, host: str) -> str:
+    """Ensure config file exists, creating with defaults if needed.
+
+    Returns the path to the config file.
+    """
+    from pathlib import Path
+
+    # Default config location: ~/.mail-proxy/<name>/config.ini
+    config_dir = _get_instance_dir(name)
+    config_file = config_dir / "config.ini"
+    db_path = str(config_dir / "mail_service.db")
+
+    if not config_file.exists():
+        # Create directory if needed
+        config_dir.mkdir(parents=True, exist_ok=True)
+
+        # Generate default config
+        config_content = DEFAULT_CONFIG_TEMPLATE.format(
+            name=name,
+            db_path=db_path,
+            port=port,
+            host=host,
+        )
+        config_file.write_text(config_content)
+        console.print(f"[green]Created new instance:[/green] {name}")
+        console.print(f"  Config: {config_file}")
+
+    return str(config_file)
+
+
+def _get_instance_config(name: str) -> Optional[Dict[str, Any]]:
+    """Read instance configuration from config.ini."""
+    import configparser
+
+    config_file = _get_instance_dir(name) / "config.ini"
+    if not config_file.exists():
+        return None
+
+    config = configparser.ConfigParser()
+    config.read(config_file)
+
+    return {
+        "name": config.get("server", "name", fallback=name),
+        "db_path": config.get("server", "db_path", fallback=str(_get_instance_dir(name) / "mail_service.db")),
+        "host": config.get("server", "host", fallback="0.0.0.0"),
+        "port": config.getint("server", "port", fallback=8000),
+        "config_file": str(config_file),
+    }
+
+
+def _start_server_background(name: str, host: str, port: int, reload: bool = False) -> bool:
+    """Start server in background and wait for it to be ready.
+
+    Returns True if server started successfully and is responding to HTTP requests.
+    """
+    import subprocess
+    import time
+
+    import requests
+
+    cmd = ["mail-proxy", "serve", name, "--host", host, "--port", str(port)]
+    if reload:
+        cmd.append("--reload")
+
+    # Start server in background
+    subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    # Wait for server to be ready (process running + HTTP responding)
+    url = f"http://localhost:{port}/status"
+    for _ in range(50):  # Max 5 seconds
+        time.sleep(0.1)
+        is_running, pid, _ = _is_instance_running(name)
+        if is_running:
+            # Process is running, now check if HTTP server is ready
+            try:
+                resp = requests.get(url, timeout=0.5)
+                if resp.status_code == 200:
+                    return True
+            except requests.RequestException:
+                # Server not ready yet, keep waiting
+                pass
+    return False
+
+
 @main.command()
-@click.option("--config", "-c", type=click.Path(exists=True), help="Path to config.ini file.")
-@click.option("--name", "-n", help="Instance name (for identification).")
-@click.option("--host", "-h", default="0.0.0.0", help="Host to bind to.")
-@click.option("--port", "-p", type=int, default=8000, help="Port to listen on.")
+@click.argument("name", default="default-mailer")
+@click.option("--host", "-h", default=None, help="Host to bind to (default: 0.0.0.0).")
+@click.option("--port", "-p", type=int, default=None, help="Port to listen on (default: 8000).")
 @click.option("--reload", is_flag=True, help="Enable auto-reload for development.")
+@click.option("--connect", "-c", is_flag=True, help="Start in background and open REPL.")
 @click.pass_context
 def serve(
     ctx: click.Context,
-    config: Optional[str],
-    name: Optional[str],
-    host: str,
-    port: int,
+    name: str,
+    host: Optional[str],
+    port: Optional[int],
     reload: bool,
+    connect: bool,
 ) -> None:
-    """Start the mail-proxy server.
+    """Start a mail-proxy server instance.
+
+    If the instance doesn't exist, creates it with default config.
+    If already running, shows status and exits.
 
     Example:
-        mail-proxy serve --config /etc/mail-proxy/config.ini --name prod-mailer
+        mail-proxy serve                    # Start default-mailer
+        mail-proxy serve myserver           # Start/create myserver
+        mail-proxy serve myserver -p 8080   # Start on specific port
+        mail-proxy serve myserver -c        # Start and open REPL
     """
     import os
     import uvicorn
 
-    # Set environment variables for config
-    if config:
-        os.environ["GMP_CONFIG_FILE"] = config
-    if name:
-        os.environ["GMP_INSTANCE_NAME"] = name
+    # Check if already running
+    is_running, pid, running_port = _is_instance_running(name)
+    if is_running:
+        if connect:
+            # Already running, just connect
+            console.print(f"[dim]Instance '{name}' already running, connecting...[/dim]")
+            ctx.invoke(connect_cmd, name_or_url=name)
+            return
+        console.print(f"[yellow]Instance '{name}' is already running[/yellow]")
+        console.print(f"  PID:  {pid}")
+        console.print(f"  Port: {running_port}")
+        console.print(f"  URL:  http://localhost:{running_port}")
+        sys.exit(0)
 
-    # Use database from CLI option if not in config
-    db_path = ctx.obj.get("db_path")
-    if db_path and db_path != "/data/mail_service.db":
-        os.environ["GMP_DB_PATH"] = db_path
+    # Get or create instance config
+    instance_config = _get_instance_config(name)
 
-    instance_name = name or "mail-proxy"
-    console.print(f"\n[bold cyan]Starting {instance_name}[/bold cyan]")
-    console.print(f"  Config:  {config or 'default'}")
+    if instance_config is None:
+        # New instance - use provided values or defaults
+        host = host or "0.0.0.0"
+        port = port or 8000
+        config_path = _ensure_config_file(name, port, host)
+        instance_config = _get_instance_config(name)
+    else:
+        # Existing instance - use config values, allow override
+        config_path = instance_config["config_file"]
+        host = host or instance_config["host"]
+        port = port or instance_config["port"]
+
+    db_path = instance_config["db_path"]
+
+    if connect:
+        # Start in background and open REPL
+        console.print(f"[bold cyan]Starting {name} in background...[/bold cyan]")
+        if _start_server_background(name, host, port, reload):
+            is_running, pid, _ = _is_instance_running(name)
+            console.print(f"  PID:  {pid}")
+            console.print(f"  Port: {port}")
+            console.print()
+            ctx.invoke(connect_cmd, name_or_url=name)
+        else:
+            print_error(f"Failed to start {name}")
+        return
+
+    # Set environment variables for config (used by server.py)
+    os.environ["GMP_CONFIG_FILE"] = config_path
+    os.environ["GMP_INSTANCE_NAME"] = name
+    os.environ["GMP_DB_PATH"] = db_path
+    os.environ["GMP_PORT"] = str(port)
+    os.environ["GMP_HOST"] = host
+
+    console.print(f"\n[bold cyan]Starting {name}[/bold cyan]")
+    console.print(f"  Config:  {config_path}")
     console.print(f"  DB:      {db_path}")
     console.print(f"  Listen:  {host}:{port}")
     console.print()
 
-    uvicorn.run(
-        "async_mail_service.api:app",
-        host=host,
-        port=port,
-        reload=reload,
-        log_level="info",
-    )
+    # Write PID file before starting uvicorn (important for --reload mode)
+    _write_pid_file(name, os.getpid(), port, host)
+
+    try:
+        uvicorn.run(
+            "async_mail_service.server:app",
+            host=host,
+            port=port,
+            reload=reload,
+            log_level="info",
+        )
+    finally:
+        # Clean up PID file on exit
+        _remove_pid_file(name)
+
+
+# ============================================================================
+# STOP command
+# ============================================================================
+
+def _stop_instance(name: str, signal_type: int = 15, timeout: float = 5.0, fallback_kill: bool = True) -> bool:
+    """Stop a running instance by sending a signal.
+
+    Args:
+        name: Instance name.
+        signal_type: Signal to send (15=SIGTERM, 9=SIGKILL).
+        timeout: Seconds to wait for process to terminate.
+        fallback_kill: If True, send SIGKILL if SIGTERM doesn't work.
+
+    Returns:
+        True if successfully stopped, False otherwise.
+    """
+    import os
+    import signal as sig
+    import time
+
+    is_running, pid, _ = _is_instance_running(name)
+    if not is_running or pid is None:
+        return False
+
+    try:
+        os.kill(pid, signal_type)
+        # Wait for process to terminate
+        wait_iterations = int(timeout / 0.1)
+        for _ in range(wait_iterations):
+            time.sleep(0.1)
+            try:
+                os.kill(pid, 0)  # Check if still alive
+            except ProcessLookupError:
+                # Process terminated
+                _remove_pid_file(name)
+                return True
+
+        # Process still alive after timeout - try SIGKILL if enabled
+        if fallback_kill and signal_type != sig.SIGKILL:
+            os.kill(pid, sig.SIGKILL)
+            time.sleep(0.5)
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                _remove_pid_file(name)
+                return True
+
+        return False
+    except (ProcessLookupError, PermissionError, OSError):
+        _remove_pid_file(name)
+        return False
+
+
+@main.command()
+@click.argument("name", default="*")
+@click.option("--force", "-f", is_flag=True, help="Force kill (SIGKILL) instead of graceful shutdown.")
+def stop(name: str, force: bool) -> None:
+    """Stop running mail-proxy instance(s).
+
+    NAME can be:
+    - An instance name (e.g., 'myserver')
+    - '*' to stop all running instances
+
+    Example:
+        mail-proxy stop                 # Stop all running instances
+        mail-proxy stop myserver        # Stop specific instance
+        mail-proxy stop myserver -f     # Force kill if not responding
+    """
+    import signal as sig
+    from pathlib import Path
+
+    signal_type = sig.SIGKILL if force else sig.SIGTERM
+    signal_name = "SIGKILL" if force else "SIGTERM"
+
+    if name == "*":
+        # Stop all running instances
+        mail_proxy_dir = Path.home() / ".mail-proxy"
+        if not mail_proxy_dir.exists():
+            console.print("[dim]No instances configured.[/dim]")
+            return
+
+        stopped = []
+        for item in mail_proxy_dir.iterdir():
+            if item.is_dir() and (item / "config.ini").exists():
+                instance_name = item.name
+                is_running, pid, _ = _is_instance_running(instance_name)
+                if is_running:
+                    console.print(f"Stopping {instance_name} (PID {pid})... ", end="")
+                    if _stop_instance(instance_name, signal_type):
+                        console.print("[green]stopped[/green]")
+                        stopped.append(instance_name)
+                    else:
+                        console.print(f"[yellow]sent {signal_name}[/yellow]")
+
+        if not stopped:
+            console.print("[dim]No running instances found.[/dim]")
+        else:
+            console.print(f"\n[green]Stopped {len(stopped)} instance(s)[/green]")
+    else:
+        # Stop specific instance
+        is_running, pid, _ = _is_instance_running(name)
+        if not is_running:
+            console.print(f"[dim]Instance '{name}' is not running.[/dim]")
+            return
+
+        console.print(f"Stopping {name} (PID {pid})... ", end="")
+        if _stop_instance(name, signal_type):
+            console.print("[green]stopped[/green]")
+        else:
+            console.print(f"[yellow]sent {signal_name}, may still be shutting down[/yellow]")
+
+
+# ============================================================================
+# RESTART command
+# ============================================================================
+
+@main.command()
+@click.argument("name", default="*")
+@click.option("--force", "-f", is_flag=True, help="Force kill before restart.")
+@click.option("--reload", is_flag=True, help="Enable auto-reload for development.")
+def restart(name: str, force: bool, reload: bool) -> None:
+    """Restart mail-proxy instance(s).
+
+    NAME can be:
+    - An instance name (e.g., 'myserver')
+    - '*' to restart all running instances
+
+    Example:
+        mail-proxy restart              # Restart all running instances
+        mail-proxy restart myserver     # Restart specific instance
+        mail-proxy restart myserver -f  # Force kill then restart
+    """
+    import os
+    import signal as sig
+    import subprocess
+    import time
+    from pathlib import Path
+
+    signal_type = sig.SIGKILL if force else sig.SIGTERM
+
+    instances_to_restart: list[tuple[str, Dict[str, Any]]] = []
+
+    if name == "*":
+        # Collect all running instances
+        mail_proxy_dir = Path.home() / ".mail-proxy"
+        if not mail_proxy_dir.exists():
+            console.print("[dim]No instances configured.[/dim]")
+            return
+
+        for item in mail_proxy_dir.iterdir():
+            if item.is_dir() and (item / "config.ini").exists():
+                instance_name = item.name
+                is_running, pid, _ = _is_instance_running(instance_name)
+                if is_running:
+                    config = _get_instance_config(instance_name)
+                    if config:
+                        instances_to_restart.append((instance_name, config))
+
+        if not instances_to_restart:
+            console.print("[dim]No running instances found.[/dim]")
+            return
+    else:
+        # Single instance
+        is_running, pid, _ = _is_instance_running(name)
+        if not is_running:
+            console.print(f"[dim]Instance '{name}' is not running.[/dim]")
+            console.print(f"[dim]Use 'mail-proxy serve {name}' to start it.[/dim]")
+            return
+        config = _get_instance_config(name)
+        if config:
+            instances_to_restart.append((name, config))
+
+    # Stop all instances first
+    for instance_name, _ in instances_to_restart:
+        is_running, pid, _ = _is_instance_running(instance_name)
+        if is_running:
+            console.print(f"Stopping {instance_name} (PID {pid})... ", end="")
+            if _stop_instance(instance_name, signal_type, timeout=3.0):
+                console.print("[green]stopped[/green]")
+            else:
+                # Try SIGKILL if SIGTERM didn't work
+                if not force:
+                    console.print("[yellow]forcing...[/yellow] ", end="")
+                    _stop_instance(instance_name, sig.SIGKILL, timeout=1.0)
+                console.print("[green]stopped[/green]")
+
+    # Brief pause to ensure ports are released
+    time.sleep(0.5)
+
+    # Restart instances in background
+    for instance_name, config in instances_to_restart:
+        console.print(f"Starting {instance_name}... ", end="")
+        cmd = ["mail-proxy", "serve", instance_name]
+        if reload:
+            cmd.append("--reload")
+        # Start in background
+        subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        # Wait briefly for startup
+        time.sleep(1.0)
+        is_running, pid, port = _is_instance_running(instance_name)
+        if is_running:
+            console.print(f"[green]started[/green] (PID {pid}, port {port})")
+        else:
+            console.print("[yellow]starting in background...[/yellow]")
+
+    console.print(f"\n[green]Restarted {len(instances_to_restart)} instance(s)[/green]")
 
 
 # ============================================================================
 # CONNECT command (REPL)
 # ============================================================================
 
-@main.command()
-@click.argument("name_or_url", default="http://localhost:8000")
-@click.option("--token", "-t", envvar="GMP_API_TOKEN", help="API token for authentication.")
-def connect(name_or_url: str, token: Optional[str]) -> None:
-    """Connect to a mail-proxy server with an interactive REPL.
+def _resolve_instance_url(name_or_url: str) -> tuple[str, str, Optional[str]]:
+    """Resolve instance name or URL to (url, display_name, token).
 
-    NAME_OR_URL can be a registered connection name or a URL.
+    Checks in order:
+    1. If it looks like a URL, use it directly
+    2. If it's a running instance name, use its port
+    3. If it's a registered connection name, use that
+    """
+    import configparser
+    from pathlib import Path
+
+    # If it looks like a URL, use it directly
+    if name_or_url.startswith("http://") or name_or_url.startswith("https://"):
+        return name_or_url, name_or_url, None
+
+    # Check if it's a running instance
+    is_running, pid, port = _is_instance_running(name_or_url)
+    if is_running and port:
+        return f"http://localhost:{port}", name_or_url, None
+
+    # Check if instance exists but not running
+    instance_config = _get_instance_config(name_or_url)
+    if instance_config:
+        # Instance exists but not running
+        print_error(f"Instance '{name_or_url}' is not running")
+        console.print(f"[dim]Start it with: mail-proxy serve {name_or_url}[/dim]")
+        raise SystemExit(1)
+
+    # Check registered connections
+    connections_file = Path.home() / ".mail-proxy" / "connections.json"
+    if connections_file.exists():
+        try:
+            connections = json.loads(connections_file.read_text())
+            if name_or_url in connections:
+                conn = connections[name_or_url]
+                return conn["url"], name_or_url, conn.get("token")
+        except json.JSONDecodeError:
+            pass
+
+    # Not found anywhere
+    print_error(f"Unknown instance or connection: '{name_or_url}'")
+    console.print("[dim]Use 'mail-proxy list' to see available instances[/dim]")
+    console.print("[dim]Use 'mail-proxy connections' to see registered connections[/dim]")
+    raise SystemExit(1)
+
+
+@main.command("connect")
+@click.argument("name_or_url", default="default-mailer")
+@click.option("--token", "-t", envvar="GMP_API_TOKEN", help="API token for authentication.")
+def connect_cmd(name_or_url: str, token: Optional[str]) -> None:
+    """Connect to a mail-proxy instance with an interactive REPL.
+
+    NAME_OR_URL can be:
+    - An instance name (e.g., 'myserver') - connects to running instance
+    - A registered connection name
+    - A full URL (e.g., 'http://localhost:8000')
 
     Example:
-        mail-proxy connect http://localhost:8000 --token secret
-        mail-proxy connect prod  # if 'prod' is registered
+        mail-proxy connect                  # Connect to default-mailer
+        mail-proxy connect myserver         # Connect to myserver instance
+        mail-proxy connect http://host:8000 # Connect to URL
     """
     import code
     import readline  # noqa: F401 - enables history in REPL
@@ -887,22 +1419,30 @@ def connect(name_or_url: str, token: Optional[str]) -> None:
         new_tenant,
         new_account,
         new_message,
+        set_proxy,
         TenantForm,
         AccountForm,
         MessageForm,
     )
 
+    # Resolve the URL
+    url, display_name, saved_token = _resolve_instance_url(name_or_url)
+    token = token or saved_token
+
     try:
-        proxy = client_connect(name_or_url, token=token)
+        proxy = client_connect(url, token=token, name=display_name)
 
         # Test connection
         if not proxy.health():
-            print_error(f"Cannot connect to {name_or_url}")
-            console.print("[dim]Make sure the server is running and the URL/token are correct.[/dim]")
+            print_error(f"Cannot connect to {display_name} ({url})")
+            console.print("[dim]Make sure the server is running.[/dim]")
             return
 
-        console.print(f"\n[bold green]Connected to {proxy.name}[/bold green]")
-        console.print(f"  URL: {proxy.url}")
+        # Set proxy for forms auto-save
+        set_proxy(proxy)
+
+        console.print(f"\n[bold green]Connected to {display_name}[/bold green]")
+        console.print(f"  URL: {url}")
         console.print()
 
         # Show quick help
@@ -1021,6 +1561,80 @@ def list_connections() -> None:
     for name, data in connections.items():
         has_token = "[green]✓[/green]" if data.get("token") else "[dim]-[/dim]"
         table.add_row(name, data["url"], has_token)
+
+    console.print(table)
+
+
+@main.command("list")
+def list_instances() -> None:
+    """List mail-proxy instances with their status.
+
+    Shows all instances in ~/.mail-proxy/ with running status.
+    """
+    import configparser
+    from pathlib import Path
+
+    mail_proxy_dir = Path.home() / ".mail-proxy"
+
+    if not mail_proxy_dir.exists():
+        console.print("[dim]No instances configured.[/dim]")
+        console.print("Use 'mail-proxy serve <name>' to create one.")
+        return
+
+    # Find all instance directories (those with config.ini)
+    instances = []
+    for item in mail_proxy_dir.iterdir():
+        if item.is_dir():
+            config_file = item / "config.ini"
+            if config_file.exists():
+                # Parse config to get details
+                config = configparser.ConfigParser()
+                config.read(config_file)
+
+                instance_name = item.name
+                port = config.getint("server", "port", fallback=8000)
+                host = config.get("server", "host", fallback="0.0.0.0")
+
+                # Check if running
+                is_running, pid, running_port = _is_instance_running(instance_name)
+
+                instances.append({
+                    "name": instance_name,
+                    "port": running_port or port,
+                    "host": host,
+                    "running": is_running,
+                    "pid": pid,
+                })
+
+    if not instances:
+        console.print("[dim]No instances configured.[/dim]")
+        console.print("Use 'mail-proxy serve <name>' to create one.")
+        return
+
+    table = Table(title="Mail Proxy Instances")
+    table.add_column("Name", style="cyan")
+    table.add_column("Status")
+    table.add_column("Port", justify="right")
+    table.add_column("PID", justify="right")
+    table.add_column("URL")
+
+    for inst in sorted(instances, key=lambda x: x["name"]):
+        if inst["running"]:
+            status = "[green]running[/green]"
+            pid_str = str(inst["pid"])
+            url = f"http://localhost:{inst['port']}"
+        else:
+            status = "[dim]stopped[/dim]"
+            pid_str = "[dim]-[/dim]"
+            url = "[dim]-[/dim]"
+
+        table.add_row(
+            inst["name"],
+            status,
+            str(inst["port"]),
+            pid_str,
+            url,
+        )
 
     console.print(table)
 
