@@ -147,7 +147,7 @@ class MessagesAPI:
         if active_only:
             params["active_only"] = "true"
         data = self._client._get("/messages", params=params)
-        return [Message.from_dict(m) for m in data]
+        return [Message.from_dict(m) for m in data.get("messages", [])]
 
     def pending(self, limit: int = 100) -> List[Message]:
         """List pending (not yet sent) messages."""
@@ -191,7 +191,7 @@ class AccountsAPI:
     def list(self) -> List[Account]:
         """List all accounts."""
         data = self._client._get("/accounts")
-        return [Account.from_dict(a) for a in data]
+        return [Account.from_dict(a) for a in data.get("accounts", [])]
 
     def get(self, account_id: str) -> Optional[Account]:
         """Get a specific account by ID."""
@@ -221,7 +221,7 @@ class TenantsAPI:
     def list(self) -> List[Tenant]:
         """List all tenants."""
         data = self._client._get("/tenants")
-        return [Tenant.from_dict(t) for t in data]
+        return [Tenant.from_dict(t) for t in data.get("tenants", [])]
 
     def get(self, tenant_id: str) -> Optional[Tenant]:
         """Get a specific tenant by ID."""
@@ -391,12 +391,17 @@ def register_connection(
     _connections[name] = {"url": url, "token": token}
 
 
-def connect(name_or_url: str, token: Optional[str] = None) -> MailProxyClient:
+def connect(
+    name_or_url: str,
+    token: Optional[str] = None,
+    name: Optional[str] = None,
+) -> MailProxyClient:
     """Connect to a mail-proxy server.
 
     Args:
         name_or_url: Either a registered connection name or a URL.
         token: API token (optional if using registered connection).
+        name: Display name for the connection (optional).
 
     Returns:
         MailProxyClient instance.
@@ -412,7 +417,7 @@ def connect(name_or_url: str, token: Optional[str] = None) -> MailProxyClient:
         return MailProxyClient(
             url=conn["url"],
             token=token or conn.get("token"),
-            name=name_or_url,
+            name=name or name_or_url,
         )
 
     # Check file-based registry
@@ -422,8 +427,8 @@ def connect(name_or_url: str, token: Optional[str] = None) -> MailProxyClient:
         return MailProxyClient(
             url=conn["url"],
             token=token or conn.get("token"),
-            name=name_or_url,
+            name=name or name_or_url,
         )
 
     # Treat as URL
-    return MailProxyClient(url=name_or_url, token=token, name=name_or_url)
+    return MailProxyClient(url=name_or_url, token=token, name=name or name_or_url)
