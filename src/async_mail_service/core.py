@@ -468,42 +468,71 @@ class AsyncMailCore:
     async def handle_command(self, cmd: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Execute one of the external control commands."""
         payload = payload or {}
-        if cmd == "run now":
-            self._wake_client_event.set()
-            return {"ok": True}
-        if cmd == "suspend":
-            self._active = False
-            return {"ok": True, "active": False}
-        if cmd == "activate":
-            self._active = True
-            return {"ok": True, "active": True}
-        if cmd == "addAccount":
-            await self.persistence.add_account(payload)
-            return {"ok": True}
-        if cmd == "listAccounts":
-            accounts = await self.persistence.list_accounts()
-            return {"ok": True, "accounts": accounts}
-        if cmd == "deleteAccount":
-            account_id = payload.get("id")
-            await self.persistence.delete_account(account_id)
-            await self._refresh_queue_gauge()
-            return {"ok": True}
-        if cmd == "deleteMessages":
-            ids = payload.get("ids") if isinstance(payload, dict) else []
-            removed, not_found = await self._delete_messages(ids or [])
-            await self._refresh_queue_gauge()
-            return {"ok": True, "removed": removed, "not_found": not_found}
-        if cmd == "listMessages":
-            active_only = bool(payload.get("active_only", False)) if isinstance(payload, dict) else False
-            messages = await self.persistence.list_messages(active_only=active_only)
-            return {"ok": True, "messages": messages}
-        if cmd == "addMessages":
-            return await self._handle_add_messages(payload)
-        if cmd == "cleanupMessages":
-            older_than = payload.get("older_than_seconds") if isinstance(payload, dict) else None
-            removed = await self._cleanup_reported_messages(older_than)
-            return {"ok": True, "removed": removed}
-        return {"ok": False, "error": "unknown command"}
+        match cmd:
+            case "run now":
+                self._wake_client_event.set()
+                return {"ok": True}
+            case "suspend":
+                self._active = False
+                return {"ok": True, "active": False}
+            case "activate":
+                self._active = True
+                return {"ok": True, "active": True}
+            case "addAccount":
+                await self.persistence.add_account(payload)
+                return {"ok": True}
+            case "listAccounts":
+                accounts = await self.persistence.list_accounts()
+                return {"ok": True, "accounts": accounts}
+            case "deleteAccount":
+                account_id = payload.get("id")
+                await self.persistence.delete_account(account_id)
+                await self._refresh_queue_gauge()
+                return {"ok": True}
+            case "deleteMessages":
+                ids = payload.get("ids") if isinstance(payload, dict) else []
+                removed, not_found = await self._delete_messages(ids or [])
+                await self._refresh_queue_gauge()
+                return {"ok": True, "removed": removed, "not_found": not_found}
+            case "listMessages":
+                active_only = bool(payload.get("active_only", False)) if isinstance(payload, dict) else False
+                messages = await self.persistence.list_messages(active_only=active_only)
+                return {"ok": True, "messages": messages}
+            case "addMessages":
+                return await self._handle_add_messages(payload)
+            case "cleanupMessages":
+                older_than = payload.get("older_than_seconds") if isinstance(payload, dict) else None
+                removed = await self._cleanup_reported_messages(older_than)
+                return {"ok": True, "removed": removed}
+            case "addTenant":
+                await self.persistence.add_tenant(payload)
+                return {"ok": True}
+            case "getTenant":
+                tenant_id = payload.get("id")
+                tenant = await self.persistence.get_tenant(tenant_id)
+                if tenant:
+                    return {"ok": True, **tenant}
+                return {"ok": False, "error": "tenant not found"}
+            case "listTenants":
+                active_only = bool(payload.get("active_only", False)) if isinstance(payload, dict) else False
+                tenants = await self.persistence.list_tenants(active_only=active_only)
+                return {"ok": True, "tenants": tenants}
+            case "updateTenant":
+                tenant_id = payload.pop("id", None)
+                if not tenant_id:
+                    return {"ok": False, "error": "tenant id required"}
+                updated = await self.persistence.update_tenant(tenant_id, payload)
+                if updated:
+                    return {"ok": True}
+                return {"ok": False, "error": "tenant not found"}
+            case "deleteTenant":
+                tenant_id = payload.get("id")
+                deleted = await self.persistence.delete_tenant(tenant_id)
+                if deleted:
+                    return {"ok": True}
+                return {"ok": False, "error": "tenant not found"}
+            case _:
+                return {"ok": False, "error": "unknown command"}
 
     async def _handle_add_messages(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         messages = payload.get("messages") if isinstance(payload, dict) else None
@@ -1110,36 +1139,36 @@ class AsyncMailCore:
         status = (event.get("status") or "unknown").lower()
         msg_id = event.get("id") or "-"
         account = event.get("account") or event.get("account_id") or "default"
-        if status == "sent":
-            self.logger.info("Delivery succeeded for message %s (account=%s)", msg_id, account)
-            return
-        if status == "deferred":
-            deferred_until = event.get("deferred_until")
-            if isinstance(deferred_until, (int, float)):
-                deferred_repr = (
-                    datetime.fromtimestamp(float(deferred_until), timezone.utc)
-                    .isoformat()
-                    .replace("+00:00", "Z")
+
+        match status:
+            case "sent":
+                self.logger.info("Delivery succeeded for message %s (account=%s)", msg_id, account)
+            case "deferred":
+                deferred_until = event.get("deferred_until")
+                if isinstance(deferred_until, (int, float)):
+                    deferred_repr = (
+                        datetime.fromtimestamp(float(deferred_until), timezone.utc)
+                        .isoformat()
+                        .replace("+00:00", "Z")
+                    )
+                else:
+                    deferred_repr = deferred_until or "-"
+                self.logger.info(
+                    "Delivery deferred for message %s (account=%s) until %s",
+                    msg_id,
+                    account,
+                    deferred_repr,
                 )
-            else:
-                deferred_repr = deferred_until or "-"
-            self.logger.info(
-                "Delivery deferred for message %s (account=%s) until %s",
-                msg_id,
-                account,
-                deferred_repr,
-            )
-            return
-        if status == "error":
-            reason = event.get("error") or event.get("error_code") or "unknown error"
-            self.logger.warning(
-                "Delivery failed for message %s (account=%s): %s",
-                msg_id,
-                account,
-                reason,
-            )
-            return
-        self.logger.info("Delivery event for message %s (account=%s): %s", msg_id, account, status)
+            case "error":
+                reason = event.get("error") or event.get("error_code") or "unknown error"
+                self.logger.warning(
+                    "Delivery failed for message %s (account=%s): %s",
+                    msg_id,
+                    account,
+                    reason,
+                )
+            case _:
+                self.logger.info("Delivery event for message %s (account=%s): %s", msg_id, account, status)
 
     async def _publish_result(self, event: Dict[str, Any]) -> None:
         """Publish a delivery event while observing queue backpressure."""
