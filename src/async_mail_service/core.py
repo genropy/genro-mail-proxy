@@ -998,13 +998,14 @@ class AsyncMailCore:
             await self._wait_for_client_wakeup(interval)
 
     async def _process_client_cycle(self) -> None:
-        """Perform one delivery report cycle."""
+        """Perform one delivery report cycle, routing to per-tenant endpoints."""
         if not self._active:
             return
 
         reports = await self.persistence.fetch_reports(self._smtp_batch_size)
         if not reports:
             # Still allow the client sync endpoint to trigger its own fetch if needed
+            # For backward compatibility, use global URL if no tenants configured
             if self._client_sync_url and self._report_delivery_callable is None:
                 try:
                     await self._send_delivery_reports([])
@@ -1017,8 +1018,12 @@ class AsyncMailCore:
             await self._apply_retention()
             return
 
-        payloads = [
-            {
+        # Group reports by tenant_id for per-tenant delivery
+        from collections import defaultdict
+        reports_by_tenant: Dict[Optional[str], List[Dict[str, Any]]] = defaultdict(list)
+        for item in reports:
+            tenant_id = item.get("tenant_id")
+            payload = {
                 "id": item.get("id"),
                 "account_id": item.get("account_id"),
                 "priority": item.get("priority"),
@@ -1027,16 +1032,52 @@ class AsyncMailCore:
                 "error": item.get("error"),
                 "deferred_ts": item.get("deferred_ts"),
             }
-            for item in reports
-        ]
-        try:
-            await self._send_delivery_reports(payloads)
-        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-            target = self._client_sync_url or "custom callable"
-            self.logger.warning("Client sync delivery failed (%s): %s", target, exc)
-            return
-        reported_ts = self._utc_now_epoch()
-        await self.persistence.mark_reported((item["id"] for item in reports), reported_ts)
+            reports_by_tenant[tenant_id].append(payload)
+
+        # Track successfully reported message IDs
+        reported_ids: List[str] = []
+
+        # Send reports to each tenant's endpoint
+        for tenant_id, payloads in reports_by_tenant.items():
+            try:
+                if tenant_id:
+                    # Get tenant configuration and send to tenant-specific endpoint
+                    tenant = await self.persistence.get_tenant(tenant_id)
+                    if tenant and tenant.get("client_sync_url"):
+                        await self._send_reports_to_tenant(tenant, payloads)
+                    elif self._client_sync_url:
+                        # Fallback to global URL if tenant has no sync URL
+                        await self._send_delivery_reports(payloads)
+                    else:
+                        self.logger.warning(
+                            "No sync URL for tenant %s and no global fallback, skipping %d reports",
+                            tenant_id, len(payloads)
+                        )
+                        continue
+                else:
+                    # No tenant - use global URL (backward compatibility)
+                    if self._client_sync_url or self._report_delivery_callable:
+                        await self._send_delivery_reports(payloads)
+                    else:
+                        self.logger.warning(
+                            "No tenant and no global sync URL configured, skipping %d reports",
+                            len(payloads)
+                        )
+                        continue
+                # Mark as successfully sent
+                reported_ids.extend(p["id"] for p in payloads if p.get("id"))
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                target = tenant_id or "global"
+                self.logger.warning(
+                    "Client sync delivery failed for tenant %s: %s", target, exc
+                )
+                # Don't mark these as reported - they'll be retried next cycle
+
+        # Mark successfully reported messages
+        if reported_ids:
+            reported_ts = self._utc_now_epoch()
+            await self.persistence.mark_reported(reported_ids, reported_ts)
+
         await self._apply_retention()
 
     async def _apply_retention(self) -> None:
@@ -1322,6 +1363,78 @@ class AsyncMailCore:
             self.logger.info("Client sync acknowledged delivery report batch (%d items)", batch_size)
         else:
             self.logger.debug("Delivery report batch delivered (%d items)", batch_size)
+
+    async def _send_reports_to_tenant(
+        self, tenant: Dict[str, Any], payloads: List[Dict[str, Any]]
+    ) -> None:
+        """Send delivery report payloads to a tenant-specific endpoint.
+
+        Args:
+            tenant: Tenant configuration dict with client_sync_url and client_sync_auth.
+            payloads: List of delivery report payloads to send.
+
+        Raises:
+            aiohttp.ClientError: If the HTTP request fails.
+            asyncio.TimeoutError: If the request times out.
+        """
+        sync_url = tenant.get("client_sync_url")
+        if not sync_url:
+            raise RuntimeError(f"Tenant {tenant.get('id')} has no client_sync_url configured")
+
+        # Build authentication from tenant config
+        headers: Dict[str, str] = {}
+        auth = None
+        auth_config = tenant.get("client_sync_auth") or {}
+        auth_method = auth_config.get("method", "none")
+
+        if auth_method == "bearer":
+            token = auth_config.get("token")
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+        elif auth_method == "basic":
+            user = auth_config.get("user", "")
+            password = auth_config.get("password", "")
+            auth = aiohttp.BasicAuth(user, password)
+
+        tenant_id = tenant.get("id", "unknown")
+        batch_size = len(payloads)
+
+        if self._log_delivery_activity:
+            ids_preview = ", ".join(str(item.get("id")) for item in payloads[:5] if item.get("id"))
+            if len(payloads) > 5:
+                ids_preview = f"{ids_preview}, ..." if ids_preview else "..."
+            self.logger.info(
+                "Posting delivery reports to tenant %s at %s (count=%d, ids=%s)",
+                tenant_id,
+                sync_url,
+                batch_size,
+                ids_preview or "-",
+            )
+        else:
+            self.logger.debug(
+                "Posting delivery reports to tenant %s at %s (count=%d)",
+                tenant_id,
+                sync_url,
+                batch_size,
+            )
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                sync_url,
+                json={"delivery_report": payloads},
+                auth=auth,
+                headers=headers or None,
+            ) as resp:
+                resp.raise_for_status()
+
+        if self._log_delivery_activity:
+            self.logger.info(
+                "Tenant %s acknowledged delivery report batch (%d items)", tenant_id, batch_size
+            )
+        else:
+            self.logger.debug(
+                "Delivery report batch delivered to tenant %s (%d items)", tenant_id, batch_size
+            )
 
     # ------------------------------------------------------------- validations
     async def _validate_enqueue_payload(self, payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:

@@ -651,15 +651,18 @@ class Persistence:
 
         Only returns messages in final states (sent or error).
         Messages with only deferred_ts are not reported (internal retry logic).
+        Includes tenant_id from the associated account for per-tenant routing.
         """
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
                 """
-                SELECT id, account_id, priority, payload, sent_ts, error_ts, error, deferred_ts
-                FROM messages
-                WHERE reported_ts IS NULL
-                  AND (sent_ts IS NOT NULL OR error_ts IS NOT NULL)
-                ORDER BY updated_at ASC, id ASC
+                SELECT m.id, m.account_id, m.priority, m.payload, m.sent_ts, m.error_ts,
+                       m.error, m.deferred_ts, a.tenant_id
+                FROM messages m
+                LEFT JOIN accounts a ON m.account_id = a.id
+                WHERE m.reported_ts IS NULL
+                  AND (m.sent_ts IS NOT NULL OR m.error_ts IS NOT NULL)
+                ORDER BY m.updated_at ASC, m.id ASC
                 LIMIT ?
                 """,
                 (limit,),

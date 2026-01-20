@@ -288,3 +288,113 @@ async def test_tenant_update_json_fields(tmp_path):
     tenant = await db.get_tenant("acme")
     assert tenant["rate_limits"]["hourly"] == 200
     assert tenant["rate_limits"]["daily"] == 2000
+
+
+@pytest.mark.asyncio
+async def test_fetch_reports_includes_tenant_id(tmp_path):
+    """Test that fetch_reports includes tenant_id from account."""
+    db = Persistence(str(tmp_path / "test.db"))
+    await db.init_db()
+
+    # Create tenant and account
+    await db.add_tenant({
+        "id": "acme",
+        "client_sync_url": "https://api.acme.com/sync",
+    })
+    await db.add_account({
+        "id": "acme-main",
+        "tenant_id": "acme",
+        "host": "smtp.acme.com",
+        "port": 587,
+    })
+
+    # Insert a message
+    await db.insert_messages([{
+        "id": "msg1",
+        "account_id": "acme-main",
+        "priority": 2,
+        "payload": {"from": "test@acme.com", "to": ["dest@example.com"], "subject": "Test"},
+    }])
+
+    # Mark message as sent
+    import time
+    sent_ts = int(time.time())
+    await db.mark_sent("msg1", sent_ts)
+
+    # Fetch reports
+    reports = await db.fetch_reports(limit=10)
+    assert len(reports) == 1
+    assert reports[0]["id"] == "msg1"
+    assert reports[0]["account_id"] == "acme-main"
+    assert reports[0]["tenant_id"] == "acme"
+
+
+@pytest.mark.asyncio
+async def test_fetch_reports_no_tenant(tmp_path):
+    """Test fetch_reports for messages without tenant (backward compatibility)."""
+    db = Persistence(str(tmp_path / "test.db"))
+    await db.init_db()
+
+    # Create account without tenant
+    await db.add_account({
+        "id": "standalone",
+        "host": "smtp.example.com",
+        "port": 587,
+    })
+
+    # Insert a message
+    await db.insert_messages([{
+        "id": "msg1",
+        "account_id": "standalone",
+        "priority": 2,
+        "payload": {"from": "test@example.com", "to": ["dest@example.com"], "subject": "Test"},
+    }])
+
+    # Mark message as sent
+    import time
+    sent_ts = int(time.time())
+    await db.mark_sent("msg1", sent_ts)
+
+    # Fetch reports - tenant_id should be None
+    reports = await db.fetch_reports(limit=10)
+    assert len(reports) == 1
+    assert reports[0]["tenant_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_reports_multiple_tenants(tmp_path):
+    """Test fetch_reports groups correctly by tenant."""
+    db = Persistence(str(tmp_path / "test.db"))
+    await db.init_db()
+
+    # Create two tenants with accounts
+    await db.add_tenant({"id": "tenant1", "client_sync_url": "https://api1.com/sync"})
+    await db.add_tenant({"id": "tenant2", "client_sync_url": "https://api2.com/sync"})
+    await db.add_account({"id": "acc1", "tenant_id": "tenant1", "host": "smtp1.com", "port": 587})
+    await db.add_account({"id": "acc2", "tenant_id": "tenant2", "host": "smtp2.com", "port": 587})
+
+    # Insert messages for each tenant
+    await db.insert_messages([
+        {"id": "msg1", "account_id": "acc1", "priority": 2, "payload": {"from": "a@1.com", "to": ["b@1.com"], "subject": "T1"}},
+        {"id": "msg2", "account_id": "acc2", "priority": 2, "payload": {"from": "a@2.com", "to": ["b@2.com"], "subject": "T2"}},
+        {"id": "msg3", "account_id": "acc1", "priority": 2, "payload": {"from": "c@1.com", "to": ["d@1.com"], "subject": "T3"}},
+    ])
+
+    # Mark all as sent
+    import time
+    sent_ts = int(time.time())
+    for msg_id in ["msg1", "msg2", "msg3"]:
+        await db.mark_sent(msg_id, sent_ts)
+
+    # Fetch reports
+    reports = await db.fetch_reports(limit=10)
+    assert len(reports) == 3
+
+    # Group by tenant
+    by_tenant = {}
+    for r in reports:
+        tid = r["tenant_id"]
+        by_tenant.setdefault(tid, []).append(r)
+
+    assert len(by_tenant["tenant1"]) == 2
+    assert len(by_tenant["tenant2"]) == 1
