@@ -836,8 +836,8 @@ db_path = {db_path}
 host = {host}
 port = {port}
 
-# API token for authentication (leave empty for no auth)
-api_token =
+# API token for authentication (auto-generated)
+api_token = {api_token}
 
 [scheduler]
 # Start scheduler active (true/false)
@@ -940,6 +940,12 @@ def _remove_pid_file(name: str) -> None:
         pid_file.unlink()
 
 
+def _generate_api_token() -> str:
+    """Generate a secure random API token."""
+    import secrets
+    return secrets.token_urlsafe(32)
+
+
 def _ensure_config_file(name: str, port: int, host: str) -> str:
     """Ensure config file exists, creating with defaults if needed.
 
@@ -956,16 +962,21 @@ def _ensure_config_file(name: str, port: int, host: str) -> str:
         # Create directory if needed
         config_dir.mkdir(parents=True, exist_ok=True)
 
+        # Generate API token automatically
+        api_token = _generate_api_token()
+
         # Generate default config
         config_content = DEFAULT_CONFIG_TEMPLATE.format(
             name=name,
             db_path=db_path,
             port=port,
             host=host,
+            api_token=api_token,
         )
         config_file.write_text(config_content)
         console.print(f"[green]Created new instance:[/green] {name}")
         console.print(f"  Config: {config_file}")
+        console.print(f"  API Token: {api_token}")
 
     return str(config_file)
 
@@ -986,6 +997,7 @@ def _get_instance_config(name: str) -> Optional[Dict[str, Any]]:
         "db_path": config.get("server", "db_path", fallback=str(_get_instance_dir(name) / "mail_service.db")),
         "host": config.get("server", "host", fallback="0.0.0.0"),
         "port": config.getint("server", "port", fallback=8000),
+        "api_token": config.get("server", "api_token", fallback=None) or None,
         "config_file": str(config_file),
     }
 
@@ -1637,6 +1649,57 @@ def list_instances() -> None:
         )
 
     console.print(table)
+
+
+@main.command("token")
+@click.argument("name", default="default-mailer")
+@click.option("--regenerate", "-r", is_flag=True, help="Generate a new token and update config.")
+def show_token(name: str, regenerate: bool) -> None:
+    """Show or regenerate the API token for an instance.
+
+    Examples:
+
+        mail-proxy token my-instance
+
+        mail-proxy token my-instance --regenerate
+    """
+    import configparser
+
+    config_dir = _get_instance_dir(name)
+    config_file = config_dir / "config.ini"
+
+    if not config_file.exists():
+        print_error(f"Instance '{name}' not found. Use 'mail-proxy serve {name}' to create it.")
+        raise SystemExit(1)
+
+    config = configparser.ConfigParser()
+    config.read(config_file)
+
+    if regenerate:
+        # Generate new token
+        new_token = _generate_api_token()
+
+        # Update config file
+        if not config.has_section("server"):
+            config.add_section("server")
+        config.set("server", "api_token", new_token)
+
+        with open(config_file, "w") as f:
+            config.write(f)
+
+        console.print(f"[green]Token regenerated for instance:[/green] {name}")
+        console.print(f"[yellow]Note:[/yellow] Restart the instance for the new token to take effect.")
+        console.print(f"\n{new_token}")
+    else:
+        # Show existing token
+        token = config.get("server", "api_token", fallback=None)
+
+        if not token or token.strip() == "":
+            console.print(f"[yellow]No API token configured for instance:[/yellow] {name}")
+            console.print("Use --regenerate to generate one.")
+            raise SystemExit(1)
+
+        console.print(token.strip())
 
 
 if __name__ == "__main__":
