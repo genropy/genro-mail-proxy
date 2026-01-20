@@ -154,3 +154,310 @@ def test_health_endpoint_no_auth_required():
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+# ============================================================================
+# Additional Error Handling Tests
+# ============================================================================
+
+def test_invalid_token_rejected():
+    """Test that invalid API token is rejected."""
+    svc = DummyService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    client.headers.update({API_TOKEN_HEADER_NAME: "wrong-token"})
+
+    response = client.get("/status")
+    assert response.status_code == 401
+    assert "Invalid or missing API token" in response.json()["detail"]
+
+
+def test_no_token_configured_allows_access():
+    """Test that when no token is configured, all requests are allowed."""
+    svc = DummyService()
+    client = TestClient(create_app(svc, api_token=None))  # No token configured
+    # Don't send any token header
+
+    response = client.get("/status")
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+
+
+def test_validation_error_on_invalid_message_payload(client_and_service):
+    """Test validation error handling for invalid message payload."""
+    client, svc = client_and_service
+
+    # Missing required fields
+    invalid_payload = {
+        "messages": [
+            {
+                "id": "msg-1",
+                # missing 'from', 'to', 'subject', 'body'
+            }
+        ]
+    }
+
+    response = client.post("/commands/add-messages", json=invalid_payload)
+    assert response.status_code == 422
+    assert "detail" in response.json()
+
+
+def test_validation_error_on_invalid_account_payload(client_and_service):
+    """Test validation error handling for invalid account payload."""
+    client, svc = client_and_service
+
+    # Missing required fields
+    invalid_account = {
+        "id": "acc",
+        # missing 'host' and 'port'
+    }
+
+    response = client.post("/account", json=invalid_account)
+    assert response.status_code == 422
+
+
+def test_add_messages_returns_400_on_service_error():
+    """Test that add-messages returns 400 when service reports error."""
+    class ErrorService(DummyService):
+        async def handle_command(self, cmd, payload):
+            if cmd == "addMessages":
+                return {"ok": False, "error": "Validation failed", "rejected": ["msg-1"]}
+            return await super().handle_command(cmd, payload)
+
+    svc = ErrorService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
+
+    payload = {
+        "messages": [
+            {
+                "id": "msg-1",
+                "from": "sender@example.com",
+                "to": "dest@example.com",
+                "subject": "Test",
+                "body": "Body",
+            }
+        ]
+    }
+
+    response = client.post("/commands/add-messages", json=payload)
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["error"] == "Validation failed"
+    assert detail["rejected"] == ["msg-1"]
+
+
+def test_service_not_initialized_all_commands():
+    """Test that all command endpoints return 500 when service is not initialized."""
+    create_app(DummyService(), api_token=API_TOKEN)
+    api.service = None
+    client = TestClient(api.app)
+    headers = {API_TOKEN_HEADER_NAME: API_TOKEN}
+
+    # Test all command endpoints
+    endpoints_to_test = [
+        ("POST", "/commands/run-now", None),
+        ("POST", "/commands/suspend", None),
+        ("POST", "/commands/activate", None),
+        ("POST", "/commands/add-messages", {"messages": []}),
+        ("POST", "/commands/delete-messages", {"ids": []}),
+        ("POST", "/commands/cleanup-messages", {}),
+        ("POST", "/account", {"id": "a", "host": "h", "port": 25}),
+        ("GET", "/accounts", None),
+        ("DELETE", "/account/test", None),
+        ("GET", "/messages", None),
+        ("GET", "/metrics", None),
+    ]
+
+    for method, path, body in endpoints_to_test:
+        if method == "GET":
+            response = client.get(path, headers=headers)
+        elif method == "POST":
+            response = client.post(path, json=body, headers=headers)
+        elif method == "DELETE":
+            response = client.delete(path, headers=headers)
+
+        assert response.status_code == 500, f"Expected 500 for {method} {path}, got {response.status_code}"
+        assert response.json()["detail"] == "Service not initialized"
+
+
+def test_message_with_attachments(client_and_service):
+    """Test adding message with attachments."""
+    client, svc = client_and_service
+
+    payload = {
+        "messages": [
+            {
+                "id": "msg-attach",
+                "from": "sender@example.com",
+                "to": "dest@example.com",
+                "subject": "With Attachment",
+                "body": "Body with attachment",
+                "attachments": [
+                    {
+                        "filename": "doc.pdf",
+                        "storage_path": "/path/to/doc.pdf"
+                    },
+                    {
+                        "filename": "image.png",
+                        "storage_path": "base64:iVBORw...",
+                        "mime_type": "image/png"
+                    }
+                ]
+            }
+        ]
+    }
+
+    response = client.post("/commands/add-messages", json=payload)
+    assert response.status_code == 200
+    assert response.json()["queued"] == 1
+
+    # Verify attachments were passed to service
+    cmd, data = svc.calls[-1]
+    assert cmd == "addMessages"
+    msg = data["messages"][0]
+    assert len(msg["attachments"]) == 2
+    assert msg["attachments"][0]["filename"] == "doc.pdf"
+    assert msg["attachments"][1]["mime_type"] == "image/png"
+
+
+def test_message_with_priority(client_and_service):
+    """Test adding message with priority."""
+    client, svc = client_and_service
+
+    payload = {
+        "messages": [
+            {
+                "id": "msg-priority",
+                "from": "sender@example.com",
+                "to": "dest@example.com",
+                "subject": "High Priority",
+                "body": "Urgent message",
+                "priority": 0  # immediate
+            }
+        ],
+        "default_priority": 2  # medium
+    }
+
+    response = client.post("/commands/add-messages", json=payload)
+    assert response.status_code == 200
+
+    # Verify priority was passed
+    cmd, data = svc.calls[-1]
+    assert data["default_priority"] == 2
+    assert data["messages"][0]["priority"] == 0
+
+
+def test_message_with_html_content(client_and_service):
+    """Test adding message with HTML content type."""
+    client, svc = client_and_service
+
+    payload = {
+        "messages": [
+            {
+                "id": "msg-html",
+                "from": "sender@example.com",
+                "to": "dest@example.com",
+                "subject": "HTML Email",
+                "body": "<html><body><h1>Hello</h1></body></html>",
+                "content_type": "html"
+            }
+        ]
+    }
+
+    response = client.post("/commands/add-messages", json=payload)
+    assert response.status_code == 200
+
+    cmd, data = svc.calls[-1]
+    assert data["messages"][0]["content_type"] == "html"
+
+
+def test_message_with_cc_and_bcc(client_and_service):
+    """Test adding message with CC and BCC recipients."""
+    client, svc = client_and_service
+
+    payload = {
+        "messages": [
+            {
+                "id": "msg-cc-bcc",
+                "from": "sender@example.com",
+                "to": ["primary@example.com"],
+                "cc": ["copy1@example.com", "copy2@example.com"],
+                "bcc": ["hidden@example.com"],
+                "subject": "With CC/BCC",
+                "body": "Body"
+            }
+        ]
+    }
+
+    response = client.post("/commands/add-messages", json=payload)
+    assert response.status_code == 200
+
+    cmd, data = svc.calls[-1]
+    msg = data["messages"][0]
+    assert msg["to"] == ["primary@example.com"]
+    assert msg["cc"] == ["copy1@example.com", "copy2@example.com"]
+    assert msg["bcc"] == ["hidden@example.com"]
+
+
+def test_cleanup_messages_with_custom_retention():
+    """Test cleanup messages with custom retention period."""
+    class CleanupService(DummyService):
+        async def handle_command(self, cmd, payload):
+            self.calls.append((cmd, payload))
+            if cmd == "cleanupMessages":
+                return {"ok": True, "removed": 5}
+            return {"ok": True}
+
+    svc = CleanupService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
+
+    # With custom older_than_seconds
+    response = client.post("/commands/cleanup-messages", json={"older_than_seconds": 3600})
+    assert response.status_code == 200
+
+    cmd, data = svc.calls[-1]
+    assert cmd == "cleanupMessages"
+    assert data["older_than_seconds"] == 3600
+
+
+def test_cleanup_messages_default_retention():
+    """Test cleanup messages with default retention period."""
+    class CleanupService(DummyService):
+        async def handle_command(self, cmd, payload):
+            self.calls.append((cmd, payload))
+            if cmd == "cleanupMessages":
+                return {"ok": True, "removed": 0}
+            return {"ok": True}
+
+    svc = CleanupService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
+
+    # With default (no body or empty body)
+    response = client.post("/commands/cleanup-messages", json={})
+    assert response.status_code == 200
+
+    cmd, data = svc.calls[-1]
+    assert cmd == "cleanupMessages"
+    assert data.get("older_than_seconds") is None
+
+
+def test_empty_message_list_accepted(client_and_service):
+    """Test that empty message list is accepted."""
+    client, svc = client_and_service
+
+    payload = {"messages": []}
+
+    response = client.post("/commands/add-messages", json=payload)
+    assert response.status_code == 200
+    assert response.json()["queued"] == 0
+
+
+def test_delete_messages_empty_list(client_and_service):
+    """Test deleting with empty ID list."""
+    client, svc = client_and_service
+
+    response = client.post("/commands/delete-messages", json={"ids": []})
+    assert response.status_code == 200
+    assert response.json()["removed"] == 0
