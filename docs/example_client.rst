@@ -669,10 +669,45 @@ To integrate this pattern into your application:
 3. **Add proxy_sync endpoint** to receive delivery reports
 4. **Add polling mechanism** (optional, for applications that don't receive run-now triggers)
 
+Multi-tenant Integration
+------------------------
+
+For multi-tenant deployments, each tenant can have their own sync endpoint.
+See :doc:`multi_tenancy` for the complete architecture.
+
+The proxy sends delivery reports with this payload structure:
+
+.. code-block:: json
+
+   {
+     "delivery_report": [
+       {
+         "id": "msg-001",
+         "account_id": "smtp-tenant1",
+         "priority": 2,
+         "sent_ts": 1705750800,
+         "error_ts": null,
+         "error": null,
+         "deferred_ts": null
+       }
+     ]
+   }
+
+Your endpoint should respond with a summary:
+
+.. code-block:: json
+
+   {
+     "sent": 1,
+     "error": 0,
+     "deferred": 0
+   }
+
 See Also
 --------
 
-- `Architecture Overview <architecture_overview.rst>`_ - Why use an email proxy
+- :doc:`multi_tenancy` - Multi-tenant architecture and configuration
+- :doc:`architecture_overview` - Why use an email proxy
 - `TROUBLESHOOTING.md <../TROUBLESHOOTING.md>`_ - Diagnostic procedures
-- `API Reference <api_reference.rst>`_ - Complete REST API documentation
-- `Protocol <protocol.rst>`_ - Message format and delivery reports
+- :doc:`api_reference` - Complete REST API documentation
+- :doc:`protocol` - Message format and delivery reports
