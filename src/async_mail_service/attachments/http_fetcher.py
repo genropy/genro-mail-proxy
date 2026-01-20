@@ -90,31 +90,40 @@ class HttpFetcher:
             )
         return self._default_endpoint, path
 
-    def _get_auth_headers(self) -> Dict[str, str]:
+    def _get_auth_headers(
+        self, auth_override: Optional[Dict[str, str]] = None
+    ) -> Dict[str, str]:
         """Build authentication headers based on config.
+
+        Args:
+            auth_override: Optional auth config to use instead of default.
 
         Returns:
             Dictionary of HTTP headers for authentication.
         """
-        method = self._auth_config.get("method", "none")
+        auth_config = auth_override if auth_override is not None else self._auth_config
+        method = auth_config.get("method", "none")
 
         if method == "bearer":
-            token = self._auth_config.get("token", "")
+            token = auth_config.get("token", "")
             return {"Authorization": f"Bearer {token}"}
 
         if method == "basic":
-            user = self._auth_config.get("user", "")
-            password = self._auth_config.get("password", "")
+            user = auth_config.get("user", "")
+            password = auth_config.get("password", "")
             credentials = base64.b64encode(f"{user}:{password}".encode()).decode()
             return {"Authorization": f"Basic {credentials}"}
 
         return {}
 
-    async def fetch(self, path: str) -> bytes:
+    async def fetch(
+        self, path: str, auth_override: Optional[Dict[str, str]] = None
+    ) -> bytes:
         """Fetch a single attachment via HTTP.
 
         Args:
             path: HTTP path (without the "@" prefix).
+            auth_override: Optional auth config to use instead of default.
 
         Returns:
             Binary content of the attachment.
@@ -124,7 +133,7 @@ class HttpFetcher:
             aiohttp.ClientError: If the HTTP request fails.
         """
         server_url, params = self._parse_path(path)
-        headers = self._get_auth_headers()
+        headers = self._get_auth_headers(auth_override)
 
         async with aiohttp.ClientSession() as session:
             async with session.post(

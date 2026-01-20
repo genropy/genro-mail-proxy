@@ -4,8 +4,7 @@ This module defines the data models used throughout the application for
 validation, serialization, and type safety.
 
 Models:
-    - TenantSyncAuth: Authentication config for client sync endpoint
-    - TenantAttachmentConfig: Attachment fetcher configuration
+    - TenantAuth: Common authentication config for tenant HTTP endpoints
     - TenantRateLimits: Rate limiting configuration
     - Tenant: Complete tenant configuration
     - Account: SMTP account configuration
@@ -29,8 +28,10 @@ class AuthMethod(str, Enum):
     BASIC = "basic"
 
 
-class TenantSyncAuth(BaseModel):
-    """Authentication configuration for tenant's client sync endpoint.
+class TenantAuth(BaseModel):
+    """Authentication configuration for tenant's HTTP endpoints.
+
+    Used for both sync (delivery reports) and attachment fetcher endpoints.
 
     Attributes:
         method: Authentication method (none, bearer, basic).
@@ -78,29 +79,8 @@ class TenantSyncAuth(BaseModel):
         return v
 
 
-class TenantAttachmentConfig(BaseModel):
-    """Attachment fetcher configuration for a tenant.
-
-    Attributes:
-        base_dir: Base directory for relative filesystem paths.
-        http_endpoint: Default endpoint for HTTP attachment fetcher.
-        http_auth: Authentication for HTTP fetcher.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    base_dir: Annotated[
-        Optional[str],
-        Field(default=None, description="Base directory for relative paths")
-    ]
-    http_endpoint: Annotated[
-        Optional[str],
-        Field(default=None, description="Default HTTP endpoint for @params paths")
-    ]
-    http_auth: Annotated[
-        Optional[TenantSyncAuth],
-        Field(default=None, description="HTTP fetcher authentication")
-    ]
+# Alias for backward compatibility
+TenantSyncAuth = TenantAuth
 
 
 class TenantRateLimits(BaseModel):
@@ -129,9 +109,9 @@ class TenantCreate(BaseModel):
     Attributes:
         id: Unique tenant identifier.
         name: Human-readable tenant name.
+        client_auth: Common authentication for all HTTP endpoints.
         client_sync_url: URL for delivery report callbacks.
-        client_sync_auth: Authentication for sync endpoint.
-        attachment_config: Attachment fetcher settings.
+        client_attachment_url: URL for attachment fetcher HTTP endpoint.
         rate_limits: Rate limiting settings.
         active: Whether tenant is active.
     """
@@ -147,17 +127,17 @@ class TenantCreate(BaseModel):
         Optional[str],
         Field(default=None, max_length=255, description="Human-readable tenant name")
     ]
+    client_auth: Annotated[
+        Optional[TenantAuth],
+        Field(default=None, description="Common authentication for HTTP endpoints")
+    ]
     client_sync_url: Annotated[
         Optional[str],
         Field(default=None, description="URL for delivery report callbacks")
     ]
-    client_sync_auth: Annotated[
-        Optional[TenantSyncAuth],
-        Field(default=None, description="Authentication for sync endpoint")
-    ]
-    attachment_config: Annotated[
-        Optional[TenantAttachmentConfig],
-        Field(default=None, description="Attachment fetcher configuration")
+    client_attachment_url: Annotated[
+        Optional[str],
+        Field(default=None, description="URL for attachment fetcher HTTP endpoint")
     ]
     rate_limits: Annotated[
         Optional[TenantRateLimits],
@@ -181,17 +161,17 @@ class TenantUpdate(BaseModel):
         Optional[str],
         Field(default=None, max_length=255, description="Human-readable tenant name")
     ]
+    client_auth: Annotated[
+        Optional[TenantAuth],
+        Field(default=None, description="Common authentication for HTTP endpoints")
+    ]
     client_sync_url: Annotated[
         Optional[str],
         Field(default=None, description="URL for delivery report callbacks")
     ]
-    client_sync_auth: Annotated[
-        Optional[TenantSyncAuth],
-        Field(default=None, description="Authentication for sync endpoint")
-    ]
-    attachment_config: Annotated[
-        Optional[TenantAttachmentConfig],
-        Field(default=None, description="Attachment fetcher configuration")
+    client_attachment_url: Annotated[
+        Optional[str],
+        Field(default=None, description="URL for attachment fetcher HTTP endpoint")
     ]
     rate_limits: Annotated[
         Optional[TenantRateLimits],
@@ -330,6 +310,15 @@ class Account(AccountCreate):
     ]
 
 
+class FetchMode(str, Enum):
+    """Fetch mode for attachments."""
+
+    ENDPOINT = "endpoint"
+    STORAGE = "storage"
+    HTTP_URL = "http_url"
+    BASE64 = "base64"
+
+
 class AttachmentPayload(BaseModel):
     """Email attachment specification.
 
@@ -337,6 +326,12 @@ class AttachmentPayload(BaseModel):
         filename: Attachment filename (may contain MD5 marker).
         storage_path: Path to fetch content (base64:, volume:, @http, /absolute, relative).
         mime_type: Optional MIME type override.
+        fetch_mode: Explicit fetch mode (endpoint, storage, http_url, base64).
+            If not specified, mode is determined from storage_path prefix.
+        content_md5: MD5 hash for cache lookup. Alternative to embedding
+            {MD5:hash} marker in filename.
+        auth: Optional authentication override for HTTP requests.
+            Uses TenantAuth format. If not specified, uses tenant's client_auth.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -352,6 +347,18 @@ class AttachmentPayload(BaseModel):
     mime_type: Annotated[
         Optional[str],
         Field(default=None, description="MIME type override")
+    ]
+    fetch_mode: Annotated[
+        Optional[FetchMode],
+        Field(default=None, description="Explicit fetch mode (endpoint, storage, http_url, base64)")
+    ]
+    content_md5: Annotated[
+        Optional[str],
+        Field(default=None, pattern=r"^[a-fA-F0-9]{32}$", description="MD5 hash for cache lookup")
+    ]
+    auth: Annotated[
+        Optional[TenantAuth],
+        Field(default=None, description="Auth override for this attachment")
     ]
 
 

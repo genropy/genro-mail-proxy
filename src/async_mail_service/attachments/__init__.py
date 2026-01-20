@@ -4,7 +4,7 @@ This module provides the AttachmentManager class for retrieving email
 attachments from various storage backends with intelligent routing and
 optional MD5-based caching.
 
-Supported storage path formats:
+Supported storage path formats (legacy prefix-based):
 - volume:path - genro-storage volume (requires genro-storage)
 - base64:content - Inline base64-encoded content
 - /absolute/path - Local filesystem absolute path
@@ -12,7 +12,17 @@ Supported storage path formats:
 - @params - HTTP POST to default endpoint
 - @[url]params - HTTP POST to specific URL
 
-MD5 marker in filename:
+Explicit fetch_mode parameter (recommended):
+- endpoint - HTTP POST to tenant's client_attachment_url
+- storage - genro-storage volume
+- http_url - Direct HTTP fetch from URL in storage_path
+- base64 - Inline base64-encoded content
+
+Additional attachment parameters:
+- content_md5: MD5 hash for cache lookup (alternative to filename marker)
+- auth: Authentication override for HTTP requests (uses TenantAuth format)
+
+MD5 marker in filename (legacy):
 The filename can include an MD5 marker in the format {MD5:hash} which
 enables cache lookup before fetching. The marker is stripped from the
 final filename.
@@ -21,21 +31,14 @@ Example:
     filename="report_{MD5:a1b2c3d4}.pdf" -> clean filename="report.pdf"
 
 Example:
-    Using AttachmentManager with various backends::
+    Using AttachmentManager with explicit fetch_mode::
 
-        from async_mail_service.attachments import AttachmentManager
-
-        manager = AttachmentManager(
-            storage_manager=storage,  # Optional genro-storage
-            base_dir="/var/files",    # For filesystem paths
-            http_endpoint="https://api.example.com/files",
-            cache=tiered_cache,       # Optional TieredCache
-        )
-
-        # Fetch with MD5 cache lookup
         content, filename = await manager.fetch({
-            "filename": "report_{MD5:a1b2c3}.pdf",
-            "storage_path": "docs:report.pdf"
+            "filename": "report.pdf",
+            "storage_path": "https://cdn.example.com/files/123",
+            "fetch_mode": "http_url",
+            "content_md5": "a1b2c3d4e5f6789012345678901234ab",
+            "auth": {"method": "bearer", "token": "cdn-token"}
         })
 """
 
@@ -150,11 +153,15 @@ class AttachmentManager:
 
         return clean_filename, md5_hash
 
-    def _parse_storage_path(self, path: str) -> Tuple[str, str]:
+    def _parse_storage_path(
+        self, path: str, fetch_mode: Optional[str] = None
+    ) -> Tuple[str, str]:
         """Determine the type and parsed content of a storage path.
 
         Args:
             path: The storage_path value from attachment dict.
+            fetch_mode: Explicit fetch mode. If provided, overrides prefix-based
+                detection. Valid values: "endpoint", "storage", "http_url", "base64".
 
         Returns:
             Tuple of (path_type, parsed_path) where path_type is one of:
@@ -166,6 +173,20 @@ class AttachmentManager:
         if not path:
             raise ValueError("Empty storage_path")
 
+        # If fetch_mode is explicitly specified, use it
+        if fetch_mode:
+            if fetch_mode == "endpoint":
+                return ("http", path)
+            if fetch_mode == "storage":
+                return ("storage", path)
+            if fetch_mode == "http_url":
+                # Wrap URL in brackets for HttpFetcher
+                return ("http", f"[{path}]")
+            if fetch_mode == "base64":
+                return ("base64", path)
+            raise ValueError(f"Unknown fetch_mode: {fetch_mode}")
+
+        # Legacy prefix-based detection
         # HTTP: starts with @
         if path.startswith("@"):
             return ("http", path[1:])
@@ -205,6 +226,9 @@ class AttachmentManager:
             att: Attachment specification dictionary containing:
                 - filename: Original filename (may contain MD5 marker)
                 - storage_path: Location identifier for content
+                - fetch_mode: Optional explicit fetch mode
+                - content_md5: Optional MD5 hash for cache lookup
+                - auth: Optional auth override for HTTP requests
 
         Returns:
             Tuple of (content_bytes, clean_filename), or None if
@@ -223,14 +247,24 @@ class AttachmentManager:
         raw_filename = att.get("filename", "file.bin")
         clean_filename, md5_from_marker = self.parse_filename(raw_filename)
 
-        # Try cache lookup if MD5 marker was provided
-        if md5_from_marker and self._cache:
-            cached = await self._cache.get(md5_from_marker)
+        # Get explicit parameters
+        content_md5 = att.get("content_md5")
+        fetch_mode = att.get("fetch_mode")
+        auth = att.get("auth")
+
+        # Use content_md5 if provided, fallback to marker in filename
+        cache_key = content_md5 or md5_from_marker
+
+        # Try cache lookup
+        if cache_key and self._cache:
+            cached = await self._cache.get(cache_key)
             if cached is not None:
                 return cached, clean_filename
 
         # Fetch from backend
-        content = await self._fetch_from_backend(storage_path)
+        content = await self._fetch_from_backend(
+            storage_path, fetch_mode=fetch_mode, auth_override=auth
+        )
         if content is None:
             return None
 
@@ -241,16 +275,23 @@ class AttachmentManager:
 
         return content, clean_filename
 
-    async def _fetch_from_backend(self, storage_path: str) -> Optional[bytes]:
+    async def _fetch_from_backend(
+        self,
+        storage_path: str,
+        fetch_mode: Optional[str] = None,
+        auth_override: Optional[Dict[str, Any]] = None,
+    ) -> Optional[bytes]:
         """Fetch content from the appropriate backend.
 
         Args:
             storage_path: The storage path to fetch.
+            fetch_mode: Optional explicit fetch mode.
+            auth_override: Optional auth config for HTTP requests.
 
         Returns:
             Binary content, or None if not found.
         """
-        path_type, parsed_path = self._parse_storage_path(storage_path)
+        path_type, parsed_path = self._parse_storage_path(storage_path, fetch_mode)
 
         if path_type == "storage":
             if not self._storage_fetcher:
@@ -266,7 +307,7 @@ class AttachmentManager:
             return await self._filesystem_fetcher.fetch(parsed_path)
 
         if path_type == "http":
-            return await self._http_fetcher.fetch(parsed_path)
+            return await self._http_fetcher.fetch(parsed_path, auth_override)
 
         raise ValueError(f"Unknown path type: {path_type}")
 
@@ -280,7 +321,8 @@ class AttachmentManager:
         fetched individually but in parallel.
 
         Args:
-            attachments: List of attachment dicts with storage_path and filename.
+            attachments: List of attachment dicts with storage_path, filename,
+                and optionally fetch_mode and content_md5.
 
         Returns:
             Dictionary mapping storage_path to (content, clean_filename).
@@ -302,16 +344,21 @@ class AttachmentManager:
             raw_filename = att.get("filename", "file.bin")
             clean_filename, md5_from_marker = self.parse_filename(raw_filename)
 
+            # Use content_md5 if provided, fallback to marker in filename
+            content_md5 = att.get("content_md5")
+            cache_key = content_md5 or md5_from_marker
+
             # Try cache
-            if md5_from_marker and self._cache:
-                cached = await self._cache.get(md5_from_marker)
+            if cache_key and self._cache:
+                cached = await self._cache.get(cache_key)
                 if cached is not None:
                     results[storage_path] = (cached, clean_filename)
                     continue
 
             # Categorize for fetching
+            fetch_mode = att.get("fetch_mode")
             try:
-                path_type, _ = self._parse_storage_path(storage_path)
+                path_type, _ = self._parse_storage_path(storage_path, fetch_mode)
                 to_fetch[path_type].append(att)
             except (ValueError, RuntimeError):
                 continue
