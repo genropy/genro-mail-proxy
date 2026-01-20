@@ -4,17 +4,26 @@ This module provides a CLI for managing tenants, accounts, and messages
 directly from the command line without going through the HTTP API.
 
 Usage:
-    mail-proxy tenant list
-    mail-proxy tenant add acme-corp --name "ACME Corporation"
-    mail-proxy account add main-smtp --tenant acme-corp --host smtp.example.com --port 587
-    mail-proxy message list --tenant acme-corp
+    # Instance-level commands
+    mail-proxy <instance> serve start
+    mail-proxy <instance> serve stop
+    mail-proxy <instance> tenants list
+    mail-proxy <instance> tenants add acme-corp --name "ACME Corporation"
+    mail-proxy <instance> stats
+
+    # Tenant-level commands
+    mail-proxy <instance> <tenant> accounts list
+    mail-proxy <instance> <tenant> accounts add main-smtp --host smtp.example.com --port 587
+    mail-proxy <instance> <tenant> messages list
+    mail-proxy <instance> <tenant> send email.eml
 
 Example:
-    $ mail-proxy tenant add mycompany --name "My Company" \\
+    $ mail-proxy myserver tenants add mycompany --name "My Company" \\
         --sync-url "https://api.mycompany.com/mail/sync" \\
-        --sync-auth-method bearer --sync-auth-token secret123
+        --attachment-url "https://api.mycompany.com/attachments" \\
+        --auth-method bearer --auth-token secret123
 
-    $ mail-proxy account add primary --tenant mycompany \\
+    $ mail-proxy myserver mycompany accounts add primary \\
         --host smtp.mycompany.com --port 587 \\
         --user mailer@mycompany.com --password secret
 """
@@ -25,7 +34,8 @@ import asyncio
 import json
 import sys
 from datetime import datetime
-from typing import Annotated, Any, Dict, Optional
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 import click
 from pydantic import ValidationError
@@ -34,9 +44,10 @@ from rich.table import Table
 
 from async_mail_service.models import (
     AccountCreate,
+    DEFAULT_ATTACHMENT_PATH,
+    DEFAULT_SYNC_PATH,
     TenantCreate,
-    TenantSyncAuth,
-    TenantAttachmentConfig,
+    TenantAuth,
     TenantRateLimits,
 )
 from async_mail_service.persistence import Persistence
@@ -70,756 +81,76 @@ def print_json(data: Any) -> None:
     console.print_json(json.dumps(data, indent=2, default=str))
 
 
-# Main CLI group
-@click.group()
-@click.option(
-    "--db", "-d",
-    envvar="GMP_DB_PATH",
-    default="/data/mail_service.db",
-    help="Path to SQLite database file.",
-    show_default=True,
-)
-@click.pass_context
-def main(ctx: click.Context, db: str) -> None:
-    """genro-mail-proxy CLI - Manage tenants, accounts, and messages.
-
-    Use --db or GMP_DB_PATH environment variable to specify the database path.
-    """
-    ctx.ensure_object(dict)
-    ctx.obj["db_path"] = db
-    # Persistence created lazily when needed (avoid blocking on --help)
-    ctx.obj["_persistence_factory"] = lambda: get_persistence(db)
-
-
-def _get_persistence(ctx: click.Context) -> Persistence:
-    """Get or create persistence instance lazily."""
-    if "persistence" not in ctx.obj:
-        ctx.obj["persistence"] = ctx.obj["_persistence_factory"]()
-    return ctx.obj["persistence"]
-
-
 # ============================================================================
-# TENANT commands
+# Instance utilities
 # ============================================================================
 
-@main.group()
-def tenant() -> None:
-    """Manage tenants."""
-    pass
+def _get_instance_dir(name: str) -> Path:
+    """Get the instance directory path."""
+    return Path.home() / ".mail-proxy" / name
 
 
-@tenant.command("list")
-@click.option("--active-only", "-a", is_flag=True, help="Show only active tenants.")
-@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
-@click.pass_context
-def tenant_list(ctx: click.Context, active_only: bool, as_json: bool) -> None:
-    """List all tenants."""
-    persistence = _get_persistence(ctx)
-
-    async def _list():
-        await persistence.init_db()
-        return await persistence.list_tenants(active_only=active_only)
-
-    tenants = run_async(_list())
-
-    if as_json:
-        print_json(tenants)
-        return
-
-    if not tenants:
-        console.print("[dim]No tenants found.[/dim]")
-        return
-
-    table = Table(title="Tenants")
-    table.add_column("ID", style="cyan")
-    table.add_column("Name")
-    table.add_column("Active", justify="center")
-    table.add_column("Sync URL")
-
-    for t in tenants:
-        active = "[green]✓[/green]" if t.get("active") else "[red]✗[/red]"
-        table.add_row(
-            t["id"],
-            t.get("name") or "-",
-            active,
-            t.get("client_sync_url") or "-",
-        )
-
-    console.print(table)
+def _get_pid_file(name: str) -> Path:
+    """Get the PID file path for an instance."""
+    return _get_instance_dir(name) / "server.pid"
 
 
-@tenant.command("show")
-@click.argument("tenant_id")
-@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
-@click.pass_context
-def tenant_show(ctx: click.Context, tenant_id: str, as_json: bool) -> None:
-    """Show details for a specific tenant."""
-    persistence = _get_persistence(ctx)
-
-    async def _show():
-        await persistence.init_db()
-        return await persistence.get_tenant(tenant_id)
-
-    tenant_data = run_async(_show())
-
-    if not tenant_data:
-        print_error(f"Tenant '{tenant_id}' not found.")
-        sys.exit(1)
-
-    if as_json:
-        print_json(tenant_data)
-        return
-
-    console.print(f"\n[bold cyan]Tenant: {tenant_id}[/bold cyan]\n")
-    console.print(f"  Name:            {tenant_data.get('name') or '-'}")
-    console.print(f"  Active:          {'Yes' if tenant_data.get('active') else 'No'}")
-    console.print(f"  Sync URL:        {tenant_data.get('client_sync_url') or '-'}")
-    console.print(f"  Created:         {tenant_data.get('created_at') or '-'}")
-    console.print(f"  Updated:         {tenant_data.get('updated_at') or '-'}")
-
-    if tenant_data.get("client_sync_auth"):
-        auth = tenant_data["client_sync_auth"]
-        console.print(f"  Sync Auth:       {auth.get('method', 'none')}")
-
-    if tenant_data.get("rate_limits"):
-        limits = tenant_data["rate_limits"]
-        console.print(f"  Rate Limits:     hourly={limits.get('hourly', 0)}, daily={limits.get('daily', 0)}")
-
-    if tenant_data.get("attachment_config"):
-        att = tenant_data["attachment_config"]
-        console.print(f"  Attachment Dir:  {att.get('base_dir') or '-'}")
-        console.print(f"  HTTP Endpoint:   {att.get('http_endpoint') or '-'}")
-
-    console.print()
+def _get_db_path(name: str) -> str:
+    """Get database path for an instance."""
+    return str(_get_instance_dir(name) / "mail_service.db")
 
 
-@tenant.command("add")
-@click.argument("tenant_id")
-@click.option("--name", "-n", help="Human-readable tenant name.")
-@click.option("--sync-url", help="URL for delivery report callbacks.")
-@click.option("--sync-auth-method", type=click.Choice(["none", "bearer", "basic"]), default="none",
-              help="Authentication method for sync endpoint.")
-@click.option("--sync-auth-token", help="Bearer token (for bearer auth).")
-@click.option("--sync-auth-user", help="Username (for basic auth).")
-@click.option("--sync-auth-password", help="Password (for basic auth).")
-@click.option("--attachment-base-dir", help="Base directory for relative attachment paths.")
-@click.option("--attachment-http-endpoint", help="Default HTTP endpoint for attachment fetcher.")
-@click.option("--rate-limit-hourly", type=int, default=0, help="Max emails per hour (0=unlimited).")
-@click.option("--rate-limit-daily", type=int, default=0, help="Max emails per day (0=unlimited).")
-@click.option("--inactive", is_flag=True, help="Create tenant as inactive.")
-@click.pass_context
-def tenant_add(
-    ctx: click.Context,
-    tenant_id: str,
-    name: Optional[str],
-    sync_url: Optional[str],
-    sync_auth_method: str,
-    sync_auth_token: Optional[str],
-    sync_auth_user: Optional[str],
-    sync_auth_password: Optional[str],
-    attachment_base_dir: Optional[str],
-    attachment_http_endpoint: Optional[str],
-    rate_limit_hourly: int,
-    rate_limit_daily: int,
-    inactive: bool,
-) -> None:
-    """Add a new tenant.
+def _is_instance_running(name: str) -> tuple[bool, Optional[int], Optional[int]]:
+    """Check if an instance is running.
 
-    TENANT_ID must be alphanumeric with underscores/hyphens (e.g., acme-corp).
+    Returns:
+        (is_running, pid, port)
     """
-    persistence = _get_persistence(ctx)
+    import os
 
-    # Build sync auth config
-    sync_auth = None
-    if sync_auth_method != "none":
-        sync_auth = {
-            "method": sync_auth_method,
-            "token": sync_auth_token,
-            "user": sync_auth_user,
-            "password": sync_auth_password,
-        }
+    pid_file = _get_pid_file(name)
+    if not pid_file.exists():
+        return False, None, None
 
-    # Build attachment config
-    attachment_config = None
-    if attachment_base_dir or attachment_http_endpoint:
-        attachment_config = {
-            "base_dir": attachment_base_dir,
-            "http_endpoint": attachment_http_endpoint,
-        }
-
-    # Build rate limits
-    rate_limits = None
-    if rate_limit_hourly > 0 or rate_limit_daily > 0:
-        rate_limits = {
-            "hourly": rate_limit_hourly,
-            "daily": rate_limit_daily,
-        }
-
-    # Validate with Pydantic
     try:
-        tenant_data = TenantCreate(
-            id=tenant_id,
-            name=name,
-            client_sync_url=sync_url,
-            client_sync_auth=TenantSyncAuth(**sync_auth) if sync_auth else None,
-            attachment_config=TenantAttachmentConfig(**attachment_config) if attachment_config else None,
-            rate_limits=TenantRateLimits(**rate_limits) if rate_limits else None,
-            active=not inactive,
-        )
-    except ValidationError as e:
-        print_error(f"Validation error: {e}")
-        sys.exit(1)
+        data = json.loads(pid_file.read_text())
+        pid = data.get("pid")
+        port = data.get("port")
+
+        if pid is None:
+            return False, None, port
+
+        # Check if process is alive
+        os.kill(pid, 0)  # Doesn't kill, just checks
+        return True, pid, port
+    except (json.JSONDecodeError, ProcessLookupError, PermissionError, OSError):
+        # Process not running or PID file corrupt
+        return False, None, None
+
+
+def _write_pid_file(name: str, pid: int, port: int, host: str) -> None:
+    """Write PID file for an instance."""
+    pid_file = _get_pid_file(name)
+    pid_file.write_text(json.dumps({
+        "pid": pid,
+        "port": port,
+        "host": host,
+        "started_at": datetime.now().isoformat(),
+    }, indent=2))
+
+
+def _remove_pid_file(name: str) -> None:
+    """Remove PID file for an instance."""
+    pid_file = _get_pid_file(name)
+    if pid_file.exists():
+        pid_file.unlink()
+
+
+def _generate_api_token() -> str:
+    """Generate a secure random API token."""
+    import secrets
+    return secrets.token_urlsafe(32)
 
-    async def _add():
-        await persistence.init_db()
-        await persistence.add_tenant(tenant_data.model_dump(exclude_none=True))
-
-    run_async(_add())
-    print_success(f"Tenant '{tenant_id}' created.")
-
-
-@tenant.command("update")
-@click.argument("tenant_id")
-@click.option("--name", "-n", help="Human-readable tenant name.")
-@click.option("--sync-url", help="URL for delivery report callbacks.")
-@click.option("--sync-auth-method", type=click.Choice(["none", "bearer", "basic"]),
-              help="Authentication method for sync endpoint.")
-@click.option("--sync-auth-token", help="Bearer token (for bearer auth).")
-@click.option("--sync-auth-user", help="Username (for basic auth).")
-@click.option("--sync-auth-password", help="Password (for basic auth).")
-@click.option("--attachment-base-dir", help="Base directory for relative attachment paths.")
-@click.option("--attachment-http-endpoint", help="Default HTTP endpoint for attachment fetcher.")
-@click.option("--rate-limit-hourly", type=int, help="Max emails per hour (0=unlimited).")
-@click.option("--rate-limit-daily", type=int, help="Max emails per day (0=unlimited).")
-@click.option("--active/--inactive", default=None, help="Set tenant active status.")
-@click.pass_context
-def tenant_update(
-    ctx: click.Context,
-    tenant_id: str,
-    name: Optional[str],
-    sync_url: Optional[str],
-    sync_auth_method: Optional[str],
-    sync_auth_token: Optional[str],
-    sync_auth_user: Optional[str],
-    sync_auth_password: Optional[str],
-    attachment_base_dir: Optional[str],
-    attachment_http_endpoint: Optional[str],
-    rate_limit_hourly: Optional[int],
-    rate_limit_daily: Optional[int],
-    active: Optional[bool],
-) -> None:
-    """Update an existing tenant.
-
-    Only provided options will be updated.
-    """
-    persistence = _get_persistence(ctx)
-
-    updates: Dict[str, Any] = {}
-
-    if name is not None:
-        updates["name"] = name
-    if sync_url is not None:
-        updates["client_sync_url"] = sync_url
-    if active is not None:
-        updates["active"] = active
-
-    # Build sync auth if any auth option provided
-    if any([sync_auth_method, sync_auth_token, sync_auth_user, sync_auth_password]):
-        updates["client_sync_auth"] = {
-            "method": sync_auth_method or "none",
-            "token": sync_auth_token,
-            "user": sync_auth_user,
-            "password": sync_auth_password,
-        }
-
-    # Build attachment config if any option provided
-    if attachment_base_dir is not None or attachment_http_endpoint is not None:
-        updates["attachment_config"] = {
-            "base_dir": attachment_base_dir,
-            "http_endpoint": attachment_http_endpoint,
-        }
-
-    # Build rate limits if any option provided
-    if rate_limit_hourly is not None or rate_limit_daily is not None:
-        updates["rate_limits"] = {
-            "hourly": rate_limit_hourly or 0,
-            "daily": rate_limit_daily or 0,
-        }
-
-    if not updates:
-        print_error("No updates specified.")
-        sys.exit(1)
-
-    async def _update():
-        await persistence.init_db()
-        return await persistence.update_tenant(tenant_id, updates)
-
-    success = run_async(_update())
-
-    if success:
-        print_success(f"Tenant '{tenant_id}' updated.")
-    else:
-        print_error(f"Tenant '{tenant_id}' not found.")
-        sys.exit(1)
-
-
-@tenant.command("delete")
-@click.argument("tenant_id")
-@click.option("--force", "-f", is_flag=True, help="Skip confirmation prompt.")
-@click.pass_context
-def tenant_delete(ctx: click.Context, tenant_id: str, force: bool) -> None:
-    """Delete a tenant and all associated accounts/messages.
-
-    This operation is irreversible!
-    """
-    persistence = _get_persistence(ctx)
-
-    if not force:
-        if not click.confirm(f"Delete tenant '{tenant_id}' and all associated data?"):
-            console.print("Aborted.")
-            return
-
-    async def _delete():
-        await persistence.init_db()
-        return await persistence.delete_tenant(tenant_id)
-
-    success = run_async(_delete())
-
-    if success:
-        print_success(f"Tenant '{tenant_id}' deleted.")
-    else:
-        print_error(f"Tenant '{tenant_id}' not found.")
-        sys.exit(1)
-
-
-# ============================================================================
-# ACCOUNT commands
-# ============================================================================
-
-@main.group()
-def account() -> None:
-    """Manage SMTP accounts."""
-    pass
-
-
-@account.command("list")
-@click.option("--tenant", "-t", help="Filter by tenant ID.")
-@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
-@click.pass_context
-def account_list(ctx: click.Context, tenant: Optional[str], as_json: bool) -> None:
-    """List all SMTP accounts."""
-    persistence = _get_persistence(ctx)
-
-    async def _list():
-        await persistence.init_db()
-        return await persistence.list_accounts(tenant_id=tenant)
-
-    accounts = run_async(_list())
-
-    if as_json:
-        print_json(accounts)
-        return
-
-    if not accounts:
-        console.print("[dim]No accounts found.[/dim]")
-        return
-
-    table = Table(title="SMTP Accounts")
-    table.add_column("ID", style="cyan")
-    table.add_column("Tenant")
-    table.add_column("Host")
-    table.add_column("Port", justify="right")
-    table.add_column("User")
-    table.add_column("TLS", justify="center")
-
-    for acc in accounts:
-        tls = "[green]✓[/green]" if acc.get("use_tls") else "[dim]-[/dim]"
-        table.add_row(
-            acc["id"],
-            acc.get("tenant_id") or "-",
-            acc["host"],
-            str(acc["port"]),
-            acc.get("user") or "-",
-            tls,
-        )
-
-    console.print(table)
-
-
-@account.command("show")
-@click.argument("account_id")
-@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
-@click.pass_context
-def account_show(ctx: click.Context, account_id: str, as_json: bool) -> None:
-    """Show details for a specific account."""
-    persistence = _get_persistence(ctx)
-
-    async def _show():
-        await persistence.init_db()
-        try:
-            return await persistence.get_account(account_id)
-        except ValueError:
-            return None
-
-    account_data = run_async(_show())
-
-    if not account_data:
-        print_error(f"Account '{account_id}' not found.")
-        sys.exit(1)
-
-    # Remove password from display
-    display_data = {k: v for k, v in account_data.items() if k != "password"}
-    display_data["password"] = "***" if account_data.get("password") else None
-
-    if as_json:
-        print_json(display_data)
-        return
-
-    console.print(f"\n[bold cyan]Account: {account_id}[/bold cyan]\n")
-    console.print(f"  Tenant:          {account_data.get('tenant_id') or '-'}")
-    console.print(f"  Host:            {account_data['host']}")
-    console.print(f"  Port:            {account_data['port']}")
-    console.print(f"  User:            {account_data.get('user') or '-'}")
-    console.print(f"  Password:        {'***' if account_data.get('password') else '-'}")
-    console.print(f"  Use TLS:         {'Yes' if account_data.get('use_tls') else 'No'}")
-    console.print(f"  Batch Size:      {account_data.get('batch_size') or 'default'}")
-    console.print(f"  Rate Limits:     hour={account_data.get('limit_per_hour') or 0}, day={account_data.get('limit_per_day') or 0}")
-    console.print(f"  Created:         {account_data.get('created_at') or '-'}")
-    console.print()
-
-
-@account.command("add")
-@click.argument("account_id")
-@click.option("--tenant", "-t", required=True, help="Tenant ID (required).")
-@click.option("--host", "-h", required=True, help="SMTP server hostname.")
-@click.option("--port", "-p", type=int, required=True, help="SMTP server port.")
-@click.option("--user", "-u", help="SMTP username.")
-@click.option("--password", help="SMTP password.")
-@click.option("--tls/--no-tls", default=True, help="Use STARTTLS (default: yes).")
-@click.option("--batch-size", type=int, help="Max messages per dispatch cycle.")
-@click.option("--limit-hour", type=int, help="Max emails per hour.")
-@click.option("--limit-day", type=int, help="Max emails per day.")
-@click.pass_context
-def account_add(
-    ctx: click.Context,
-    account_id: str,
-    tenant: str,
-    host: str,
-    port: int,
-    user: Optional[str],
-    password: Optional[str],
-    tls: bool,
-    batch_size: Optional[int],
-    limit_hour: Optional[int],
-    limit_day: Optional[int],
-) -> None:
-    """Add a new SMTP account.
-
-    ACCOUNT_ID must be unique and alphanumeric with underscores/hyphens.
-    """
-    persistence = _get_persistence(ctx)
-
-    # Validate with Pydantic
-    try:
-        account_data = AccountCreate(
-            id=account_id,
-            tenant_id=tenant,
-            host=host,
-            port=port,
-            user=user,
-            password=password,
-            use_tls=tls,
-            batch_size=batch_size,
-        )
-    except ValidationError as e:
-        print_error(f"Validation error: {e}")
-        sys.exit(1)
-
-    async def _add():
-        await persistence.init_db()
-        # Verify tenant exists
-        tenant_data = await persistence.get_tenant(tenant)
-        if not tenant_data:
-            return False, f"Tenant '{tenant}' not found."
-
-        acc_dict = account_data.model_dump(exclude_none=True)
-        if limit_hour:
-            acc_dict["limit_per_hour"] = limit_hour
-        if limit_day:
-            acc_dict["limit_per_day"] = limit_day
-        await persistence.add_account(acc_dict)
-        return True, None
-
-    success, error = run_async(_add())
-
-    if success:
-        print_success(f"Account '{account_id}' created for tenant '{tenant}'.")
-    else:
-        print_error(error)
-        sys.exit(1)
-
-
-@account.command("delete")
-@click.argument("account_id")
-@click.option("--force", "-f", is_flag=True, help="Skip confirmation prompt.")
-@click.pass_context
-def account_delete(ctx: click.Context, account_id: str, force: bool) -> None:
-    """Delete an SMTP account and all associated messages."""
-    persistence = _get_persistence(ctx)
-
-    if not force:
-        if not click.confirm(f"Delete account '{account_id}' and all associated messages?"):
-            console.print("Aborted.")
-            return
-
-    async def _delete():
-        await persistence.init_db()
-        await persistence.delete_account(account_id)
-
-    run_async(_delete())
-    print_success(f"Account '{account_id}' deleted.")
-
-
-# ============================================================================
-# MESSAGE commands
-# ============================================================================
-
-@main.group()
-def message() -> None:
-    """View and manage messages in the queue."""
-    pass
-
-
-@message.command("list")
-@click.option("--tenant", "-t", help="Filter by tenant ID.")
-@click.option("--account", "-a", help="Filter by account ID.")
-@click.option("--status", "-s", type=click.Choice(["pending", "sent", "error", "all"]), default="all",
-              help="Filter by status.")
-@click.option("--limit", "-l", type=int, default=50, help="Max messages to show.")
-@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
-@click.pass_context
-def message_list(
-    ctx: click.Context,
-    tenant: Optional[str],
-    account: Optional[str],
-    status: str,
-    limit: int,
-    as_json: bool,
-) -> None:
-    """List messages in the queue."""
-    persistence = _get_persistence(ctx)
-
-    async def _list():
-        await persistence.init_db()
-        messages = await persistence.list_messages(
-            limit=limit,
-            account_id=account,
-        )
-
-        # Filter by tenant if specified
-        if tenant:
-            tenant_accounts = await persistence.list_accounts(tenant_id=tenant)
-            account_ids = {a["id"] for a in tenant_accounts}
-            messages = [m for m in messages if m.get("account_id") in account_ids]
-
-        # Filter by status
-        if status != "all":
-            filtered = []
-            for m in messages:
-                if status == "pending" and not m.get("sent_ts") and not m.get("error_ts"):
-                    filtered.append(m)
-                elif status == "sent" and m.get("sent_ts"):
-                    filtered.append(m)
-                elif status == "error" and m.get("error_ts"):
-                    filtered.append(m)
-            messages = filtered
-
-        return messages
-
-    messages = run_async(_list())
-
-    if as_json:
-        print_json(messages)
-        return
-
-    if not messages:
-        console.print("[dim]No messages found.[/dim]")
-        return
-
-    table = Table(title=f"Messages (showing up to {limit})")
-    table.add_column("ID", style="cyan", max_width=20)
-    table.add_column("Account")
-    table.add_column("Status")
-    table.add_column("Subject", max_width=30)
-    table.add_column("Created")
-
-    for msg in messages[:limit]:
-        # Determine status
-        if msg.get("error_ts"):
-            msg_status = "[red]error[/red]"
-        elif msg.get("sent_ts"):
-            msg_status = "[green]sent[/green]"
-        elif msg.get("deferred_ts"):
-            msg_status = "[yellow]deferred[/yellow]"
-        else:
-            msg_status = "[blue]pending[/blue]"
-
-        subject = msg.get("message", {}).get("subject", "-")[:30]
-
-        table.add_row(
-            msg["id"][:20] + "..." if len(msg["id"]) > 20 else msg["id"],
-            msg.get("account_id") or "-",
-            msg_status,
-            subject,
-            msg.get("created_at") or "-",
-        )
-
-    console.print(table)
-
-
-@message.command("show")
-@click.argument("message_id")
-@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
-@click.pass_context
-def message_show(ctx: click.Context, message_id: str, as_json: bool) -> None:
-    """Show details for a specific message."""
-    persistence = _get_persistence(ctx)
-
-    async def _show():
-        await persistence.init_db()
-        messages = await persistence.list_messages()
-        for m in messages:
-            if m["id"] == message_id:
-                return m
-        return None
-
-    msg = run_async(_show())
-
-    if not msg:
-        print_error(f"Message '{message_id}' not found.")
-        sys.exit(1)
-
-    if as_json:
-        print_json(msg)
-        return
-
-    console.print(f"\n[bold cyan]Message: {message_id}[/bold cyan]\n")
-    console.print(f"  Account:     {msg.get('account_id') or '-'}")
-    console.print(f"  Priority:    {msg.get('priority', 2)}")
-    console.print(f"  Created:     {msg.get('created_at') or '-'}")
-    console.print(f"  Deferred:    {msg.get('deferred_ts') or '-'}")
-    console.print(f"  Sent:        {msg.get('sent_ts') or '-'}")
-    console.print(f"  Error:       {msg.get('error') or '-'}")
-
-    if msg.get("message"):
-        m = msg["message"]
-        console.print(f"\n  [bold]Message Content:[/bold]")
-        console.print(f"    From:      {m.get('from', '-')}")
-        console.print(f"    To:        {m.get('to', '-')}")
-        console.print(f"    Subject:   {m.get('subject', '-')}")
-
-    console.print()
-
-
-@message.command("delete")
-@click.argument("message_ids", nargs=-1, required=True)
-@click.option("--force", "-f", is_flag=True, help="Skip confirmation prompt.")
-@click.pass_context
-def message_delete(ctx: click.Context, message_ids: tuple, force: bool) -> None:
-    """Delete one or more messages from the queue."""
-    persistence = _get_persistence(ctx)
-
-    if not force:
-        if not click.confirm(f"Delete {len(message_ids)} message(s)?"):
-            console.print("Aborted.")
-            return
-
-    async def _delete():
-        await persistence.init_db()
-        deleted = 0
-        for mid in message_ids:
-            if await persistence.delete_message(mid):
-                deleted += 1
-        return deleted
-
-    deleted = run_async(_delete())
-    print_success(f"Deleted {deleted} of {len(message_ids)} message(s).")
-
-
-# ============================================================================
-# STATS command
-# ============================================================================
-
-@main.command()
-@click.option("--tenant", "-t", help="Show stats for specific tenant.")
-@click.pass_context
-def stats(ctx: click.Context, tenant: Optional[str]) -> None:
-    """Show queue statistics."""
-    persistence = _get_persistence(ctx)
-
-    async def _stats():
-        await persistence.init_db()
-
-        tenants = await persistence.list_tenants()
-        accounts = await persistence.list_accounts(tenant_id=tenant)
-        messages = await persistence.list_messages()
-
-        # Filter by tenant if specified
-        if tenant:
-            account_ids = {a["id"] for a in accounts}
-            messages = [m for m in messages if m.get("account_id") in account_ids]
-
-        pending = sum(1 for m in messages if not m.get("sent_ts") and not m.get("error_ts"))
-        sent = sum(1 for m in messages if m.get("sent_ts"))
-        errors = sum(1 for m in messages if m.get("error_ts"))
-
-        return {
-            "tenants": len(tenants),
-            "accounts": len(accounts),
-            "messages": {
-                "total": len(messages),
-                "pending": pending,
-                "sent": sent,
-                "error": errors,
-            },
-        }
-
-    data = run_async(_stats())
-
-    title = f"Stats for tenant '{tenant}'" if tenant else "Overall Stats"
-    console.print(f"\n[bold]{title}[/bold]\n")
-
-    if not tenant:
-        console.print(f"  Tenants:    {data['tenants']}")
-    console.print(f"  Accounts:   {data['accounts']}")
-    console.print(f"  Messages:")
-    console.print(f"    Total:    {data['messages']['total']}")
-    console.print(f"    Pending:  {data['messages']['pending']}")
-    console.print(f"    Sent:     {data['messages']['sent']}")
-    console.print(f"    Errors:   {data['messages']['error']}")
-    console.print()
-
-
-# ============================================================================
-# INIT command
-# ============================================================================
-
-@main.command()
-@click.pass_context
-def init(ctx: click.Context) -> None:
-    """Initialize the database schema."""
-    persistence = _get_persistence(ctx)
-
-    async def _init():
-        await persistence.init_db()
-
-    run_async(_init())
-    print_success(f"Database initialized at {ctx.obj['db_path']}")
-
-
-# ============================================================================
-# SERVE command
-# ============================================================================
 
 DEFAULT_CONFIG_TEMPLATE = """\
 # genro-mail-proxy configuration
@@ -871,8 +202,8 @@ retry_delays = 60, 300, 900, 3600, 7200
 # cache_disk_max_mb = 500
 
 [client_sync]
-# URL for delivery report callbacks
-# client_sync_url = https://api.example.com/mail/delivery-report
+# Base URL for delivery report callbacks
+# client_base_url = https://api.example.com
 
 # Authentication (bearer or basic)
 # auth_method = bearer
@@ -882,78 +213,11 @@ retry_delays = 60, 300, 900, 3600, 7200
 """
 
 
-def _get_instance_dir(name: str) -> "Path":
-    """Get the instance directory path."""
-    from pathlib import Path
-    return Path.home() / ".mail-proxy" / name
+def _ensure_instance(name: str, port: int = 8000, host: str = "0.0.0.0") -> Dict[str, Any]:
+    """Ensure instance exists, creating with defaults if needed.
 
-
-def _get_pid_file(name: str) -> "Path":
-    """Get the PID file path for an instance."""
-    return _get_instance_dir(name) / "server.pid"
-
-
-def _is_instance_running(name: str) -> tuple[bool, Optional[int], Optional[int]]:
-    """Check if an instance is running.
-
-    Returns:
-        (is_running, pid, port)
+    Returns the instance config.
     """
-    import os
-    import signal
-
-    pid_file = _get_pid_file(name)
-    if not pid_file.exists():
-        return False, None, None
-
-    try:
-        data = json.loads(pid_file.read_text())
-        pid = data.get("pid")
-        port = data.get("port")
-
-        if pid is None:
-            return False, None, port
-
-        # Check if process is alive
-        os.kill(pid, 0)  # Doesn't kill, just checks
-        return True, pid, port
-    except (json.JSONDecodeError, ProcessLookupError, PermissionError, OSError):
-        # Process not running or PID file corrupt
-        return False, None, None
-
-
-def _write_pid_file(name: str, pid: int, port: int, host: str) -> None:
-    """Write PID file for an instance."""
-    pid_file = _get_pid_file(name)
-    pid_file.write_text(json.dumps({
-        "pid": pid,
-        "port": port,
-        "host": host,
-        "started_at": datetime.now().isoformat(),
-    }, indent=2))
-
-
-def _remove_pid_file(name: str) -> None:
-    """Remove PID file for an instance."""
-    pid_file = _get_pid_file(name)
-    if pid_file.exists():
-        pid_file.unlink()
-
-
-def _generate_api_token() -> str:
-    """Generate a secure random API token."""
-    import secrets
-    return secrets.token_urlsafe(32)
-
-
-def _ensure_config_file(name: str, port: int, host: str) -> str:
-    """Ensure config file exists, creating with defaults if needed.
-
-    Returns the path to the config file.
-    """
-    from pathlib import Path
-
-    # Default config location: ~/.mail-proxy/<name>/config.ini
     config_dir = _get_instance_dir(name)
     config_file = config_dir / "config.ini"
     db_path = str(config_dir / "mail_service.db")
@@ -978,7 +242,7 @@ def _ensure_config_file(name: str, port: int, host: str) -> str:
         console.print(f"  Config: {config_file}")
         console.print(f"  API Token: {api_token}")
 
-    return str(config_file)
+    return _get_instance_config(name)
 
 
 def _get_instance_config(name: str) -> Optional[Dict[str, Any]]:
@@ -1002,580 +266,66 @@ def _get_instance_config(name: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def _start_server_background(name: str, host: str, port: int, reload: bool = False) -> bool:
-    """Start server in background and wait for it to be ready.
-
-    Returns True if server started successfully and is responding to HTTP requests.
-    """
-    import subprocess
-    import time
-
-    import requests
-
-    cmd = ["mail-proxy", "serve", name, "--host", host, "--port", str(port)]
-    if reload:
-        cmd.append("--reload")
-
-    # Start server in background
-    subprocess.Popen(
-        cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-
-    # Wait for server to be ready (process running + HTTP responding)
-    url = f"http://localhost:{port}/status"
-    for _ in range(50):  # Max 5 seconds
-        time.sleep(0.1)
-        is_running, pid, _ = _is_instance_running(name)
-        if is_running:
-            # Process is running, now check if HTTP server is ready
-            try:
-                resp = requests.get(url, timeout=0.5)
-                if resp.status_code == 200:
-                    return True
-            except requests.RequestException:
-                # Server not ready yet, keep waiting
-                pass
-    return False
-
-
-@main.command()
-@click.argument("name", default="default-mailer")
-@click.option("--host", "-h", default=None, help="Host to bind to (default: 0.0.0.0).")
-@click.option("--port", "-p", type=int, default=None, help="Port to listen on (default: 8000).")
-@click.option("--reload", is_flag=True, help="Enable auto-reload for development.")
-@click.option("--connect", "-c", is_flag=True, help="Start in background and open REPL.")
-@click.pass_context
-def serve(
-    ctx: click.Context,
-    name: str,
-    host: Optional[str],
-    port: Optional[int],
-    reload: bool,
-    connect: bool,
-) -> None:
-    """Start a mail-proxy server instance.
-
-    If the instance doesn't exist, creates it with default config.
-    If already running, shows status and exits.
-
-    Example:
-        mail-proxy serve                    # Start default-mailer
-        mail-proxy serve myserver           # Start/create myserver
-        mail-proxy serve myserver -p 8080   # Start on specific port
-        mail-proxy serve myserver -c        # Start and open REPL
-    """
-    import os
-    import uvicorn
-
-    # Check if already running
-    is_running, pid, running_port = _is_instance_running(name)
-    if is_running:
-        if connect:
-            # Already running, just connect
-            console.print(f"[dim]Instance '{name}' already running, connecting...[/dim]")
-            ctx.invoke(connect_cmd, name_or_url=name)
-            return
-        console.print(f"[yellow]Instance '{name}' is already running[/yellow]")
-        console.print(f"  PID:  {pid}")
-        console.print(f"  Port: {running_port}")
-        console.print(f"  URL:  http://localhost:{running_port}")
-        sys.exit(0)
-
-    # Get or create instance config
-    instance_config = _get_instance_config(name)
-
-    if instance_config is None:
-        # New instance - use provided values or defaults
-        host = host or "0.0.0.0"
-        port = port or 8000
-        config_path = _ensure_config_file(name, port, host)
-        instance_config = _get_instance_config(name)
-    else:
-        # Existing instance - use config values, allow override
-        config_path = instance_config["config_file"]
-        host = host or instance_config["host"]
-        port = port or instance_config["port"]
-
-    db_path = instance_config["db_path"]
-
-    if connect:
-        # Start in background and open REPL
-        console.print(f"[bold cyan]Starting {name} in background...[/bold cyan]")
-        if _start_server_background(name, host, port, reload):
-            is_running, pid, _ = _is_instance_running(name)
-            console.print(f"  PID:  {pid}")
-            console.print(f"  Port: {port}")
-            console.print()
-            ctx.invoke(connect_cmd, name_or_url=name)
-        else:
-            print_error(f"Failed to start {name}")
-        return
-
-    # Set environment variables for config (used by server.py)
-    os.environ["GMP_CONFIG_FILE"] = config_path
-    os.environ["GMP_INSTANCE_NAME"] = name
-    os.environ["GMP_DB_PATH"] = db_path
-    os.environ["GMP_PORT"] = str(port)
-    os.environ["GMP_HOST"] = host
-
-    console.print(f"\n[bold cyan]Starting {name}[/bold cyan]")
-    console.print(f"  Config:  {config_path}")
-    console.print(f"  DB:      {db_path}")
-    console.print(f"  Listen:  {host}:{port}")
-    console.print()
-
-    # Write PID file before starting uvicorn (important for --reload mode)
-    _write_pid_file(name, os.getpid(), port, host)
-
-    try:
-        uvicorn.run(
-            "async_mail_service.server:app",
-            host=host,
-            port=port,
-            reload=reload,
-            log_level="info",
-        )
-    finally:
-        # Clean up PID file on exit
-        _remove_pid_file(name)
+def _get_persistence_for_instance(name: str) -> Persistence:
+    """Get persistence instance for a given instance name."""
+    config = _get_instance_config(name)
+    if not config:
+        print_error(f"Instance '{name}' not found. Use 'mail-proxy {name} serve start' to create it.")
+        sys.exit(1)
+    return Persistence(config["db_path"])
 
 
 # ============================================================================
-# STOP command
+# Main CLI group
 # ============================================================================
 
-def _stop_instance(name: str, signal_type: int = 15, timeout: float = 5.0, fallback_kill: bool = True) -> bool:
-    """Stop a running instance by sending a signal.
+class InstanceGroup(click.Group):
+    """Custom group that handles dynamic instance/tenant routing."""
 
-    Args:
-        name: Instance name.
-        signal_type: Signal to send (15=SIGTERM, 9=SIGKILL).
-        timeout: Seconds to wait for process to terminate.
-        fallback_kill: If True, send SIGKILL if SIGTERM doesn't work.
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._instance_commands = {}  # Commands at instance level
+        self._tenant_commands = {}    # Commands at tenant level
 
-    Returns:
-        True if successfully stopped, False otherwise.
+    def get_command(self, ctx, cmd_name):
+        # First check static commands (list, etc.)
+        rv = super().get_command(ctx, cmd_name)
+        if rv is not None:
+            return rv
+
+        # Otherwise, treat as instance name and return instance group
+        return _create_instance_group(cmd_name)
+
+    def list_commands(self, ctx):
+        # Static commands plus hint about dynamic instances
+        return super().list_commands(ctx)
+
+
+@click.group(cls=InstanceGroup)
+@click.version_option()
+def main() -> None:
+    """genro-mail-proxy CLI - Manage email dispatch instances.
+
+    Usage:
+
+        mail-proxy <instance> <command>       # Instance-level commands
+
+        mail-proxy <instance> <tenant> <command>  # Tenant-level commands
+
+    Examples:
+
+        mail-proxy myserver serve start       # Start server
+
+        mail-proxy myserver tenants list      # List tenants
+
+        mail-proxy myserver acme accounts list  # List accounts for tenant 'acme'
     """
-    import os
-    import signal as sig
-    import time
-
-    is_running, pid, _ = _is_instance_running(name)
-    if not is_running or pid is None:
-        return False
-
-    try:
-        os.kill(pid, signal_type)
-        # Wait for process to terminate
-        wait_iterations = int(timeout / 0.1)
-        for _ in range(wait_iterations):
-            time.sleep(0.1)
-            try:
-                os.kill(pid, 0)  # Check if still alive
-            except ProcessLookupError:
-                # Process terminated
-                _remove_pid_file(name)
-                return True
-
-        # Process still alive after timeout - try SIGKILL if enabled
-        if fallback_kill and signal_type != sig.SIGKILL:
-            os.kill(pid, sig.SIGKILL)
-            time.sleep(0.5)
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                _remove_pid_file(name)
-                return True
-
-        return False
-    except (ProcessLookupError, PermissionError, OSError):
-        _remove_pid_file(name)
-        return False
-
-
-@main.command()
-@click.argument("name", default="*")
-@click.option("--force", "-f", is_flag=True, help="Force kill (SIGKILL) instead of graceful shutdown.")
-def stop(name: str, force: bool) -> None:
-    """Stop running mail-proxy instance(s).
-
-    NAME can be:
-    - An instance name (e.g., 'myserver')
-    - '*' to stop all running instances
-
-    Example:
-        mail-proxy stop                 # Stop all running instances
-        mail-proxy stop myserver        # Stop specific instance
-        mail-proxy stop myserver -f     # Force kill if not responding
-    """
-    import signal as sig
-    from pathlib import Path
-
-    signal_type = sig.SIGKILL if force else sig.SIGTERM
-    signal_name = "SIGKILL" if force else "SIGTERM"
-
-    if name == "*":
-        # Stop all running instances
-        mail_proxy_dir = Path.home() / ".mail-proxy"
-        if not mail_proxy_dir.exists():
-            console.print("[dim]No instances configured.[/dim]")
-            return
-
-        stopped = []
-        for item in mail_proxy_dir.iterdir():
-            if item.is_dir() and (item / "config.ini").exists():
-                instance_name = item.name
-                is_running, pid, _ = _is_instance_running(instance_name)
-                if is_running:
-                    console.print(f"Stopping {instance_name} (PID {pid})... ", end="")
-                    if _stop_instance(instance_name, signal_type):
-                        console.print("[green]stopped[/green]")
-                        stopped.append(instance_name)
-                    else:
-                        console.print(f"[yellow]sent {signal_name}[/yellow]")
-
-        if not stopped:
-            console.print("[dim]No running instances found.[/dim]")
-        else:
-            console.print(f"\n[green]Stopped {len(stopped)} instance(s)[/green]")
-    else:
-        # Stop specific instance
-        is_running, pid, _ = _is_instance_running(name)
-        if not is_running:
-            console.print(f"[dim]Instance '{name}' is not running.[/dim]")
-            return
-
-        console.print(f"Stopping {name} (PID {pid})... ", end="")
-        if _stop_instance(name, signal_type):
-            console.print("[green]stopped[/green]")
-        else:
-            console.print(f"[yellow]sent {signal_name}, may still be shutting down[/yellow]")
+    pass
 
 
 # ============================================================================
-# RESTART command
+# Static commands (not instance-specific)
 # ============================================================================
-
-@main.command()
-@click.argument("name", default="*")
-@click.option("--force", "-f", is_flag=True, help="Force kill before restart.")
-@click.option("--reload", is_flag=True, help="Enable auto-reload for development.")
-def restart(name: str, force: bool, reload: bool) -> None:
-    """Restart mail-proxy instance(s).
-
-    NAME can be:
-    - An instance name (e.g., 'myserver')
-    - '*' to restart all running instances
-
-    Example:
-        mail-proxy restart              # Restart all running instances
-        mail-proxy restart myserver     # Restart specific instance
-        mail-proxy restart myserver -f  # Force kill then restart
-    """
-    import os
-    import signal as sig
-    import subprocess
-    import time
-    from pathlib import Path
-
-    signal_type = sig.SIGKILL if force else sig.SIGTERM
-
-    instances_to_restart: list[tuple[str, Dict[str, Any]]] = []
-
-    if name == "*":
-        # Collect all running instances
-        mail_proxy_dir = Path.home() / ".mail-proxy"
-        if not mail_proxy_dir.exists():
-            console.print("[dim]No instances configured.[/dim]")
-            return
-
-        for item in mail_proxy_dir.iterdir():
-            if item.is_dir() and (item / "config.ini").exists():
-                instance_name = item.name
-                is_running, pid, _ = _is_instance_running(instance_name)
-                if is_running:
-                    config = _get_instance_config(instance_name)
-                    if config:
-                        instances_to_restart.append((instance_name, config))
-
-        if not instances_to_restart:
-            console.print("[dim]No running instances found.[/dim]")
-            return
-    else:
-        # Single instance
-        is_running, pid, _ = _is_instance_running(name)
-        if not is_running:
-            console.print(f"[dim]Instance '{name}' is not running.[/dim]")
-            console.print(f"[dim]Use 'mail-proxy serve {name}' to start it.[/dim]")
-            return
-        config = _get_instance_config(name)
-        if config:
-            instances_to_restart.append((name, config))
-
-    # Stop all instances first
-    for instance_name, _ in instances_to_restart:
-        is_running, pid, _ = _is_instance_running(instance_name)
-        if is_running:
-            console.print(f"Stopping {instance_name} (PID {pid})... ", end="")
-            if _stop_instance(instance_name, signal_type, timeout=3.0):
-                console.print("[green]stopped[/green]")
-            else:
-                # Try SIGKILL if SIGTERM didn't work
-                if not force:
-                    console.print("[yellow]forcing...[/yellow] ", end="")
-                    _stop_instance(instance_name, sig.SIGKILL, timeout=1.0)
-                console.print("[green]stopped[/green]")
-
-    # Brief pause to ensure ports are released
-    time.sleep(0.5)
-
-    # Restart instances in background
-    for instance_name, config in instances_to_restart:
-        console.print(f"Starting {instance_name}... ", end="")
-        cmd = ["mail-proxy", "serve", instance_name]
-        if reload:
-            cmd.append("--reload")
-        # Start in background
-        subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        # Wait briefly for startup
-        time.sleep(1.0)
-        is_running, pid, port = _is_instance_running(instance_name)
-        if is_running:
-            console.print(f"[green]started[/green] (PID {pid}, port {port})")
-        else:
-            console.print("[yellow]starting in background...[/yellow]")
-
-    console.print(f"\n[green]Restarted {len(instances_to_restart)} instance(s)[/green]")
-
-
-# ============================================================================
-# CONNECT command (REPL)
-# ============================================================================
-
-def _resolve_instance_url(name_or_url: str) -> tuple[str, str, Optional[str]]:
-    """Resolve instance name or URL to (url, display_name, token).
-
-    Checks in order:
-    1. If it looks like a URL, use it directly
-    2. If it's a running instance name, use its port
-    3. If it's a registered connection name, use that
-    """
-    import configparser
-    from pathlib import Path
-
-    # If it looks like a URL, use it directly
-    if name_or_url.startswith("http://") or name_or_url.startswith("https://"):
-        return name_or_url, name_or_url, None
-
-    # Check if it's a running instance
-    is_running, pid, port = _is_instance_running(name_or_url)
-    if is_running and port:
-        return f"http://localhost:{port}", name_or_url, None
-
-    # Check if instance exists but not running
-    instance_config = _get_instance_config(name_or_url)
-    if instance_config:
-        # Instance exists but not running
-        print_error(f"Instance '{name_or_url}' is not running")
-        console.print(f"[dim]Start it with: mail-proxy serve {name_or_url}[/dim]")
-        raise SystemExit(1)
-
-    # Check registered connections
-    connections_file = Path.home() / ".mail-proxy" / "connections.json"
-    if connections_file.exists():
-        try:
-            connections = json.loads(connections_file.read_text())
-            if name_or_url in connections:
-                conn = connections[name_or_url]
-                return conn["url"], name_or_url, conn.get("token")
-        except json.JSONDecodeError:
-            pass
-
-    # Not found anywhere
-    print_error(f"Unknown instance or connection: '{name_or_url}'")
-    console.print("[dim]Use 'mail-proxy list' to see available instances[/dim]")
-    console.print("[dim]Use 'mail-proxy connections' to see registered connections[/dim]")
-    raise SystemExit(1)
-
-
-@main.command("connect")
-@click.argument("name_or_url", default="default-mailer")
-@click.option("--token", "-t", envvar="GMP_API_TOKEN", help="API token for authentication.")
-def connect_cmd(name_or_url: str, token: Optional[str]) -> None:
-    """Connect to a mail-proxy instance with an interactive REPL.
-
-    NAME_OR_URL can be:
-    - An instance name (e.g., 'myserver') - connects to running instance
-    - A registered connection name
-    - A full URL (e.g., 'http://localhost:8000')
-
-    Example:
-        mail-proxy connect                  # Connect to default-mailer
-        mail-proxy connect myserver         # Connect to myserver instance
-        mail-proxy connect http://host:8000 # Connect to URL
-    """
-    import code
-    import readline  # noqa: F401 - enables history in REPL
-    import rlcompleter  # noqa: F401 - enables tab completion
-
-    from async_mail_service.client import MailProxyClient, connect as client_connect
-    from async_mail_service.forms import (
-        new_tenant,
-        new_account,
-        new_message,
-        set_proxy,
-        TenantForm,
-        AccountForm,
-        MessageForm,
-    )
-
-    # Resolve the URL
-    url, display_name, saved_token = _resolve_instance_url(name_or_url)
-    token = token or saved_token
-
-    try:
-        proxy = client_connect(url, token=token, name=display_name)
-
-        # Test connection
-        if not proxy.health():
-            print_error(f"Cannot connect to {display_name} ({url})")
-            console.print("[dim]Make sure the server is running.[/dim]")
-            return
-
-        # Set proxy for forms auto-save
-        set_proxy(proxy)
-
-        console.print(f"\n[bold green]Connected to {display_name}[/bold green]")
-        console.print(f"  URL: {url}")
-        console.print()
-
-        # Show quick help
-        console.print("[bold]Available objects:[/bold]")
-        console.print("  [cyan]proxy[/cyan]          - The connected client")
-        console.print("  [cyan]proxy.messages[/cyan] - Message management (list, pending, sent, errors, add, delete)")
-        console.print("  [cyan]proxy.accounts[/cyan] - Account management (list, get, add, delete)")
-        console.print("  [cyan]proxy.tenants[/cyan]  - Tenant management (list, get, add, delete)")
-        console.print()
-        console.print("[bold]Quick commands:[/bold]")
-        console.print("  [cyan]proxy.status()[/cyan]          - Server status")
-        console.print("  [cyan]proxy.stats()[/cyan]           - Queue statistics")
-        console.print("  [cyan]proxy.run_now()[/cyan]         - Trigger dispatch cycle")
-        console.print("  [cyan]proxy.messages.pending()[/cyan] - List pending messages")
-        console.print()
-        console.print("[bold]Interactive forms:[/bold]")
-        console.print("  [cyan]new_tenant()[/cyan]   - Create tenant with interactive form")
-        console.print("  [cyan]new_account()[/cyan]  - Create account with interactive form")
-        console.print("  [cyan]new_message()[/cyan]  - Create message with interactive form")
-        console.print()
-        console.print("[dim]Type 'exit()' or Ctrl+D to quit.[/dim]")
-        console.print()
-
-        # Prepare namespace for REPL
-        namespace = {
-            "proxy": proxy,
-            "MailProxyClient": MailProxyClient,
-            "console": console,
-            # Interactive forms
-            "new_tenant": new_tenant,
-            "new_account": new_account,
-            "new_message": new_message,
-            "TenantForm": TenantForm,
-            "AccountForm": AccountForm,
-            "MessageForm": MessageForm,
-        }
-
-        # Start interactive REPL
-        banner = ""
-        code.interact(banner=banner, local=namespace, exitmsg="Goodbye!")
-
-    except Exception as e:
-        print_error(f"Connection failed: {e}")
-        raise SystemExit(1)
-
-
-# ============================================================================
-# REGISTER command (for named connections)
-# ============================================================================
-
-@main.command()
-@click.argument("name")
-@click.argument("url")
-@click.option("--token", "-t", help="API token for this connection.")
-def register(name: str, url: str, token: Optional[str]) -> None:
-    """Register a named connection for easy access.
-
-    Connections are stored in ~/.mail-proxy/connections.json
-
-    Example:
-        mail-proxy register prod https://mail.example.com --token secret
-        mail-proxy connect prod
-    """
-    import os
-    from pathlib import Path
-
-    config_dir = Path.home() / ".mail-proxy"
-    config_dir.mkdir(exist_ok=True)
-    connections_file = config_dir / "connections.json"
-
-    # Load existing connections
-    connections = {}
-    if connections_file.exists():
-        try:
-            connections = json.loads(connections_file.read_text())
-        except json.JSONDecodeError:
-            connections = {}
-
-    # Add/update connection
-    connections[name] = {"url": url}
-    if token:
-        connections[name]["token"] = token
-
-    # Save
-    connections_file.write_text(json.dumps(connections, indent=2))
-    print_success(f"Registered connection '{name}' -> {url}")
-
-
-@main.command("connections")
-def list_connections() -> None:
-    """List registered connections."""
-    from pathlib import Path
-
-    connections_file = Path.home() / ".mail-proxy" / "connections.json"
-
-    if not connections_file.exists():
-        console.print("[dim]No connections registered.[/dim]")
-        console.print("Use 'mail-proxy register <name> <url>' to add one.")
-        return
-
-    try:
-        connections = json.loads(connections_file.read_text())
-    except json.JSONDecodeError:
-        console.print("[dim]No connections registered.[/dim]")
-        return
-
-    if not connections:
-        console.print("[dim]No connections registered.[/dim]")
-        return
-
-    table = Table(title="Registered Connections")
-    table.add_column("Name", style="cyan")
-    table.add_column("URL")
-    table.add_column("Token", justify="center")
-
-    for name, data in connections.items():
-        has_token = "[green]✓[/green]" if data.get("token") else "[dim]-[/dim]"
-        table.add_row(name, data["url"], has_token)
-
-    console.print(table)
-
 
 @main.command("list")
 def list_instances() -> None:
@@ -1584,13 +334,12 @@ def list_instances() -> None:
     Shows all instances in ~/.mail-proxy/ with running status.
     """
     import configparser
-    from pathlib import Path
 
     mail_proxy_dir = Path.home() / ".mail-proxy"
 
     if not mail_proxy_dir.exists():
         console.print("[dim]No instances configured.[/dim]")
-        console.print("Use 'mail-proxy serve <name>' to create one.")
+        console.print("Use 'mail-proxy <name> serve start' to create one.")
         return
 
     # Find all instance directories (those with config.ini)
@@ -1620,7 +369,7 @@ def list_instances() -> None:
 
     if not instances:
         console.print("[dim]No instances configured.[/dim]")
-        console.print("Use 'mail-proxy serve <name>' to create one.")
+        console.print("Use 'mail-proxy <name> serve start' to create one.")
         return
 
     table = Table(title="Mail Proxy Instances")
@@ -1651,55 +400,1458 @@ def list_instances() -> None:
     console.print(table)
 
 
-@main.command("token")
-@click.argument("name", default="default-mailer")
-@click.option("--regenerate", "-r", is_flag=True, help="Generate a new token and update config.")
-def show_token(name: str, regenerate: bool) -> None:
-    """Show or regenerate the API token for an instance.
+@main.command("delete")
+@click.argument("instance_name")
+@click.option("--force", "-f", is_flag=True, help="Skip confirmation prompt.")
+def delete_instance(instance_name: str, force: bool) -> None:
+    """Delete an instance completely.
 
-    Examples:
+    Stops the server if running and removes all data (database, config, logs).
 
-        mail-proxy token my-instance
+    Example:
 
-        mail-proxy token my-instance --regenerate
+        mail-proxy delete myserver
+
+        mail-proxy delete myserver --force
     """
-    import configparser
+    import shutil
+    import signal as sig
 
-    config_dir = _get_instance_dir(name)
-    config_file = config_dir / "config.ini"
+    instance_dir = _get_instance_dir(instance_name)
 
-    if not config_file.exists():
-        print_error(f"Instance '{name}' not found. Use 'mail-proxy serve {name}' to create it.")
-        raise SystemExit(1)
+    if not instance_dir.exists():
+        print_error(f"Instance '{instance_name}' does not exist.")
+        sys.exit(1)
 
-    config = configparser.ConfigParser()
-    config.read(config_file)
+    if not force:
+        console.print(f"\n[bold red]This will permanently delete instance '{instance_name}'[/bold red]")
+        console.print(f"  Directory: {instance_dir}")
+        console.print()
+        if not click.confirm("Are you sure?", default=False):
+            console.print("[dim]Cancelled.[/dim]")
+            return
 
-    if regenerate:
-        # Generate new token
-        new_token = _generate_api_token()
+    # Stop server if running
+    is_running, pid, _ = _is_instance_running(instance_name)
+    if is_running:
+        console.print(f"Stopping server (PID {pid})... ", end="")
+        _stop_instance(instance_name, sig.SIGTERM, timeout=3.0)
+        console.print("[green]stopped[/green]")
 
-        # Update config file
-        if not config.has_section("server"):
-            config.add_section("server")
-        config.set("server", "api_token", new_token)
+    # Remove instance directory
+    console.print(f"Removing {instance_dir}... ", end="")
+    shutil.rmtree(instance_dir)
+    console.print("[green]done[/green]")
 
-        with open(config_file, "w") as f:
-            config.write(f)
+    print_success(f"Instance '{instance_name}' deleted.")
 
-        console.print(f"[green]Token regenerated for instance:[/green] {name}")
-        console.print(f"[yellow]Note:[/yellow] Restart the instance for the new token to take effect.")
-        console.print(f"\n{new_token}")
+
+@main.command("start")
+@click.argument("instance_name")
+@click.option("--host", "-h", default=None, help="Host to bind to (default: 0.0.0.0).")
+@click.option("--port", "-p", type=int, default=None, help="Port to listen on (default: 8000).")
+@click.option("--reload", is_flag=True, help="Enable auto-reload for development.")
+@click.option("--background", "-b", is_flag=True, help="Start in background.")
+def start_instance(instance_name: str, host: Optional[str], port: Optional[int], reload: bool, background: bool) -> None:
+    """Start an instance.
+
+    Example:
+
+        mail-proxy start myserver
+
+        mail-proxy start myserver -p 8080 -b
+    """
+    _do_start_instance(instance_name, host, port, reload, background)
+
+
+@main.command("stop")
+@click.argument("instance_name")
+@click.option("--force", "-f", is_flag=True, help="Force kill (SIGKILL) instead of graceful shutdown.")
+def stop_instance(instance_name: str, force: bool) -> None:
+    """Stop an instance.
+
+    Example:
+
+        mail-proxy stop myserver
+
+        mail-proxy stop myserver --force
+    """
+    _do_stop_instance(instance_name, force)
+
+
+@main.command("restart")
+@click.argument("instance_name")
+@click.option("--force", "-f", is_flag=True, help="Force kill before restart.")
+@click.option("--reload", is_flag=True, help="Enable auto-reload for development.")
+def restart_instance(instance_name: str, force: bool, reload: bool) -> None:
+    """Restart an instance.
+
+    Example:
+
+        mail-proxy restart myserver
+    """
+    _do_restart_instance(instance_name, force, reload)
+
+
+@main.command("status")
+@click.argument("instance_name")
+def status_instance(instance_name: str) -> None:
+    """Show instance status.
+
+    Example:
+
+        mail-proxy status myserver
+    """
+    _do_status_instance(instance_name)
+
+
+# ============================================================================
+# Instance-level commands factory
+# ============================================================================
+
+def _create_instance_group(instance_name: str) -> click.Group:
+    """Create a command group for a specific instance."""
+
+    class TenantAwareGroup(click.Group):
+        """Group that can route to tenant-specific commands."""
+
+        def get_command(self, ctx, cmd_name):
+            # First check if it's a known instance-level command
+            rv = super().get_command(ctx, cmd_name)
+            if rv is not None:
+                return rv
+
+            # Otherwise, treat as tenant name
+            return _create_tenant_group(instance_name, cmd_name)
+
+    @click.group(cls=TenantAwareGroup, invoke_without_command=True)
+    @click.pass_context
+    def instance_group(ctx):
+        """Commands for this instance."""
+        ctx.ensure_object(dict)
+        ctx.obj["instance"] = instance_name
+
+        if ctx.invoked_subcommand is None:
+            # Show help with available subcommands
+            click.echo(ctx.get_help())
+
+    # Add instance-level commands
+    _add_tenants_commands(instance_group, instance_name)
+    _add_stats_command(instance_group, instance_name)
+    _add_connect_command(instance_group, instance_name)
+    _add_token_command(instance_group, instance_name)
+
+    return instance_group
+
+
+# ============================================================================
+# SERVE implementation functions (shared by top-level and nested commands)
+# ============================================================================
+
+def _do_start_instance(instance_name: str, host: Optional[str], port: Optional[int],
+                       reload: bool, background: bool) -> None:
+    """Start an instance."""
+    import os
+    import subprocess
+    import time
+
+    import uvicorn
+
+    # Check if already running
+    is_running, pid, running_port = _is_instance_running(instance_name)
+    if is_running:
+        console.print(f"[yellow]Instance '{instance_name}' is already running[/yellow]")
+        console.print(f"  PID:  {pid}")
+        console.print(f"  Port: {running_port}")
+        console.print(f"  URL:  http://localhost:{running_port}")
+        sys.exit(0)
+
+    # Get or create instance config
+    instance_config = _get_instance_config(instance_name)
+
+    if instance_config is None:
+        # New instance - use provided values or defaults
+        host = host or "0.0.0.0"
+        port = port or 8000
+        instance_config = _ensure_instance(instance_name, port, host)
     else:
-        # Show existing token
-        token = config.get("server", "api_token", fallback=None)
+        # Existing instance - use config values, allow override
+        host = host or instance_config["host"]
+        port = port or instance_config["port"]
 
-        if not token or token.strip() == "":
-            console.print(f"[yellow]No API token configured for instance:[/yellow] {name}")
-            console.print("Use --regenerate to generate one.")
-            raise SystemExit(1)
+    config_path = instance_config["config_file"]
+    db_path = instance_config["db_path"]
 
-        console.print(token.strip())
+    if background:
+        # Start in background
+        console.print(f"[bold cyan]Starting {instance_name} in background...[/bold cyan]")
+        cmd = ["mail-proxy", "start", instance_name, "--host", host, "--port", str(port)]
+        if reload:
+            cmd.append("--reload")
+
+        subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+        # Wait for server to be ready
+        import requests
+        url = f"http://localhost:{port}/status"
+        for _ in range(50):  # Max 5 seconds
+            time.sleep(0.1)
+            is_running, pid, _ = _is_instance_running(instance_name)
+            if is_running:
+                try:
+                    resp = requests.get(url, timeout=0.5)
+                    if resp.status_code == 200:
+                        console.print(f"  PID:  {pid}")
+                        console.print(f"  Port: {port}")
+                        console.print(f"  URL:  http://localhost:{port}")
+                        return
+                except requests.RequestException:
+                    pass
+
+        console.print("[yellow]Server starting in background...[/yellow]")
+        return
+
+    # Set environment variables for config (used by server.py)
+    os.environ["GMP_CONFIG_FILE"] = config_path
+    os.environ["GMP_INSTANCE_NAME"] = instance_name
+    os.environ["GMP_DB_PATH"] = db_path
+    os.environ["GMP_PORT"] = str(port)
+    os.environ["GMP_HOST"] = host
+
+    console.print(f"\n[bold cyan]Starting {instance_name}[/bold cyan]")
+    console.print(f"  Config:  {config_path}")
+    console.print(f"  DB:      {db_path}")
+    console.print(f"  Listen:  {host}:{port}")
+    console.print()
+
+    # Write PID file before starting uvicorn
+    _write_pid_file(instance_name, os.getpid(), port, host)
+
+    try:
+        uvicorn.run(
+            "async_mail_service.server:app",
+            host=host,
+            port=port,
+            reload=reload,
+            log_level="info",
+        )
+    finally:
+        _remove_pid_file(instance_name)
+
+
+def _do_stop_instance(instance_name: str, force: bool) -> None:
+    """Stop an instance."""
+    import signal as sig
+
+    signal_type = sig.SIGKILL if force else sig.SIGTERM
+
+    is_running, pid, _ = _is_instance_running(instance_name)
+    if not is_running:
+        console.print(f"[dim]Instance '{instance_name}' is not running.[/dim]")
+        return
+
+    console.print(f"Stopping {instance_name} (PID {pid})... ", end="")
+    if _stop_instance(instance_name, signal_type):
+        console.print("[green]stopped[/green]")
+    else:
+        signal_name = "SIGKILL" if force else "SIGTERM"
+        console.print(f"[yellow]sent {signal_name}, may still be shutting down[/yellow]")
+
+
+def _do_status_instance(instance_name: str) -> None:
+    """Show instance status."""
+    config = _get_instance_config(instance_name)
+    if not config:
+        console.print(f"[dim]Instance '{instance_name}' not found.[/dim]")
+        return
+
+    is_running, pid, port = _is_instance_running(instance_name)
+
+    console.print(f"\n[bold cyan]Instance: {instance_name}[/bold cyan]")
+    console.print(f"  Status:  {'[green]running[/green]' if is_running else '[dim]stopped[/dim]'}")
+    if is_running:
+        console.print(f"  PID:     {pid}")
+        console.print(f"  Port:    {port}")
+        console.print(f"  URL:     http://localhost:{port}")
+    console.print(f"  Config:  {config['config_file']}")
+    console.print(f"  DB:      {config['db_path']}")
+    console.print()
+
+
+def _do_restart_instance(instance_name: str, force: bool, reload: bool) -> None:
+    """Restart an instance."""
+    import signal as sig
+    import subprocess
+    import time
+
+    signal_type = sig.SIGKILL if force else sig.SIGTERM
+
+    config = _get_instance_config(instance_name)
+    if not config:
+        console.print(f"[dim]Instance '{instance_name}' not found.[/dim]")
+        return
+
+    is_running, pid, _ = _is_instance_running(instance_name)
+    if is_running:
+        console.print(f"Stopping {instance_name} (PID {pid})... ", end="")
+        if _stop_instance(instance_name, signal_type, timeout=3.0):
+            console.print("[green]stopped[/green]")
+        else:
+            if not force:
+                console.print("[yellow]forcing...[/yellow] ", end="")
+                _stop_instance(instance_name, sig.SIGKILL, timeout=1.0)
+            console.print("[green]stopped[/green]")
+
+    # Brief pause to ensure port is released
+    time.sleep(0.5)
+
+    # Start in background
+    console.print(f"Starting {instance_name}... ", end="")
+    cmd = ["mail-proxy", "start", instance_name]
+    if reload:
+        cmd.append("--reload")
+
+    subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    # Wait for startup
+    time.sleep(1.0)
+    is_running, pid, port = _is_instance_running(instance_name)
+    if is_running:
+        console.print(f"[green]started[/green] (PID {pid}, port {port})")
+    else:
+        console.print("[yellow]starting in background...[/yellow]")
+
+
+def _stop_instance(name: str, signal_type: int = 15, timeout: float = 5.0, fallback_kill: bool = True) -> bool:
+    """Stop a running instance by sending a signal."""
+    import os
+    import signal as sig
+    import time
+
+    is_running, pid, _ = _is_instance_running(name)
+    if not is_running or pid is None:
+        return False
+
+    try:
+        os.kill(pid, signal_type)
+        wait_iterations = int(timeout / 0.1)
+        for _ in range(wait_iterations):
+            time.sleep(0.1)
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                _remove_pid_file(name)
+                return True
+
+        if fallback_kill and signal_type != sig.SIGKILL:
+            os.kill(pid, sig.SIGKILL)
+            time.sleep(0.5)
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                _remove_pid_file(name)
+                return True
+
+        return False
+    except (ProcessLookupError, PermissionError, OSError):
+        _remove_pid_file(name)
+        return False
+
+
+# ============================================================================
+# TENANTS commands
+# ============================================================================
+
+def _add_tenants_commands(group: click.Group, instance_name: str) -> None:
+    """Add tenants management commands."""
+
+    def _do_tenants_list(active_only: bool = False, as_json: bool = False) -> None:
+        """Internal function to list tenants."""
+        persistence = _get_persistence_for_instance(instance_name)
+
+        async def _list():
+            await persistence.init_db()
+            return await persistence.list_tenants(active_only=active_only)
+
+        tenant_list = run_async(_list())
+
+        if as_json:
+            print_json(tenant_list)
+            return
+
+        if not tenant_list:
+            console.print("[dim]No tenants found.[/dim]")
+            return
+
+        table = Table(title="Tenants")
+        table.add_column("ID", style="cyan")
+        table.add_column("Name")
+        table.add_column("Active", justify="center")
+        table.add_column("Base URL")
+
+        for t in tenant_list:
+            active = "[green]✓[/green]" if t.get("active") else "[red]✗[/red]"
+            table.add_row(
+                t["id"],
+                t.get("name") or "-",
+                active,
+                t.get("client_base_url") or "-",
+            )
+
+        console.print(table)
+
+    @group.group("tenants", invoke_without_command=True)
+    @click.pass_context
+    def tenants(ctx):
+        """Manage tenants for this instance."""
+        if ctx.invoked_subcommand is None:
+            click.echo(ctx.get_help())
+
+    @tenants.command("list")
+    @click.option("--active-only", "-a", is_flag=True, help="Show only active tenants.")
+    @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+    def tenants_list(active_only: bool, as_json: bool) -> None:
+        """List all tenants."""
+        _do_tenants_list(active_only, as_json)
+
+    @tenants.command("show")
+    @click.argument("tenant_id")
+    @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+    def tenants_show(tenant_id: str, as_json: bool) -> None:
+        """Show details for a specific tenant."""
+        persistence = _get_persistence_for_instance(instance_name)
+
+        async def _show():
+            await persistence.init_db()
+            return await persistence.get_tenant(tenant_id)
+
+        tenant_data = run_async(_show())
+
+        if not tenant_data:
+            print_error(f"Tenant '{tenant_id}' not found.")
+            sys.exit(1)
+
+        if as_json:
+            print_json(tenant_data)
+            return
+
+        console.print(f"\n[bold cyan]Tenant: {tenant_id}[/bold cyan]\n")
+        console.print(f"  Name:            {tenant_data.get('name') or '-'}")
+        console.print(f"  Active:          {'Yes' if tenant_data.get('active') else 'No'}")
+        console.print(f"  Base URL:        {tenant_data.get('client_base_url') or '-'}")
+        console.print(f"  Sync Path:       {tenant_data.get('client_sync_path') or DEFAULT_SYNC_PATH}")
+        console.print(f"  Attachment Path: {tenant_data.get('client_attachment_path') or DEFAULT_ATTACHMENT_PATH}")
+        console.print(f"  Created:         {tenant_data.get('created_at') or '-'}")
+        console.print(f"  Updated:         {tenant_data.get('updated_at') or '-'}")
+
+        if tenant_data.get("client_auth"):
+            auth = tenant_data["client_auth"]
+            console.print(f"  Auth Method:     {auth.get('method', 'none')}")
+
+        if tenant_data.get("rate_limits"):
+            limits = tenant_data["rate_limits"]
+            console.print(f"  Rate Limits:     hourly={limits.get('hourly', 0)}, daily={limits.get('daily', 0)}")
+
+        console.print()
+
+    @tenants.command("add")
+    @click.argument("tenant_id", required=False)
+    @click.option("--name", "-n", help="Human-readable tenant name.")
+    @click.option("--base-url", help="Base URL for tenant HTTP endpoints.")
+    @click.option("--sync-path", help=f"Path for delivery callbacks (default: {DEFAULT_SYNC_PATH}).")
+    @click.option("--attachment-path", help=f"Path for attachments (default: {DEFAULT_ATTACHMENT_PATH}).")
+    @click.option("--auth-method", type=click.Choice(["none", "bearer", "basic"]),
+                  help="Authentication method for HTTP endpoints.")
+    @click.option("--auth-token", help="Bearer token (for bearer auth).")
+    @click.option("--auth-user", help="Username (for basic auth).")
+    @click.option("--auth-password", help="Password (for basic auth).")
+    @click.option("--rate-limit-hourly", type=int, help="Max emails per hour (0=unlimited).")
+    @click.option("--rate-limit-daily", type=int, help="Max emails per day (0=unlimited).")
+    @click.option("--inactive", is_flag=True, help="Create tenant as inactive.")
+    def tenants_add(
+        tenant_id: Optional[str],
+        name: Optional[str],
+        base_url: Optional[str],
+        sync_path: Optional[str],
+        attachment_path: Optional[str],
+        auth_method: Optional[str],
+        auth_token: Optional[str],
+        auth_user: Optional[str],
+        auth_password: Optional[str],
+        rate_limit_hourly: Optional[int],
+        rate_limit_daily: Optional[int],
+        inactive: bool,
+    ) -> None:
+        """Add a new tenant.
+
+        Run without arguments for interactive mode.
+        """
+        # Interactive mode if tenant_id not provided
+        if not tenant_id:
+            console.print("\n[bold cyan]Add new tenant[/bold cyan]\n")
+            tenant_id = click.prompt("Tenant ID (alphanumeric, underscores, hyphens)")
+
+        if name is None:
+            name = click.prompt("Display name", default="", show_default=False) or None
+
+        if base_url is None:
+            base_url = click.prompt("Base URL (e.g. https://api.example.com)", default="", show_default=False) or None
+
+        if base_url and sync_path is None:
+            sync_path = click.prompt("Sync path", default=DEFAULT_SYNC_PATH) or None
+
+        if base_url and attachment_path is None:
+            attachment_path = click.prompt("Attachment path", default=DEFAULT_ATTACHMENT_PATH) or None
+
+        if auth_method is None:
+            auth_method = click.prompt(
+                "Auth method",
+                type=click.Choice(["none", "bearer", "basic"]),
+                default="none"
+            )
+
+        if auth_method == "bearer" and not auth_token:
+            auth_token = click.prompt("Bearer token")
+        elif auth_method == "basic":
+            if not auth_user:
+                auth_user = click.prompt("Auth username")
+            if not auth_password:
+                auth_password = click.prompt("Auth password", hide_input=True)
+
+        if rate_limit_hourly is None:
+            rate_limit_hourly = click.prompt("Rate limit hourly (0=unlimited)", type=int, default=0)
+
+        if rate_limit_daily is None:
+            rate_limit_daily = click.prompt("Rate limit daily (0=unlimited)", type=int, default=0)
+
+        persistence = _get_persistence_for_instance(instance_name)
+
+        client_auth = None
+        if auth_method != "none":
+            client_auth = {
+                "method": auth_method,
+                "token": auth_token,
+                "user": auth_user,
+                "password": auth_password,
+            }
+
+        rate_limits = None
+        if rate_limit_hourly > 0 or rate_limit_daily > 0:
+            rate_limits = {
+                "hourly": rate_limit_hourly,
+                "daily": rate_limit_daily,
+            }
+
+        try:
+            tenant_data = TenantCreate(
+                id=tenant_id,
+                name=name,
+                client_auth=TenantAuth(**client_auth) if client_auth else None,
+                client_base_url=base_url,
+                client_sync_path=sync_path,
+                client_attachment_path=attachment_path,
+                rate_limits=TenantRateLimits(**rate_limits) if rate_limits else None,
+                active=not inactive,
+            )
+        except ValidationError as e:
+            print_error(f"Validation error: {e}")
+            sys.exit(1)
+
+        async def _add():
+            await persistence.init_db()
+            await persistence.add_tenant(tenant_data.model_dump(exclude_none=True))
+
+        run_async(_add())
+        print_success(f"Tenant '{tenant_id}' created.")
+
+    @tenants.command("update")
+    @click.argument("tenant_id")
+    @click.option("--name", "-n", help="Human-readable tenant name.")
+    @click.option("--base-url", help="Base URL for tenant HTTP endpoints.")
+    @click.option("--sync-path", help="Path for delivery callbacks.")
+    @click.option("--attachment-path", help="Path for attachments.")
+    @click.option("--auth-method", type=click.Choice(["none", "bearer", "basic"]),
+                  help="Authentication method for HTTP endpoints.")
+    @click.option("--auth-token", help="Bearer token (for bearer auth).")
+    @click.option("--auth-user", help="Username (for basic auth).")
+    @click.option("--auth-password", help="Password (for basic auth).")
+    @click.option("--rate-limit-hourly", type=int, help="Max emails per hour (0=unlimited).")
+    @click.option("--rate-limit-daily", type=int, help="Max emails per day (0=unlimited).")
+    @click.option("--active/--inactive", default=None, help="Set tenant active status.")
+    def tenants_update(
+        tenant_id: str,
+        name: Optional[str],
+        base_url: Optional[str],
+        sync_path: Optional[str],
+        attachment_path: Optional[str],
+        auth_method: Optional[str],
+        auth_token: Optional[str],
+        auth_user: Optional[str],
+        auth_password: Optional[str],
+        rate_limit_hourly: Optional[int],
+        rate_limit_daily: Optional[int],
+        active: Optional[bool],
+    ) -> None:
+        """Update an existing tenant."""
+        persistence = _get_persistence_for_instance(instance_name)
+
+        updates: Dict[str, Any] = {}
+
+        if name is not None:
+            updates["name"] = name
+        if base_url is not None:
+            updates["client_base_url"] = base_url
+        if sync_path is not None:
+            updates["client_sync_path"] = sync_path
+        if attachment_path is not None:
+            updates["client_attachment_path"] = attachment_path
+        if active is not None:
+            updates["active"] = active
+
+        if any([auth_method, auth_token, auth_user, auth_password]):
+            updates["client_auth"] = {
+                "method": auth_method or "none",
+                "token": auth_token,
+                "user": auth_user,
+                "password": auth_password,
+            }
+
+        if rate_limit_hourly is not None or rate_limit_daily is not None:
+            updates["rate_limits"] = {
+                "hourly": rate_limit_hourly or 0,
+                "daily": rate_limit_daily or 0,
+            }
+
+        if not updates:
+            print_error("No updates specified.")
+            sys.exit(1)
+
+        async def _update():
+            await persistence.init_db()
+            return await persistence.update_tenant(tenant_id, updates)
+
+        success = run_async(_update())
+
+        if success:
+            print_success(f"Tenant '{tenant_id}' updated.")
+        else:
+            print_error(f"Tenant '{tenant_id}' not found.")
+            sys.exit(1)
+
+    @tenants.command("delete")
+    @click.argument("tenant_id")
+    @click.option("--force", "-f", is_flag=True, help="Skip confirmation prompt.")
+    def tenants_delete(tenant_id: str, force: bool) -> None:
+        """Delete a tenant and all associated accounts/messages."""
+        persistence = _get_persistence_for_instance(instance_name)
+
+        if not force:
+            if not click.confirm(f"Delete tenant '{tenant_id}' and all associated data?"):
+                console.print("Aborted.")
+                return
+
+        async def _delete():
+            await persistence.init_db()
+            return await persistence.delete_tenant(tenant_id)
+
+        success = run_async(_delete())
+
+        if success:
+            print_success(f"Tenant '{tenant_id}' deleted.")
+        else:
+            print_error(f"Tenant '{tenant_id}' not found.")
+            sys.exit(1)
+
+
+# ============================================================================
+# STATS command
+# ============================================================================
+
+def _add_stats_command(group: click.Group, instance_name: str) -> None:
+    """Add stats command."""
+
+    @group.command("stats")
+    @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+    def stats(as_json: bool) -> None:
+        """Show queue statistics for this instance."""
+        persistence = _get_persistence_for_instance(instance_name)
+
+        async def _stats():
+            await persistence.init_db()
+
+            tenants = await persistence.list_tenants()
+            accounts = await persistence.list_accounts()
+            messages = await persistence.list_messages()
+
+            pending = sum(1 for m in messages if not m.get("sent_ts") and not m.get("error_ts"))
+            sent = sum(1 for m in messages if m.get("sent_ts"))
+            errors = sum(1 for m in messages if m.get("error_ts"))
+
+            return {
+                "tenants": len(tenants),
+                "accounts": len(accounts),
+                "messages": {
+                    "total": len(messages),
+                    "pending": pending,
+                    "sent": sent,
+                    "error": errors,
+                },
+            }
+
+        data = run_async(_stats())
+
+        if as_json:
+            print_json(data)
+            return
+
+        console.print(f"\n[bold]Stats for {instance_name}[/bold]\n")
+        console.print(f"  Tenants:    {data['tenants']}")
+        console.print(f"  Accounts:   {data['accounts']}")
+        console.print(f"  Messages:")
+        console.print(f"    Total:    {data['messages']['total']}")
+        console.print(f"    Pending:  {data['messages']['pending']}")
+        console.print(f"    Sent:     {data['messages']['sent']}")
+        console.print(f"    Errors:   {data['messages']['error']}")
+        console.print()
+
+
+# ============================================================================
+# CONNECT command
+# ============================================================================
+
+def _add_connect_command(group: click.Group, instance_name: str) -> None:
+    """Add connect command for REPL."""
+
+    @group.command("connect")
+    @click.option("--token", "-t", envvar="GMP_API_TOKEN", help="API token for authentication.")
+    def connect_cmd(token: Optional[str]) -> None:
+        """Connect to this instance with an interactive REPL."""
+        import code
+        import readline  # noqa: F401
+        import rlcompleter  # noqa: F401
+
+        from async_mail_service.client import MailProxyClient, connect as client_connect
+        from async_mail_service.forms import (
+            new_tenant,
+            new_account,
+            new_message,
+            set_proxy,
+            TenantForm,
+            AccountForm,
+            MessageForm,
+        )
+
+        # Check if running
+        is_running, pid, port = _is_instance_running(instance_name)
+        if not is_running:
+            print_error(f"Instance '{instance_name}' is not running")
+            console.print(f"[dim]Start it with: mail-proxy {instance_name} serve start[/dim]")
+            sys.exit(1)
+
+        url = f"http://localhost:{port}"
+
+        # Get token from config if not provided
+        if not token:
+            config = _get_instance_config(instance_name)
+            if config:
+                token = config.get("api_token")
+
+        try:
+            proxy = client_connect(url, token=token, name=instance_name)
+
+            if not proxy.health():
+                print_error(f"Cannot connect to {instance_name} ({url})")
+                console.print("[dim]Make sure the server is running.[/dim]")
+                return
+
+            set_proxy(proxy)
+
+            console.print(f"\n[bold green]Connected to {instance_name}[/bold green]")
+            console.print(f"  URL: {url}")
+            console.print()
+
+            console.print("[bold]Available objects:[/bold]")
+            console.print("  [cyan]proxy[/cyan]          - The connected client")
+            console.print("  [cyan]proxy.messages[/cyan] - Message management")
+            console.print("  [cyan]proxy.accounts[/cyan] - Account management")
+            console.print("  [cyan]proxy.tenants[/cyan]  - Tenant management")
+            console.print()
+            console.print("[bold]Quick commands:[/bold]")
+            console.print("  [cyan]proxy.status()[/cyan]          - Server status")
+            console.print("  [cyan]proxy.stats()[/cyan]           - Queue statistics")
+            console.print("  [cyan]proxy.run_now()[/cyan]         - Trigger dispatch cycle")
+            console.print()
+            console.print("[bold]Interactive forms:[/bold]")
+            console.print("  [cyan]new_tenant()[/cyan]   - Create tenant")
+            console.print("  [cyan]new_account()[/cyan]  - Create account")
+            console.print("  [cyan]new_message()[/cyan]  - Create message")
+            console.print()
+            console.print("[dim]Type 'exit()' or Ctrl+D to quit.[/dim]")
+            console.print()
+
+            namespace = {
+                "proxy": proxy,
+                "MailProxyClient": MailProxyClient,
+                "console": console,
+                "new_tenant": new_tenant,
+                "new_account": new_account,
+                "new_message": new_message,
+                "TenantForm": TenantForm,
+                "AccountForm": AccountForm,
+                "MessageForm": MessageForm,
+            }
+
+            code.interact(banner="", local=namespace, exitmsg="Goodbye!")
+
+        except Exception as e:
+            print_error(f"Connection failed: {e}")
+            sys.exit(1)
+
+
+# ============================================================================
+# TOKEN command
+# ============================================================================
+
+def _add_token_command(group: click.Group, instance_name: str) -> None:
+    """Add token command."""
+
+    @group.command("token")
+    @click.option("--regenerate", "-r", is_flag=True, help="Generate a new token.")
+    def token_cmd(regenerate: bool) -> None:
+        """Show or regenerate the API token for this instance."""
+        import configparser
+
+        config_dir = _get_instance_dir(instance_name)
+        config_file = config_dir / "config.ini"
+
+        if not config_file.exists():
+            print_error(f"Instance '{instance_name}' not found.")
+            sys.exit(1)
+
+        config = configparser.ConfigParser()
+        config.read(config_file)
+
+        if regenerate:
+            new_token = _generate_api_token()
+
+            if not config.has_section("server"):
+                config.add_section("server")
+            config.set("server", "api_token", new_token)
+
+            with open(config_file, "w") as f:
+                config.write(f)
+
+            console.print(f"[green]Token regenerated for instance:[/green] {instance_name}")
+            console.print(f"[yellow]Note:[/yellow] Restart the instance for the new token to take effect.")
+            console.print(f"\n{new_token}")
+        else:
+            token_value = config.get("server", "api_token", fallback=None)
+
+            if not token_value or token_value.strip() == "":
+                console.print(f"[yellow]No API token configured for instance:[/yellow] {instance_name}")
+                console.print("Use --regenerate to generate one.")
+                sys.exit(1)
+
+            console.print(token_value.strip())
+
+
+# ============================================================================
+# Tenant-level commands factory
+# ============================================================================
+
+def _create_tenant_group(instance_name: str, tenant_id: str) -> click.Group:
+    """Create a command group for a specific tenant within an instance."""
+
+    @click.group(invoke_without_command=True)
+    @click.pass_context
+    def tenant_group(ctx):
+        """Commands for this tenant."""
+        ctx.ensure_object(dict)
+        ctx.obj["instance"] = instance_name
+        ctx.obj["tenant"] = tenant_id
+
+        if ctx.invoked_subcommand is None:
+            # Show help with available subcommands
+            click.echo(ctx.get_help())
+
+    # Add tenant-level commands
+    _add_info_command(tenant_group, instance_name, tenant_id)
+    _add_accounts_commands(tenant_group, instance_name, tenant_id)
+    _add_messages_commands(tenant_group, instance_name, tenant_id)
+    _add_send_command(tenant_group, instance_name, tenant_id)
+
+    return tenant_group
+
+
+def _add_info_command(group: click.Group, instance_name: str, tenant_id: str) -> None:
+    """Add info command for a tenant."""
+
+    @group.command("info")
+    @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+    def info_cmd(as_json: bool) -> None:
+        """Show tenant details."""
+        persistence = _get_persistence_for_instance(instance_name)
+
+        async def _show():
+            await persistence.init_db()
+            return await persistence.get_tenant(tenant_id)
+
+        tenant_data = run_async(_show())
+
+        if not tenant_data:
+            print_error(f"Tenant '{tenant_id}' not found in instance '{instance_name}'.")
+            sys.exit(1)
+
+        if as_json:
+            print_json(tenant_data)
+            return
+
+        console.print(f"\n[bold cyan]Tenant: {tenant_id}[/bold cyan] (instance: {instance_name})\n")
+        console.print(f"  Name:            {tenant_data.get('name') or '-'}")
+        console.print(f"  Active:          {'Yes' if tenant_data.get('active') else 'No'}")
+        console.print(f"  Base URL:        {tenant_data.get('client_base_url') or '-'}")
+        console.print(f"  Sync Path:       {tenant_data.get('client_sync_path') or DEFAULT_SYNC_PATH}")
+        console.print(f"  Attachment Path: {tenant_data.get('client_attachment_path') or DEFAULT_ATTACHMENT_PATH}")
+        console.print(f"  Created:         {tenant_data.get('created_at') or '-'}")
+        console.print(f"  Updated:         {tenant_data.get('updated_at') or '-'}")
+
+        if tenant_data.get("client_auth"):
+            auth = tenant_data["client_auth"]
+            console.print(f"  Auth Method:     {auth.get('method', 'none')}")
+
+        if tenant_data.get("rate_limits"):
+            limits = tenant_data["rate_limits"]
+            console.print(f"  Rate Limits:     hourly={limits.get('hourly', 0)}, daily={limits.get('daily', 0)}")
+
+        console.print()
+
+
+# ============================================================================
+# ACCOUNTS commands (tenant-level)
+# ============================================================================
+
+def _add_accounts_commands(group: click.Group, instance_name: str, tenant_id: str) -> None:
+    """Add accounts management commands for a tenant."""
+
+    def _do_accounts_list(as_json: bool = False) -> None:
+        """Internal function to list accounts."""
+        persistence = _get_persistence_for_instance(instance_name)
+
+        async def _list():
+            await persistence.init_db()
+            return await persistence.list_accounts(tenant_id=tenant_id)
+
+        account_list = run_async(_list())
+
+        if as_json:
+            print_json(account_list)
+            return
+
+        if not account_list:
+            console.print("[dim]No accounts found.[/dim]")
+            return
+
+        table = Table(title=f"SMTP Accounts (tenant: {tenant_id})")
+        table.add_column("ID", style="cyan")
+        table.add_column("Host")
+        table.add_column("Port", justify="right")
+        table.add_column("User")
+        table.add_column("TLS", justify="center")
+
+        for acc in account_list:
+            tls = "[green]✓[/green]" if acc.get("use_tls") else "[dim]-[/dim]"
+            table.add_row(
+                acc["id"],
+                acc["host"],
+                str(acc["port"]),
+                acc.get("user") or "-",
+                tls,
+            )
+
+        console.print(table)
+
+    @group.group("accounts", invoke_without_command=True)
+    @click.pass_context
+    def accounts(ctx):
+        """Manage SMTP accounts for this tenant."""
+        if ctx.invoked_subcommand is None:
+            click.echo(ctx.get_help())
+
+    @accounts.command("list")
+    @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+    def accounts_list(as_json: bool) -> None:
+        """List SMTP accounts for this tenant."""
+        _do_accounts_list(as_json)
+
+    @accounts.command("show")
+    @click.argument("account_id")
+    @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+    def accounts_show(account_id: str, as_json: bool) -> None:
+        """Show details for a specific account."""
+        persistence = _get_persistence_for_instance(instance_name)
+
+        async def _show():
+            await persistence.init_db()
+            try:
+                return await persistence.get_account(account_id)
+            except ValueError:
+                return None
+
+        account_data = run_async(_show())
+
+        if not account_data:
+            print_error(f"Account '{account_id}' not found.")
+            sys.exit(1)
+
+        # Verify it belongs to this tenant
+        if account_data.get("tenant_id") != tenant_id:
+            print_error(f"Account '{account_id}' does not belong to tenant '{tenant_id}'.")
+            sys.exit(1)
+
+        display_data = {k: v for k, v in account_data.items() if k != "password"}
+        display_data["password"] = "***" if account_data.get("password") else None
+
+        if as_json:
+            print_json(display_data)
+            return
+
+        console.print(f"\n[bold cyan]Account: {account_id}[/bold cyan]\n")
+        console.print(f"  Tenant:          {account_data.get('tenant_id') or '-'}")
+        console.print(f"  Host:            {account_data['host']}")
+        console.print(f"  Port:            {account_data['port']}")
+        console.print(f"  User:            {account_data.get('user') or '-'}")
+        console.print(f"  Password:        {'***' if account_data.get('password') else '-'}")
+        console.print(f"  Use TLS:         {'Yes' if account_data.get('use_tls') else 'No'}")
+        console.print(f"  Batch Size:      {account_data.get('batch_size') or 'default'}")
+        console.print(f"  Rate Limits:     hour={account_data.get('limit_per_hour') or 0}, day={account_data.get('limit_per_day') or 0}")
+        console.print(f"  Created:         {account_data.get('created_at') or '-'}")
+        console.print()
+
+    @accounts.command("add")
+    @click.argument("account_id", required=False)
+    @click.option("--host", "-h", help="SMTP server hostname.")
+    @click.option("--port", "-p", type=int, help="SMTP server port.")
+    @click.option("--user", "-u", help="SMTP username.")
+    @click.option("--password", help="SMTP password.")
+    @click.option("--tls/--no-tls", default=None, help="Use STARTTLS (default: yes).")
+    @click.option("--ssl/--no-ssl", default=None, help="Use SSL/TLS connection.")
+    @click.option("--batch-size", type=int, help="Max messages per dispatch cycle.")
+    @click.option("--ttl", type=int, help="Connection TTL in seconds (default: 300).")
+    @click.option("--limit-minute", type=int, help="Max emails per minute.")
+    @click.option("--limit-hour", type=int, help="Max emails per hour.")
+    @click.option("--limit-day", type=int, help="Max emails per day.")
+    @click.option("--limit-behavior", type=click.Choice(["defer", "reject"]), help="Behavior when rate limit is hit.")
+    def accounts_add(
+        account_id: Optional[str],
+        host: Optional[str],
+        port: Optional[int],
+        user: Optional[str],
+        password: Optional[str],
+        tls: Optional[bool],
+        ssl: Optional[bool],
+        batch_size: Optional[int],
+        ttl: Optional[int],
+        limit_minute: Optional[int],
+        limit_hour: Optional[int],
+        limit_day: Optional[int],
+        limit_behavior: Optional[str],
+    ) -> None:
+        """Add a new SMTP account to this tenant.
+
+        Run without arguments for interactive mode.
+        """
+        # Interactive mode if account_id not provided
+        if not account_id:
+            console.print(f"\n[bold cyan]Add SMTP account for tenant '{tenant_id}'[/bold cyan]\n")
+            account_id = click.prompt("Account ID")
+
+        if not host:
+            host = click.prompt("SMTP host")
+
+        if port is None:
+            port = click.prompt("SMTP port", type=int, default=587)
+
+        if user is None:
+            user = click.prompt("SMTP username", default="", show_default=False) or None
+
+        if user and password is None:
+            password = click.prompt("SMTP password", hide_input=True, default="", show_default=False) or None
+
+        if tls is None:
+            tls = click.confirm("Use STARTTLS?", default=True)
+
+        if ssl is None:
+            ssl = click.confirm("Use SSL/TLS connection?", default=False)
+
+        if batch_size is None:
+            batch_size_str = click.prompt("Batch size (empty=default)", default="", show_default=False)
+            batch_size = int(batch_size_str) if batch_size_str else None
+
+        if ttl is None:
+            ttl_str = click.prompt("Connection TTL in seconds", default="300", show_default=False)
+            ttl = int(ttl_str) if ttl_str else 300
+
+        if limit_minute is None:
+            limit_minute_str = click.prompt("Rate limit per minute (0=unlimited)", default="0", show_default=False)
+            limit_minute = int(limit_minute_str) if limit_minute_str else 0
+
+        if limit_hour is None:
+            limit_hour_str = click.prompt("Rate limit per hour (0=unlimited)", default="0", show_default=False)
+            limit_hour = int(limit_hour_str) if limit_hour_str else 0
+
+        if limit_day is None:
+            limit_day_str = click.prompt("Rate limit per day (0=unlimited)", default="0", show_default=False)
+            limit_day = int(limit_day_str) if limit_day_str else 0
+
+        if limit_behavior is None:
+            limit_behavior = click.prompt(
+                "Limit behavior",
+                type=click.Choice(["defer", "reject"]),
+                default="defer"
+            )
+
+        persistence = _get_persistence_for_instance(instance_name)
+
+        try:
+            account_data = AccountCreate(
+                id=account_id,
+                tenant_id=tenant_id,
+                host=host,
+                port=port,
+                user=user,
+                password=password,
+                use_tls=tls,
+                use_ssl=ssl,
+                batch_size=batch_size,
+                ttl=ttl,
+                limit_per_minute=limit_minute if limit_minute else None,
+                limit_per_hour=limit_hour if limit_hour else None,
+                limit_per_day=limit_day if limit_day else None,
+                limit_behavior=limit_behavior,
+            )
+        except ValidationError as e:
+            print_error(f"Validation error: {e}")
+            sys.exit(1)
+
+        async def _add():
+            await persistence.init_db()
+            # Verify tenant exists
+            tenant_data = await persistence.get_tenant(tenant_id)
+            if not tenant_data:
+                return False, f"Tenant '{tenant_id}' not found."
+
+            acc_dict = account_data.model_dump(exclude_none=True)
+            await persistence.add_account(acc_dict)
+            return True, None
+
+        success, error = run_async(_add())
+
+        if success:
+            print_success(f"Account '{account_id}' created for tenant '{tenant_id}'.")
+        else:
+            print_error(error)
+            sys.exit(1)
+
+    @accounts.command("delete")
+    @click.argument("account_id")
+    @click.option("--force", "-f", is_flag=True, help="Skip confirmation prompt.")
+    def accounts_delete(account_id: str, force: bool) -> None:
+        """Delete an SMTP account."""
+        persistence = _get_persistence_for_instance(instance_name)
+
+        if not force:
+            if not click.confirm(f"Delete account '{account_id}' and all associated messages?"):
+                console.print("Aborted.")
+                return
+
+        async def _delete():
+            await persistence.init_db()
+            # Verify it belongs to this tenant
+            try:
+                acc = await persistence.get_account(account_id)
+                if acc and acc.get("tenant_id") != tenant_id:
+                    return False, f"Account '{account_id}' does not belong to tenant '{tenant_id}'."
+            except ValueError:
+                return False, f"Account '{account_id}' not found."
+
+            await persistence.delete_account(account_id)
+            return True, None
+
+        success, error = run_async(_delete())
+
+        if success:
+            print_success(f"Account '{account_id}' deleted.")
+        else:
+            print_error(error)
+            sys.exit(1)
+
+
+# ============================================================================
+# MESSAGES commands (tenant-level)
+# ============================================================================
+
+def _add_messages_commands(group: click.Group, instance_name: str, tenant_id: str) -> None:
+    """Add messages management commands for a tenant."""
+
+    def _do_messages_list(
+        account: Optional[str] = None,
+        status: str = "all",
+        limit: int = 50,
+        as_json: bool = False
+    ) -> None:
+        """Internal function to list messages."""
+        persistence = _get_persistence_for_instance(instance_name)
+
+        async def _list():
+            await persistence.init_db()
+            messages = await persistence.list_messages()
+
+            # Filter by tenant
+            tenant_accounts = await persistence.list_accounts(tenant_id=tenant_id)
+            account_ids = {a["id"] for a in tenant_accounts}
+            messages = [m for m in messages if m.get("account_id") in account_ids]
+
+            # Filter by account if specified
+            if account:
+                messages = [m for m in messages if m.get("account_id") == account]
+
+            # Filter by status
+            if status != "all":
+                filtered = []
+                for m in messages:
+                    if status == "pending" and not m.get("sent_ts") and not m.get("error_ts"):
+                        filtered.append(m)
+                    elif status == "sent" and m.get("sent_ts"):
+                        filtered.append(m)
+                    elif status == "error" and m.get("error_ts"):
+                        filtered.append(m)
+                messages = filtered
+
+            return messages[:limit]
+
+        msg_list = run_async(_list())
+
+        if as_json:
+            print_json(msg_list)
+            return
+
+        if not msg_list:
+            console.print("[dim]No messages found.[/dim]")
+            return
+
+        table = Table(title=f"Messages (tenant: {tenant_id}, showing up to {limit})")
+        table.add_column("ID", style="cyan", max_width=20)
+        table.add_column("Account")
+        table.add_column("Status")
+        table.add_column("Subject", max_width=30)
+        table.add_column("Created")
+
+        for msg in msg_list[:limit]:
+            if msg.get("error_ts"):
+                msg_status = "[red]error[/red]"
+            elif msg.get("sent_ts"):
+                msg_status = "[green]sent[/green]"
+            elif msg.get("deferred_ts"):
+                msg_status = "[yellow]deferred[/yellow]"
+            else:
+                msg_status = "[blue]pending[/blue]"
+
+            subject = msg.get("message", {}).get("subject", "-")[:30]
+
+            table.add_row(
+                msg["id"][:20] + "..." if len(msg["id"]) > 20 else msg["id"],
+                msg.get("account_id") or "-",
+                msg_status,
+                subject,
+                msg.get("created_at") or "-",
+            )
+
+        console.print(table)
+
+    @group.group("messages", invoke_without_command=True)
+    @click.pass_context
+    def messages(ctx):
+        """Manage messages for this tenant."""
+        if ctx.invoked_subcommand is None:
+            click.echo(ctx.get_help())
+
+    @messages.command("list")
+    @click.option("--account", "-a", help="Filter by account ID.")
+    @click.option("--status", "-s", type=click.Choice(["pending", "sent", "error", "all"]), default="all",
+                  help="Filter by status.")
+    @click.option("--limit", "-l", type=int, default=50, help="Max messages to show.")
+    @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+    def messages_list(account: Optional[str], status: str, limit: int, as_json: bool) -> None:
+        """List messages for this tenant."""
+        _do_messages_list(account, status, limit, as_json)
+
+    @messages.command("show")
+    @click.argument("message_id")
+    @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+    def messages_show(message_id: str, as_json: bool) -> None:
+        """Show details for a specific message."""
+        persistence = _get_persistence_for_instance(instance_name)
+
+        async def _show():
+            await persistence.init_db()
+            messages = await persistence.list_messages()
+            for m in messages:
+                if m["id"] == message_id:
+                    return m
+            return None
+
+        msg = run_async(_show())
+
+        if not msg:
+            print_error(f"Message '{message_id}' not found.")
+            sys.exit(1)
+
+        if as_json:
+            print_json(msg)
+            return
+
+        console.print(f"\n[bold cyan]Message: {message_id}[/bold cyan]\n")
+        console.print(f"  Account:     {msg.get('account_id') or '-'}")
+        console.print(f"  Priority:    {msg.get('priority', 2)}")
+        console.print(f"  Created:     {msg.get('created_at') or '-'}")
+        console.print(f"  Deferred:    {msg.get('deferred_ts') or '-'}")
+        console.print(f"  Sent:        {msg.get('sent_ts') or '-'}")
+        console.print(f"  Error:       {msg.get('error') or '-'}")
+
+        if msg.get("message"):
+            m = msg["message"]
+            console.print(f"\n  [bold]Message Content:[/bold]")
+            console.print(f"    From:      {m.get('from', '-')}")
+            console.print(f"    To:        {m.get('to', '-')}")
+            console.print(f"    Subject:   {m.get('subject', '-')}")
+
+        console.print()
+
+    @messages.command("delete")
+    @click.argument("message_ids", nargs=-1, required=True)
+    @click.option("--force", "-f", is_flag=True, help="Skip confirmation prompt.")
+    def messages_delete(message_ids: tuple, force: bool) -> None:
+        """Delete one or more messages."""
+        persistence = _get_persistence_for_instance(instance_name)
+
+        if not force:
+            if not click.confirm(f"Delete {len(message_ids)} message(s)?"):
+                console.print("Aborted.")
+                return
+
+        async def _delete():
+            await persistence.init_db()
+            deleted = 0
+            for mid in message_ids:
+                if await persistence.delete_message(mid):
+                    deleted += 1
+            return deleted
+
+        deleted = run_async(_delete())
+        print_success(f"Deleted {deleted} of {len(message_ids)} message(s).")
+
+
+# ============================================================================
+# SEND command (tenant-level)
+# ============================================================================
+
+def _add_send_command(group: click.Group, instance_name: str, tenant_id: str) -> None:
+    """Add send command for a tenant."""
+
+    @group.command("send")
+    @click.argument("file", type=click.Path(exists=True))
+    @click.option("--account", "-a", help="Account ID to use (default: first available).")
+    @click.option("--priority", "-p", type=int, default=2, help="Priority (1=high, 2=normal, 3=low).")
+    def send_cmd(file: str, account: Optional[str], priority: int) -> None:
+        """Send an email from a .eml file.
+
+        Example:
+
+            mail-proxy myserver acme send email.eml
+
+            mail-proxy myserver acme send email.eml --account smtp1
+        """
+        import email
+
+        persistence = _get_persistence_for_instance(instance_name)
+
+        # Read and parse the .eml file
+        eml_path = Path(file)
+        with open(eml_path, "rb") as f:
+            msg = email.message_from_binary_file(f)
+
+        async def _send():
+            await persistence.init_db()
+
+            # Get account to use
+            accounts = await persistence.list_accounts(tenant_id=tenant_id)
+            if not accounts:
+                return False, f"No accounts found for tenant '{tenant_id}'."
+
+            if account:
+                acc = next((a for a in accounts if a["id"] == account), None)
+                if not acc:
+                    return False, f"Account '{account}' not found for tenant '{tenant_id}'."
+                account_id = acc["id"]
+            else:
+                account_id = accounts[0]["id"]
+
+            # Extract message details
+            from_addr = msg.get("From", "")
+            to_addr = msg.get("To", "")
+            subject = msg.get("Subject", "")
+
+            # Get body
+            body_text = None
+            body_html = None
+            if msg.is_multipart():
+                for part in msg.walk():
+                    content_type = part.get_content_type()
+                    if content_type == "text/plain" and body_text is None:
+                        body_text = part.get_payload(decode=True).decode("utf-8", errors="replace")
+                    elif content_type == "text/html" and body_html is None:
+                        body_html = part.get_payload(decode=True).decode("utf-8", errors="replace")
+            else:
+                payload = msg.get_payload(decode=True)
+                if payload:
+                    if msg.get_content_type() == "text/html":
+                        body_html = payload.decode("utf-8", errors="replace")
+                    else:
+                        body_text = payload.decode("utf-8", errors="replace")
+
+            # Create message
+            message_data = {
+                "account_id": account_id,
+                "priority": priority,
+                "message": {
+                    "from": from_addr,
+                    "to": [to_addr] if isinstance(to_addr, str) else to_addr,
+                    "subject": subject,
+                    "body_text": body_text,
+                    "body_html": body_html,
+                },
+            }
+
+            message_id = await persistence.add_message(message_data)
+            return True, message_id
+
+        success, result = run_async(_send())
+
+        if success:
+            print_success(f"Message queued with ID: {result}")
+        else:
+            print_error(result)
+            sys.exit(1)
 
 
 if __name__ == "__main__":

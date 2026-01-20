@@ -94,6 +94,13 @@ class Account:
     port: int = 587
     user: Optional[str] = None
     use_tls: bool = True
+    use_ssl: bool = False
+    ttl: int = 300
+    limit_per_minute: Optional[int] = None
+    limit_per_hour: Optional[int] = None
+    limit_per_day: Optional[int] = None
+    limit_behavior: Optional[str] = "defer"
+    batch_size: Optional[int] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Account":
@@ -105,6 +112,13 @@ class Account:
             port=data.get("port", 587),
             user=data.get("user"),
             use_tls=bool(data.get("use_tls", True)),
+            use_ssl=bool(data.get("use_ssl", False)),
+            ttl=data.get("ttl", 300),
+            limit_per_minute=data.get("limit_per_minute"),
+            limit_per_hour=data.get("limit_per_hour"),
+            limit_per_day=data.get("limit_per_day"),
+            limit_behavior=data.get("limit_behavior", "defer"),
+            batch_size=data.get("batch_size"),
         )
 
     def __repr__(self) -> str:
@@ -118,7 +132,9 @@ class Tenant:
     id: str
     name: Optional[str] = None
     active: bool = True
-    client_sync_url: Optional[str] = None
+    client_base_url: Optional[str] = None
+    client_sync_path: Optional[str] = None
+    client_attachment_path: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Tenant":
@@ -127,7 +143,9 @@ class Tenant:
             id=data["id"],
             name=data.get("name"),
             active=bool(data.get("active", True)),
-            client_sync_url=data.get("client_sync_url"),
+            client_base_url=data.get("client_base_url"),
+            client_sync_path=data.get("client_sync_path"),
+            client_attachment_path=data.get("client_attachment_path"),
         )
 
     def __repr__(self) -> str:

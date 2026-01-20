@@ -66,6 +66,7 @@ auth_dependency = Depends(require_token)
 class AccountPayload(BaseModel):
     """SMTP account definition used when adding or updating accounts."""
     id: str
+    tenant_id: Optional[str] = None
     host: str
     port: int
     user: Optional[str] = None
@@ -76,6 +77,7 @@ class AccountPayload(BaseModel):
     limit_per_day: Optional[int] = None
     limit_behavior: Optional[str] = "defer"
     use_tls: Optional[bool] = None
+    use_ssl: Optional[bool] = None
     batch_size: Optional[int] = None
 
 
@@ -97,7 +99,7 @@ class MessagePayload(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     id: str
     account_id: Optional[str] = None
-    from_: str = Field(alias="from")
+    from_addr: str = Field(alias="from")
     to: Union[List[str], str]
     cc: Optional[Union[List[str], str]] = None
     bcc: Optional[Union[List[str], str]] = None
@@ -116,6 +118,7 @@ class MessagePayload(BaseModel):
 class AccountInfo(BaseModel):
     """Stored SMTP account as returned by ``listAccounts``."""
     id: str
+    tenant_id: Optional[str] = None
     host: str
     port: int
     user: Optional[str] = None
@@ -125,6 +128,7 @@ class AccountInfo(BaseModel):
     limit_per_day: Optional[int] = None
     limit_behavior: Optional[str] = None
     use_tls: Optional[bool] = None
+    use_ssl: Optional[bool] = None
     batch_size: Optional[int] = None
     created_at: Optional[str] = None
 
@@ -222,9 +226,10 @@ class TenantPayload(BaseModel):
     """Tenant configuration payload."""
     id: str
     name: Optional[str] = None
-    client_sync_url: Optional[str] = None
-    client_sync_auth: Optional[Dict[str, Any]] = None
-    attachment_config: Optional[Dict[str, Any]] = None
+    client_auth: Optional[Dict[str, Any]] = None
+    client_base_url: Optional[str] = None
+    client_sync_path: Optional[str] = None
+    client_attachment_path: Optional[str] = None
     rate_limits: Optional[Dict[str, Any]] = None
     active: bool = True
 
@@ -232,9 +237,10 @@ class TenantPayload(BaseModel):
 class TenantUpdatePayload(BaseModel):
     """Tenant update payload - all fields optional."""
     name: Optional[str] = None
-    client_sync_url: Optional[str] = None
-    client_sync_auth: Optional[Dict[str, Any]] = None
-    attachment_config: Optional[Dict[str, Any]] = None
+    client_auth: Optional[Dict[str, Any]] = None
+    client_base_url: Optional[str] = None
+    client_sync_path: Optional[str] = None
+    client_attachment_path: Optional[str] = None
     rate_limits: Optional[Dict[str, Any]] = None
     active: Optional[bool] = None
 
@@ -243,9 +249,10 @@ class TenantInfo(BaseModel):
     """Stored tenant as returned by listTenants."""
     id: str
     name: Optional[str] = None
-    client_sync_url: Optional[str] = None
-    client_sync_auth: Optional[Dict[str, Any]] = None
-    attachment_config: Optional[Dict[str, Any]] = None
+    client_auth: Optional[Dict[str, Any]] = None
+    client_base_url: Optional[str] = None
+    client_sync_path: Optional[str] = None
+    client_attachment_path: Optional[str] = None
     rate_limits: Optional[Dict[str, Any]] = None
     active: bool = True
     created_at: Optional[str] = None

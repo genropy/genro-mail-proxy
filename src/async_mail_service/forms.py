@@ -3,8 +3,8 @@
 This module provides interactive forms for creating tenants, accounts,
 and other entities with real-time validation using Pydantic models.
 
-Nested model fields (like client_sync_auth) are automatically expanded
-into separate fields (client_sync_auth_method, client_sync_auth_token, etc.)
+Nested model fields (like client_auth) are automatically expanded
+into separate fields (client_auth_method, client_auth_token, etc.)
 for easier input.
 
 Usage in REPL:
@@ -117,7 +117,7 @@ class InteractiveForm:
     - field_groups: Optional dict of group_name -> [field_names]
 
     Nested model fields are automatically expanded into separate fields
-    with the pattern: parent_field_subfield (e.g., client_sync_auth_method).
+    with the pattern: parent_field_subfield (e.g., client_auth_method).
     """
 
     model: Type[BaseModel]
@@ -490,14 +490,17 @@ class TenantForm(InteractiveForm):
     fields = [
         "id",
         "name",
-        "client_sync_url",
-        "client_sync_auth",
+        "client_auth",
+        "client_base_url",
+        "client_sync_path",
+        "client_attachment_path",
         "rate_limits",
         "active",
     ]
     field_groups = {
         "Basic Info": ["id", "name", "active"],
-        "Client Sync": ["client_sync_url", "client_sync_auth"],
+        "Authentication": ["client_auth"],
+        "Endpoints": ["client_base_url", "client_sync_path", "client_attachment_path"],
         "Rate Limits": ["rate_limits"],
     }
 
@@ -516,13 +519,20 @@ class AccountForm(InteractiveForm):
         "user",
         "password",
         "use_tls",
+        "use_ssl",
         "batch_size",
+        "ttl",
+        "limit_per_minute",
+        "limit_per_hour",
+        "limit_per_day",
+        "limit_behavior",
     ]
     field_groups = {
         "Identity": ["id", "tenant_id"],
-        "SMTP Server": ["host", "port", "use_tls"],
+        "SMTP Server": ["host", "port", "use_tls", "use_ssl"],
         "Authentication": ["user", "password"],
-        "Settings": ["batch_size"],
+        "Settings": ["batch_size", "ttl"],
+        "Rate Limits": ["limit_per_minute", "limit_per_hour", "limit_per_day", "limit_behavior"],
     }
 
 
@@ -537,16 +547,22 @@ class MessageForm(InteractiveForm):
         "account_id",
         "from_addr",
         "to",
+        "cc",
+        "bcc",
+        "reply_to",
+        "return_path",
         "subject",
         "body",
         "content_type",
+        "message_id",
         "priority",
+        "deferred_ts",
     ]
     field_groups = {
         "Identity": ["id", "account_id"],
-        "Addressing": ["from_addr", "to"],
+        "Addressing": ["from_addr", "to", "cc", "bcc", "reply_to", "return_path"],
         "Content": ["subject", "body", "content_type"],
-        "Settings": ["priority"],
+        "Settings": ["message_id", "priority", "deferred_ts"],
     }
 
 

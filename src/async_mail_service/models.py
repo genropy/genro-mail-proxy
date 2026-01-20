@@ -110,8 +110,9 @@ class TenantCreate(BaseModel):
         id: Unique tenant identifier.
         name: Human-readable tenant name.
         client_auth: Common authentication for all HTTP endpoints.
-        client_sync_url: URL for delivery report callbacks.
-        client_attachment_url: URL for attachment fetcher HTTP endpoint.
+        client_base_url: Base URL for tenant HTTP endpoints.
+        client_sync_path: Path for delivery report callbacks.
+        client_attachment_path: Path for attachment fetcher endpoint.
         rate_limits: Rate limiting settings.
         active: Whether tenant is active.
     """
@@ -131,13 +132,17 @@ class TenantCreate(BaseModel):
         Optional[TenantAuth],
         Field(default=None, description="Common authentication for HTTP endpoints")
     ]
-    client_sync_url: Annotated[
+    client_base_url: Annotated[
         Optional[str],
-        Field(default=None, description="URL for delivery report callbacks")
+        Field(default=None, description="Base URL for tenant HTTP endpoints")
     ]
-    client_attachment_url: Annotated[
+    client_sync_path: Annotated[
         Optional[str],
-        Field(default=None, description="URL for attachment fetcher HTTP endpoint")
+        Field(default=None, description="Path for delivery report callbacks (default: /mail-proxy/sync)")
+    ]
+    client_attachment_path: Annotated[
+        Optional[str],
+        Field(default=None, description="Path for attachment fetcher endpoint (default: /mail-proxy/attachments)")
     ]
     rate_limits: Annotated[
         Optional[TenantRateLimits],
@@ -165,13 +170,17 @@ class TenantUpdate(BaseModel):
         Optional[TenantAuth],
         Field(default=None, description="Common authentication for HTTP endpoints")
     ]
-    client_sync_url: Annotated[
+    client_base_url: Annotated[
         Optional[str],
-        Field(default=None, description="URL for delivery report callbacks")
+        Field(default=None, description="Base URL for tenant HTTP endpoints")
     ]
-    client_attachment_url: Annotated[
+    client_sync_path: Annotated[
         Optional[str],
-        Field(default=None, description="URL for attachment fetcher HTTP endpoint")
+        Field(default=None, description="Path for delivery report callbacks")
+    ]
+    client_attachment_path: Annotated[
+        Optional[str],
+        Field(default=None, description="Path for attachment fetcher endpoint")
     ]
     rate_limits: Annotated[
         Optional[TenantRateLimits],
@@ -212,6 +221,11 @@ class AccountCreate(BaseModel):
         use_tls: Whether to use STARTTLS.
         use_ssl: Whether to use SSL/TLS.
         batch_size: Max messages per dispatch cycle for this account.
+        ttl: Connection TTL in seconds.
+        limit_per_minute: Max emails per minute (0 = unlimited).
+        limit_per_hour: Max emails per hour (0 = unlimited).
+        limit_per_day: Max emails per day (0 = unlimited).
+        limit_behavior: Behavior when rate limit is hit (defer or reject).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -252,6 +266,26 @@ class AccountCreate(BaseModel):
     batch_size: Annotated[
         Optional[int],
         Field(default=None, ge=1, description="Max messages per dispatch cycle")
+    ]
+    ttl: Annotated[
+        Optional[int],
+        Field(default=300, ge=0, description="Connection TTL in seconds")
+    ]
+    limit_per_minute: Annotated[
+        Optional[int],
+        Field(default=None, ge=0, description="Max emails per minute (0 = unlimited)")
+    ]
+    limit_per_hour: Annotated[
+        Optional[int],
+        Field(default=None, ge=0, description="Max emails per hour (0 = unlimited)")
+    ]
+    limit_per_day: Annotated[
+        Optional[int],
+        Field(default=None, ge=0, description="Max emails per day (0 = unlimited)")
+    ]
+    limit_behavior: Annotated[
+        Optional[Literal["defer", "reject"]],
+        Field(default="defer", description="Behavior when rate limit is hit")
     ]
 
 
@@ -294,6 +328,26 @@ class AccountUpdate(BaseModel):
     batch_size: Annotated[
         Optional[int],
         Field(default=None, ge=1, description="Max messages per dispatch cycle")
+    ]
+    ttl: Annotated[
+        Optional[int],
+        Field(default=None, ge=0, description="Connection TTL in seconds")
+    ]
+    limit_per_minute: Annotated[
+        Optional[int],
+        Field(default=None, ge=0, description="Max emails per minute (0 = unlimited)")
+    ]
+    limit_per_hour: Annotated[
+        Optional[int],
+        Field(default=None, ge=0, description="Max emails per hour (0 = unlimited)")
+    ]
+    limit_per_day: Annotated[
+        Optional[int],
+        Field(default=None, ge=0, description="Max emails per day (0 = unlimited)")
+    ]
+    limit_behavior: Annotated[
+        Optional[Literal["defer", "reject"]],
+        Field(default=None, description="Behavior when rate limit is hit")
     ]
 
 
@@ -372,9 +426,12 @@ class MessageCreate(BaseModel):
         to: List of recipient addresses.
         cc: List of CC addresses.
         bcc: List of BCC addresses.
+        reply_to: Reply-To address.
+        return_path: Return-Path (envelope sender) address.
         subject: Email subject.
         body: Email body content.
         content_type: Body content type (plain or html).
+        message_id: Custom Message-ID header.
         priority: Message priority (0=immediate, 1=high, 2=medium, 3=low).
         deferred_ts: Unix timestamp to defer delivery until.
         attachments: List of attachments.
@@ -407,6 +464,14 @@ class MessageCreate(BaseModel):
         Optional[Union[List[str], str]],
         Field(default=None, description="BCC address(es)")
     ]
+    reply_to: Annotated[
+        Optional[str],
+        Field(default=None, description="Reply-To address")
+    ]
+    return_path: Annotated[
+        Optional[str],
+        Field(default=None, description="Return-Path (envelope sender) address")
+    ]
     subject: Annotated[
         str,
         Field(min_length=1, description="Email subject")
@@ -418,6 +483,10 @@ class MessageCreate(BaseModel):
     content_type: Annotated[
         Literal["plain", "html"],
         Field(default="plain", description="Body content type")
+    ]
+    message_id: Annotated[
+        Optional[str],
+        Field(default=None, description="Custom Message-ID header")
     ]
     priority: Annotated[
         int,
@@ -486,7 +555,7 @@ class TenantListItem(BaseModel):
     id: str
     name: Optional[str]
     active: bool
-    client_sync_url: Optional[str]
+    client_base_url: Optional[str]
     account_count: Annotated[int, Field(default=0)]
 
 
@@ -509,3 +578,41 @@ class MessageListItem(BaseModel):
     status: MessageStatus
     subject: Annotated[str, Field(default="")]
     created_at: Optional[datetime]
+
+
+# Helper functions for building tenant URLs
+
+DEFAULT_SYNC_PATH = "/mail-proxy/sync"
+DEFAULT_ATTACHMENT_PATH = "/mail-proxy/attachments"
+
+
+def get_tenant_sync_url(tenant: Dict[str, Any]) -> Optional[str]:
+    """Build full sync URL from tenant config.
+
+    Args:
+        tenant: Tenant configuration dict.
+
+    Returns:
+        Full sync URL or None if no base URL configured.
+    """
+    base_url = tenant.get("client_base_url")
+    if not base_url:
+        return None
+    sync_path = tenant.get("client_sync_path") or DEFAULT_SYNC_PATH
+    return f"{base_url.rstrip('/')}{sync_path}"
+
+
+def get_tenant_attachment_url(tenant: Dict[str, Any]) -> Optional[str]:
+    """Build full attachment URL from tenant config.
+
+    Args:
+        tenant: Tenant configuration dict.
+
+    Returns:
+        Full attachment URL or None if no base URL configured.
+    """
+    base_url = tenant.get("client_base_url")
+    if not base_url:
+        return None
+    attachment_path = tenant.get("client_attachment_path") or DEFAULT_ATTACHMENT_PATH
+    return f"{base_url.rstrip('/')}{attachment_path}"
