@@ -47,7 +47,13 @@ dependencies = [
     "uvicorn>=0.30.0",
     "prometheus-client>=0.20.0",
     "pydantic>=2.8.0",
+    "click>=8.1.0",
+    "rich>=13.0.0",
+    "requests>=2.31.0",
 ]
+
+[project.scripts]
+mail-proxy = "async_mail_service.cli:main"
 
 [project.optional-dependencies]
 storage = [
@@ -61,6 +67,9 @@ dev = [
     "mypy>=1.0",
     "httpx>=0.27.0",
     "genro-storage>=0.1.0",
+    "aioresponses>=0.7.0",
+    "aiosmtpd>=1.4.0",
+    "pytest-docker>=3.0.0",
 ]
 docs = [
     "sphinx>=8.0.0",

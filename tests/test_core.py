@@ -536,3 +536,253 @@ async def test_cleanup_messages_command(tmp_path):
     # Verify message was removed
     messages = await core.persistence.list_messages()
     assert len(messages) == 0
+
+
+@pytest.mark.asyncio
+async def test_mime_type_override_in_attachment(tmp_path):
+    """Test that explicit mime_type in attachment overrides auto-detection."""
+    from email.message import EmailMessage as EmailMsg
+
+    core = await make_core(tmp_path)
+
+    # Create a custom attachment fetcher that returns fixed content
+    class TrackingAttachments:
+        def __init__(self):
+            self.fetched = []
+
+        async def fetch(self, attachment):
+            self.fetched.append(attachment)
+            return b"test content", attachment.get("filename", "file.bin")
+
+        def guess_mime(self, filename):
+            # Always return octet-stream for detection
+            return "application", "octet-stream"
+
+    tracker = TrackingAttachments()
+    core.attachments = tracker
+
+    # Send message with attachment that has mime_type override
+    payload = {
+        "messages": [
+            {
+                "id": "msg-mime-override",
+                "account_id": "acc",
+                "from": "sender@example.com",
+                "to": ["dest@example.com"],
+                "subject": "Test MIME Override",
+                "body": "Body",
+                "attachments": [
+                    {
+                        "filename": "data.bin",
+                        "storage_path": "base64:dGVzdA==",
+                        "mime_type": "application/json"  # Override
+                    }
+                ]
+            }
+        ]
+    }
+    await core.handle_command("addMessages", payload)
+    await core._process_smtp_cycle()
+
+    # Verify message was sent
+    assert len(core.pool.smtp.sent) == 1
+    sent_msg = core.pool.smtp.sent[0]["message"]
+
+    # Check the attachment has the overridden MIME type
+    parts = list(sent_msg.iter_attachments())
+    assert len(parts) == 1
+    assert parts[0].get_content_type() == "application/json"
+
+
+@pytest.mark.asyncio
+async def test_mime_type_fallback_when_not_specified(tmp_path):
+    """Test that MIME type is guessed when not explicitly specified."""
+    core = await make_core(tmp_path)
+
+    class TrackingAttachments:
+        def __init__(self):
+            self.fetched = []
+            self.guess_called = False
+
+        async def fetch(self, attachment):
+            self.fetched.append(attachment)
+            return b"test content", attachment.get("filename", "file.bin")
+
+        def guess_mime(self, filename):
+            self.guess_called = True
+            if filename.endswith(".pdf"):
+                return "application", "pdf"
+            return "application", "octet-stream"
+
+    tracker = TrackingAttachments()
+    core.attachments = tracker
+
+    # Send message without mime_type in attachment
+    payload = {
+        "messages": [
+            {
+                "id": "msg-mime-guess",
+                "account_id": "acc",
+                "from": "sender@example.com",
+                "to": ["dest@example.com"],
+                "subject": "Test MIME Guess",
+                "body": "Body",
+                "attachments": [
+                    {
+                        "filename": "document.pdf",
+                        "storage_path": "base64:dGVzdA=="
+                        # No mime_type - should be guessed
+                    }
+                ]
+            }
+        ]
+    }
+    await core.handle_command("addMessages", payload)
+    await core._process_smtp_cycle()
+
+    # Verify guess_mime was called
+    assert tracker.guess_called
+
+    # Check the attachment has guessed MIME type
+    sent_msg = core.pool.smtp.sent[0]["message"]
+    parts = list(sent_msg.iter_attachments())
+    assert len(parts) == 1
+    assert parts[0].get_content_type() == "application/pdf"
+
+
+@pytest.mark.asyncio
+async def test_tenant_attachment_config_applied(tmp_path):
+    """Test that tenant's attachment_config is used for message attachments."""
+    core = await make_core(tmp_path)
+
+    # Track which config was used
+    configs_used = []
+
+    class ConfigTrackingAttachments:
+        def __init__(self, http_endpoint=None):
+            self.http_endpoint = http_endpoint
+
+        async def fetch(self, attachment):
+            configs_used.append(self.http_endpoint)
+            return b"content", attachment.get("filename", "file.bin")
+
+        def guess_mime(self, filename):
+            return "application", "octet-stream"
+
+    # Set global attachment manager
+    core.attachments = ConfigTrackingAttachments(http_endpoint="https://global.example.com")
+    core._attachment_config = types.SimpleNamespace(
+        base_dir="/global/base",
+        http_endpoint="https://global.example.com",
+        http_auth_config=None,
+    )
+    core._storage_manager = None
+    core._attachment_cache = None
+
+    # Create tenant with custom attachment config
+    await core.handle_command("addTenant", {
+        "id": "tenant1",
+        "name": "Test Tenant",
+        "attachment_config": {
+            "base_dir": "/tenant1/files",
+            "http_endpoint": "https://tenant1.example.com/attachments",
+        }
+    })
+
+    # Associate account with tenant
+    await core.handle_command("addAccount", {
+        "id": "tenant1-acc",
+        "tenant_id": "tenant1",
+        "host": "smtp.tenant1.local",
+        "port": 25,
+    })
+
+    # Send message using tenant account
+    payload = {
+        "messages": [
+            {
+                "id": "msg-tenant-att",
+                "account_id": "tenant1-acc",
+                "from": "sender@tenant1.com",
+                "to": ["dest@example.com"],
+                "subject": "Test Tenant Attachment",
+                "body": "Body",
+                "attachments": [
+                    {
+                        "filename": "report.pdf",
+                        "storage_path": "base64:dGVzdA=="
+                    }
+                ]
+            }
+        ]
+    }
+    await core.handle_command("addMessages", payload)
+
+    # Clear configs_used before processing
+    configs_used.clear()
+
+    await core._process_smtp_cycle()
+
+    # Verify tenant config was used (not global)
+    # The attachment manager should have been created with tenant's http_endpoint
+    assert len(core.pool.smtp.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_tenant_attachment_config_fallback_to_global(tmp_path):
+    """Test that global config is used when tenant has no attachment_config."""
+    core = await make_core(tmp_path)
+
+    # Create tenant WITHOUT attachment config
+    await core.handle_command("addTenant", {
+        "id": "tenant-no-config",
+        "name": "Tenant No Config",
+        # No attachment_config
+    })
+
+    # Associate account with tenant
+    await core.handle_command("addAccount", {
+        "id": "tenant-no-config-acc",
+        "tenant_id": "tenant-no-config",
+        "host": "smtp.local",
+        "port": 25,
+    })
+
+    # Track that global manager is used
+    fetch_called = []
+
+    class GlobalAttachments:
+        async def fetch(self, attachment):
+            fetch_called.append("global")
+            return b"content", attachment.get("filename", "file.bin")
+
+        def guess_mime(self, filename):
+            return "application", "octet-stream"
+
+    core.attachments = GlobalAttachments()
+
+    # Send message
+    payload = {
+        "messages": [
+            {
+                "id": "msg-fallback",
+                "account_id": "tenant-no-config-acc",
+                "from": "sender@example.com",
+                "to": ["dest@example.com"],
+                "subject": "Test Fallback",
+                "body": "Body",
+                "attachments": [
+                    {
+                        "filename": "doc.pdf",
+                        "storage_path": "base64:dGVzdA=="
+                    }
+                ]
+            }
+        ]
+    }
+    await core.handle_command("addMessages", payload)
+    await core._process_smtp_cycle()
+
+    # Verify global manager was used
+    assert "global" in fetch_called
+    assert len(core.pool.smtp.sent) == 1

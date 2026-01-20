@@ -38,6 +38,7 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field, ConfigDict
 
 from .core import AsyncMailCore
+from .models import AttachmentPayload
 
 logger = logging.getLogger(__name__)
 
@@ -88,10 +89,7 @@ class BasicOkResponse(CommandStatus):
     pass
 
 
-class AttachmentPayload(BaseModel):
-    """Attachment specification using storage path notation."""
-    filename: str
-    storage_path: str  # e.g. "base64:...", "documents:path/file.pdf", "s3:bucket/key"
+# AttachmentPayload is imported from models.py for consistency and proper validation
 
 
 class MessagePayload(BaseModel):
@@ -218,6 +216,45 @@ class VolumeInfo(BaseModel):
 class VolumesResponse(CommandStatus):
     """Response with list of volumes."""
     volumes: List[VolumeInfo]
+
+
+class TenantPayload(BaseModel):
+    """Tenant configuration payload."""
+    id: str
+    name: Optional[str] = None
+    client_sync_url: Optional[str] = None
+    client_sync_auth: Optional[Dict[str, Any]] = None
+    attachment_config: Optional[Dict[str, Any]] = None
+    rate_limits: Optional[Dict[str, Any]] = None
+    active: bool = True
+
+
+class TenantUpdatePayload(BaseModel):
+    """Tenant update payload - all fields optional."""
+    name: Optional[str] = None
+    client_sync_url: Optional[str] = None
+    client_sync_auth: Optional[Dict[str, Any]] = None
+    attachment_config: Optional[Dict[str, Any]] = None
+    rate_limits: Optional[Dict[str, Any]] = None
+    active: Optional[bool] = None
+
+
+class TenantInfo(BaseModel):
+    """Stored tenant as returned by listTenants."""
+    id: str
+    name: Optional[str] = None
+    client_sync_url: Optional[str] = None
+    client_sync_auth: Optional[Dict[str, Any]] = None
+    attachment_config: Optional[Dict[str, Any]] = None
+    rate_limits: Optional[Dict[str, Any]] = None
+    active: bool = True
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class TenantsResponse(CommandStatus):
+    """Response with list of tenants."""
+    tenants: List[TenantInfo]
 
 
 def create_app(
@@ -423,6 +460,57 @@ def create_app(
             raise HTTPException(404, f"Volume '{name}' not found")
         await service.reload_volumes()  # Reload volumes into storage manager
         return BasicOkResponse(ok=True)
+
+    # Tenant endpoints
+    @api.post("/tenant", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
+    async def add_tenant(payload: TenantPayload):
+        """Register or update a tenant configuration."""
+        if not service:
+            raise HTTPException(500, "Service not initialized")
+        result = await service.handle_command("addTenant", payload.model_dump())
+        return BasicOkResponse.model_validate(result)
+
+    @api.get("/tenants", response_model=TenantsResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
+    async def list_tenants(active_only: bool = False):
+        """List all tenants."""
+        if not service:
+            raise HTTPException(500, "Service not initialized")
+        result = await service.handle_command("listTenants", {"active_only": active_only})
+        return TenantsResponse.model_validate(result)
+
+    @api.get("/tenant/{tenant_id}", response_model=TenantInfo, response_model_exclude_none=True, dependencies=[auth_dependency])
+    async def get_tenant(tenant_id: str):
+        """Get a specific tenant by ID."""
+        if not service:
+            raise HTTPException(500, "Service not initialized")
+        result = await service.handle_command("getTenant", {"id": tenant_id})
+        if not result.get("ok"):
+            raise HTTPException(404, f"Tenant '{tenant_id}' not found")
+        # Remove 'ok' key before returning as TenantInfo
+        result.pop("ok", None)
+        return TenantInfo(**result)
+
+    @api.put("/tenant/{tenant_id}", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
+    async def update_tenant(tenant_id: str, payload: TenantUpdatePayload):
+        """Update a tenant's configuration."""
+        if not service:
+            raise HTTPException(500, "Service not initialized")
+        update_data = payload.model_dump(exclude_none=True)
+        update_data["id"] = tenant_id
+        result = await service.handle_command("updateTenant", update_data)
+        if not result.get("ok"):
+            raise HTTPException(404, f"Tenant '{tenant_id}' not found")
+        return BasicOkResponse.model_validate(result)
+
+    @api.delete("/tenant/{tenant_id}", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
+    async def delete_tenant(tenant_id: str):
+        """Delete a tenant and all associated accounts/messages."""
+        if not service:
+            raise HTTPException(500, "Service not initialized")
+        result = await service.handle_command("deleteTenant", {"id": tenant_id})
+        if not result.get("ok"):
+            raise HTTPException(404, f"Tenant '{tenant_id}' not found")
+        return BasicOkResponse.model_validate(result)
 
     api.include_router(router)
     return api

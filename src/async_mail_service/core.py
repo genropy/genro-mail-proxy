@@ -468,42 +468,71 @@ class AsyncMailCore:
     async def handle_command(self, cmd: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Execute one of the external control commands."""
         payload = payload or {}
-        if cmd == "run now":
-            self._wake_client_event.set()
-            return {"ok": True}
-        if cmd == "suspend":
-            self._active = False
-            return {"ok": True, "active": False}
-        if cmd == "activate":
-            self._active = True
-            return {"ok": True, "active": True}
-        if cmd == "addAccount":
-            await self.persistence.add_account(payload)
-            return {"ok": True}
-        if cmd == "listAccounts":
-            accounts = await self.persistence.list_accounts()
-            return {"ok": True, "accounts": accounts}
-        if cmd == "deleteAccount":
-            account_id = payload.get("id")
-            await self.persistence.delete_account(account_id)
-            await self._refresh_queue_gauge()
-            return {"ok": True}
-        if cmd == "deleteMessages":
-            ids = payload.get("ids") if isinstance(payload, dict) else []
-            removed, not_found = await self._delete_messages(ids or [])
-            await self._refresh_queue_gauge()
-            return {"ok": True, "removed": removed, "not_found": not_found}
-        if cmd == "listMessages":
-            active_only = bool(payload.get("active_only", False)) if isinstance(payload, dict) else False
-            messages = await self.persistence.list_messages(active_only=active_only)
-            return {"ok": True, "messages": messages}
-        if cmd == "addMessages":
-            return await self._handle_add_messages(payload)
-        if cmd == "cleanupMessages":
-            older_than = payload.get("older_than_seconds") if isinstance(payload, dict) else None
-            removed = await self._cleanup_reported_messages(older_than)
-            return {"ok": True, "removed": removed}
-        return {"ok": False, "error": "unknown command"}
+        match cmd:
+            case "run now":
+                self._wake_client_event.set()
+                return {"ok": True}
+            case "suspend":
+                self._active = False
+                return {"ok": True, "active": False}
+            case "activate":
+                self._active = True
+                return {"ok": True, "active": True}
+            case "addAccount":
+                await self.persistence.add_account(payload)
+                return {"ok": True}
+            case "listAccounts":
+                accounts = await self.persistence.list_accounts()
+                return {"ok": True, "accounts": accounts}
+            case "deleteAccount":
+                account_id = payload.get("id")
+                await self.persistence.delete_account(account_id)
+                await self._refresh_queue_gauge()
+                return {"ok": True}
+            case "deleteMessages":
+                ids = payload.get("ids") if isinstance(payload, dict) else []
+                removed, not_found = await self._delete_messages(ids or [])
+                await self._refresh_queue_gauge()
+                return {"ok": True, "removed": removed, "not_found": not_found}
+            case "listMessages":
+                active_only = bool(payload.get("active_only", False)) if isinstance(payload, dict) else False
+                messages = await self.persistence.list_messages(active_only=active_only)
+                return {"ok": True, "messages": messages}
+            case "addMessages":
+                return await self._handle_add_messages(payload)
+            case "cleanupMessages":
+                older_than = payload.get("older_than_seconds") if isinstance(payload, dict) else None
+                removed = await self._cleanup_reported_messages(older_than)
+                return {"ok": True, "removed": removed}
+            case "addTenant":
+                await self.persistence.add_tenant(payload)
+                return {"ok": True}
+            case "getTenant":
+                tenant_id = payload.get("id")
+                tenant = await self.persistence.get_tenant(tenant_id)
+                if tenant:
+                    return {"ok": True, **tenant}
+                return {"ok": False, "error": "tenant not found"}
+            case "listTenants":
+                active_only = bool(payload.get("active_only", False)) if isinstance(payload, dict) else False
+                tenants = await self.persistence.list_tenants(active_only=active_only)
+                return {"ok": True, "tenants": tenants}
+            case "updateTenant":
+                tenant_id = payload.pop("id", None)
+                if not tenant_id:
+                    return {"ok": False, "error": "tenant id required"}
+                updated = await self.persistence.update_tenant(tenant_id, payload)
+                if updated:
+                    return {"ok": True}
+                return {"ok": False, "error": "tenant not found"}
+            case "deleteTenant":
+                tenant_id = payload.get("id")
+                deleted = await self.persistence.delete_tenant(tenant_id)
+                if deleted:
+                    return {"ok": True}
+                return {"ok": False, "error": "tenant not found"}
+            case _:
+                return {"ok": False, "error": "unknown command"}
 
     async def _handle_add_messages(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         messages = payload.get("messages") if isinstance(payload, dict) else None
@@ -969,13 +998,14 @@ class AsyncMailCore:
             await self._wait_for_client_wakeup(interval)
 
     async def _process_client_cycle(self) -> None:
-        """Perform one delivery report cycle."""
+        """Perform one delivery report cycle, routing to per-tenant endpoints."""
         if not self._active:
             return
 
         reports = await self.persistence.fetch_reports(self._smtp_batch_size)
         if not reports:
             # Still allow the client sync endpoint to trigger its own fetch if needed
+            # For backward compatibility, use global URL if no tenants configured
             if self._client_sync_url and self._report_delivery_callable is None:
                 try:
                     await self._send_delivery_reports([])
@@ -988,8 +1018,12 @@ class AsyncMailCore:
             await self._apply_retention()
             return
 
-        payloads = [
-            {
+        # Group reports by tenant_id for per-tenant delivery
+        from collections import defaultdict
+        reports_by_tenant: Dict[Optional[str], List[Dict[str, Any]]] = defaultdict(list)
+        for item in reports:
+            tenant_id = item.get("tenant_id")
+            payload = {
                 "id": item.get("id"),
                 "account_id": item.get("account_id"),
                 "priority": item.get("priority"),
@@ -998,16 +1032,52 @@ class AsyncMailCore:
                 "error": item.get("error"),
                 "deferred_ts": item.get("deferred_ts"),
             }
-            for item in reports
-        ]
-        try:
-            await self._send_delivery_reports(payloads)
-        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-            target = self._client_sync_url or "custom callable"
-            self.logger.warning("Client sync delivery failed (%s): %s", target, exc)
-            return
-        reported_ts = self._utc_now_epoch()
-        await self.persistence.mark_reported((item["id"] for item in reports), reported_ts)
+            reports_by_tenant[tenant_id].append(payload)
+
+        # Track successfully reported message IDs
+        reported_ids: List[str] = []
+
+        # Send reports to each tenant's endpoint
+        for tenant_id, payloads in reports_by_tenant.items():
+            try:
+                if tenant_id:
+                    # Get tenant configuration and send to tenant-specific endpoint
+                    tenant = await self.persistence.get_tenant(tenant_id)
+                    if tenant and tenant.get("client_sync_url"):
+                        await self._send_reports_to_tenant(tenant, payloads)
+                    elif self._client_sync_url:
+                        # Fallback to global URL if tenant has no sync URL
+                        await self._send_delivery_reports(payloads)
+                    else:
+                        self.logger.warning(
+                            "No sync URL for tenant %s and no global fallback, skipping %d reports",
+                            tenant_id, len(payloads)
+                        )
+                        continue
+                else:
+                    # No tenant - use global URL (backward compatibility)
+                    if self._client_sync_url or self._report_delivery_callable:
+                        await self._send_delivery_reports(payloads)
+                    else:
+                        self.logger.warning(
+                            "No tenant and no global sync URL configured, skipping %d reports",
+                            len(payloads)
+                        )
+                        continue
+                # Mark as successfully sent
+                reported_ids.extend(p["id"] for p in payloads if p.get("id"))
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                target = tenant_id or "global"
+                self.logger.warning(
+                    "Client sync delivery failed for tenant %s: %s", target, exc
+                )
+                # Don't mark these as reported - they'll be retried next cycle
+
+        # Mark successfully reported messages
+        if reported_ids:
+            reported_ts = self._utc_now_epoch()
+            await self.persistence.mark_reported(reported_ids, reported_ts)
+
         await self._apply_retention()
 
     async def _apply_retention(self) -> None:
@@ -1110,36 +1180,36 @@ class AsyncMailCore:
         status = (event.get("status") or "unknown").lower()
         msg_id = event.get("id") or "-"
         account = event.get("account") or event.get("account_id") or "default"
-        if status == "sent":
-            self.logger.info("Delivery succeeded for message %s (account=%s)", msg_id, account)
-            return
-        if status == "deferred":
-            deferred_until = event.get("deferred_until")
-            if isinstance(deferred_until, (int, float)):
-                deferred_repr = (
-                    datetime.fromtimestamp(float(deferred_until), timezone.utc)
-                    .isoformat()
-                    .replace("+00:00", "Z")
+
+        match status:
+            case "sent":
+                self.logger.info("Delivery succeeded for message %s (account=%s)", msg_id, account)
+            case "deferred":
+                deferred_until = event.get("deferred_until")
+                if isinstance(deferred_until, (int, float)):
+                    deferred_repr = (
+                        datetime.fromtimestamp(float(deferred_until), timezone.utc)
+                        .isoformat()
+                        .replace("+00:00", "Z")
+                    )
+                else:
+                    deferred_repr = deferred_until or "-"
+                self.logger.info(
+                    "Delivery deferred for message %s (account=%s) until %s",
+                    msg_id,
+                    account,
+                    deferred_repr,
                 )
-            else:
-                deferred_repr = deferred_until or "-"
-            self.logger.info(
-                "Delivery deferred for message %s (account=%s) until %s",
-                msg_id,
-                account,
-                deferred_repr,
-            )
-            return
-        if status == "error":
-            reason = event.get("error") or event.get("error_code") or "unknown error"
-            self.logger.warning(
-                "Delivery failed for message %s (account=%s): %s",
-                msg_id,
-                account,
-                reason,
-            )
-            return
-        self.logger.info("Delivery event for message %s (account=%s): %s", msg_id, account, status)
+            case "error":
+                reason = event.get("error") or event.get("error_code") or "unknown error"
+                self.logger.warning(
+                    "Delivery failed for message %s (account=%s): %s",
+                    msg_id,
+                    account,
+                    reason,
+                )
+            case _:
+                self.logger.info("Delivery event for message %s (account=%s): %s", msg_id, account, status)
 
     async def _publish_result(self, event: Dict[str, Any]) -> None:
         """Publish a delivery event while observing queue backpressure."""
@@ -1205,8 +1275,10 @@ class AsyncMailCore:
 
         attachments = data.get("attachments", []) or []
         if attachments:
+            # Determine which attachment manager to use (tenant-specific or global)
+            attachment_manager = await self._get_attachment_manager_for_message(data)
             results = await asyncio.gather(
-                *[self._fetch_attachment_with_timeout(att) for att in attachments],
+                *[self._fetch_attachment_with_timeout(att, attachment_manager) for att in attachments],
                 return_exceptions=True,
             )
             for att, result in zip(attachments, results):
@@ -1218,18 +1290,84 @@ class AsyncMailCore:
                     self.logger.error("Attachment without data (filename=%s) - message will not be sent", filename)
                     raise ValueError(f"Attachment {filename} returned no data")
                 content, resolved_filename = result
-                maintype, subtype = self.attachments.guess_mime(resolved_filename)
+                # Use explicit mime_type if provided, otherwise guess from filename
+                mime_type_override = att.get("mime_type")
+                if mime_type_override and "/" in mime_type_override:
+                    maintype, subtype = mime_type_override.split("/", 1)
+                else:
+                    maintype, subtype = self.attachments.guess_mime(resolved_filename)
                 msg.add_attachment(content, maintype=maintype, subtype=subtype, filename=resolved_filename)
         return msg, envelope_from
 
-    async def _fetch_attachment_with_timeout(self, att: Dict[str, Any]) -> Optional[Tuple[bytes, str]]:
+    async def _get_attachment_manager_for_message(self, data: Dict[str, Any]) -> AttachmentManager:
+        """Get the appropriate AttachmentManager for a message.
+
+        If the message's account is associated with a tenant that has a custom
+        attachment_config, creates a temporary AttachmentManager with that config.
+        Otherwise returns the global AttachmentManager.
+
+        Args:
+            data: Message payload dictionary containing account_id.
+
+        Returns:
+            AttachmentManager configured for the message's tenant or the global one.
+        """
+        account_id = data.get("account_id")
+        if not account_id:
+            return self.attachments
+
+        # Try to get tenant config for this account
+        tenant = await self.persistence.get_tenant_for_account(account_id)
+        if not tenant or not tenant.get("attachment_config"):
+            return self.attachments
+
+        tenant_cfg = tenant["attachment_config"]
+
+        # Check if tenant has any custom settings
+        tenant_base_dir = tenant_cfg.get("base_dir")
+        tenant_http_endpoint = tenant_cfg.get("http_endpoint")
+        tenant_http_auth = tenant_cfg.get("http_auth")
+
+        # If no custom settings, use global manager
+        if not tenant_base_dir and not tenant_http_endpoint and not tenant_http_auth:
+            return self.attachments
+
+        # Build http_auth_config from tenant settings
+        http_auth_config = None
+        if tenant_http_auth:
+            http_auth_config = {
+                "method": tenant_http_auth.get("method", "none"),
+                "token": tenant_http_auth.get("token"),
+                "user": tenant_http_auth.get("user"),
+                "password": tenant_http_auth.get("password"),
+            }
+
+        # Create tenant-specific manager with fallback to global config
+        return AttachmentManager(
+            storage_manager=self._storage_manager,
+            base_dir=tenant_base_dir or self._attachment_config.base_dir,
+            http_endpoint=tenant_http_endpoint or self._attachment_config.http_endpoint,
+            http_auth_config=http_auth_config or self._attachment_config.http_auth_config,
+            cache=self._attachment_cache,
+        )
+
+    async def _fetch_attachment_with_timeout(
+        self,
+        att: Dict[str, Any],
+        attachment_manager: Optional[AttachmentManager] = None,
+    ) -> Optional[Tuple[bytes, str]]:
         """Fetch an attachment using the configured timeout budget.
 
         The AttachmentManager.fetch() now returns Tuple[bytes, clean_filename]
         where clean_filename has any MD5 marker stripped.
+
+        Args:
+            att: Attachment specification dictionary.
+            attachment_manager: Optional manager to use. If None, uses self.attachments.
         """
+        manager = attachment_manager or self.attachments
         try:
-            result = await asyncio.wait_for(self.attachments.fetch(att), timeout=self._attachment_timeout)
+            result = await asyncio.wait_for(manager.fetch(att), timeout=self._attachment_timeout)
         except asyncio.TimeoutError as exc:
             raise TimeoutError(f"Attachment {att.get('filename', 'file.bin')} fetch timed out") from exc
         # result is Optional[Tuple[bytes, str]] - content and clean filename
@@ -1293,6 +1431,78 @@ class AsyncMailCore:
             self.logger.info("Client sync acknowledged delivery report batch (%d items)", batch_size)
         else:
             self.logger.debug("Delivery report batch delivered (%d items)", batch_size)
+
+    async def _send_reports_to_tenant(
+        self, tenant: Dict[str, Any], payloads: List[Dict[str, Any]]
+    ) -> None:
+        """Send delivery report payloads to a tenant-specific endpoint.
+
+        Args:
+            tenant: Tenant configuration dict with client_sync_url and client_sync_auth.
+            payloads: List of delivery report payloads to send.
+
+        Raises:
+            aiohttp.ClientError: If the HTTP request fails.
+            asyncio.TimeoutError: If the request times out.
+        """
+        sync_url = tenant.get("client_sync_url")
+        if not sync_url:
+            raise RuntimeError(f"Tenant {tenant.get('id')} has no client_sync_url configured")
+
+        # Build authentication from tenant config
+        headers: Dict[str, str] = {}
+        auth = None
+        auth_config = tenant.get("client_sync_auth") or {}
+        auth_method = auth_config.get("method", "none")
+
+        if auth_method == "bearer":
+            token = auth_config.get("token")
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+        elif auth_method == "basic":
+            user = auth_config.get("user", "")
+            password = auth_config.get("password", "")
+            auth = aiohttp.BasicAuth(user, password)
+
+        tenant_id = tenant.get("id", "unknown")
+        batch_size = len(payloads)
+
+        if self._log_delivery_activity:
+            ids_preview = ", ".join(str(item.get("id")) for item in payloads[:5] if item.get("id"))
+            if len(payloads) > 5:
+                ids_preview = f"{ids_preview}, ..." if ids_preview else "..."
+            self.logger.info(
+                "Posting delivery reports to tenant %s at %s (count=%d, ids=%s)",
+                tenant_id,
+                sync_url,
+                batch_size,
+                ids_preview or "-",
+            )
+        else:
+            self.logger.debug(
+                "Posting delivery reports to tenant %s at %s (count=%d)",
+                tenant_id,
+                sync_url,
+                batch_size,
+            )
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                sync_url,
+                json={"delivery_report": payloads},
+                auth=auth,
+                headers=headers or None,
+            ) as resp:
+                resp.raise_for_status()
+
+        if self._log_delivery_activity:
+            self.logger.info(
+                "Tenant %s acknowledged delivery report batch (%d items)", tenant_id, batch_size
+            )
+        else:
+            self.logger.debug(
+                "Delivery report batch delivered to tenant %s (%d items)", tenant_id, batch_size
+            )
 
     # ------------------------------------------------------------- validations
     async def _validate_enqueue_payload(self, payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:

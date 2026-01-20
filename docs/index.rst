@@ -19,6 +19,7 @@ Prometheus metrics, and a FastAPI control plane.
    network_requirements
    usage
    example_client
+   multi_tenancy
    protocol
    api_reference
    modules
