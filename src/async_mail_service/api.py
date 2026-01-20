@@ -38,6 +38,7 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field, ConfigDict
 
 from .core import AsyncMailCore
+from .models import AttachmentPayload
 
 logger = logging.getLogger(__name__)
 
@@ -88,10 +89,7 @@ class BasicOkResponse(CommandStatus):
     pass
 
 
-class AttachmentPayload(BaseModel):
-    """Attachment specification using storage path notation."""
-    filename: str
-    storage_path: str  # e.g. "base64:...", "documents:path/file.pdf", "s3:bucket/key"
+# AttachmentPayload is imported from models.py for consistency and proper validation
 
 
 class MessagePayload(BaseModel):

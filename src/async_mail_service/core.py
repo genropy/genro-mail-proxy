@@ -1275,8 +1275,10 @@ class AsyncMailCore:
 
         attachments = data.get("attachments", []) or []
         if attachments:
+            # Determine which attachment manager to use (tenant-specific or global)
+            attachment_manager = await self._get_attachment_manager_for_message(data)
             results = await asyncio.gather(
-                *[self._fetch_attachment_with_timeout(att) for att in attachments],
+                *[self._fetch_attachment_with_timeout(att, attachment_manager) for att in attachments],
                 return_exceptions=True,
             )
             for att, result in zip(attachments, results):
@@ -1288,18 +1290,84 @@ class AsyncMailCore:
                     self.logger.error("Attachment without data (filename=%s) - message will not be sent", filename)
                     raise ValueError(f"Attachment {filename} returned no data")
                 content, resolved_filename = result
-                maintype, subtype = self.attachments.guess_mime(resolved_filename)
+                # Use explicit mime_type if provided, otherwise guess from filename
+                mime_type_override = att.get("mime_type")
+                if mime_type_override and "/" in mime_type_override:
+                    maintype, subtype = mime_type_override.split("/", 1)
+                else:
+                    maintype, subtype = self.attachments.guess_mime(resolved_filename)
                 msg.add_attachment(content, maintype=maintype, subtype=subtype, filename=resolved_filename)
         return msg, envelope_from
 
-    async def _fetch_attachment_with_timeout(self, att: Dict[str, Any]) -> Optional[Tuple[bytes, str]]:
+    async def _get_attachment_manager_for_message(self, data: Dict[str, Any]) -> AttachmentManager:
+        """Get the appropriate AttachmentManager for a message.
+
+        If the message's account is associated with a tenant that has a custom
+        attachment_config, creates a temporary AttachmentManager with that config.
+        Otherwise returns the global AttachmentManager.
+
+        Args:
+            data: Message payload dictionary containing account_id.
+
+        Returns:
+            AttachmentManager configured for the message's tenant or the global one.
+        """
+        account_id = data.get("account_id")
+        if not account_id:
+            return self.attachments
+
+        # Try to get tenant config for this account
+        tenant = await self.persistence.get_tenant_for_account(account_id)
+        if not tenant or not tenant.get("attachment_config"):
+            return self.attachments
+
+        tenant_cfg = tenant["attachment_config"]
+
+        # Check if tenant has any custom settings
+        tenant_base_dir = tenant_cfg.get("base_dir")
+        tenant_http_endpoint = tenant_cfg.get("http_endpoint")
+        tenant_http_auth = tenant_cfg.get("http_auth")
+
+        # If no custom settings, use global manager
+        if not tenant_base_dir and not tenant_http_endpoint and not tenant_http_auth:
+            return self.attachments
+
+        # Build http_auth_config from tenant settings
+        http_auth_config = None
+        if tenant_http_auth:
+            http_auth_config = {
+                "method": tenant_http_auth.get("method", "none"),
+                "token": tenant_http_auth.get("token"),
+                "user": tenant_http_auth.get("user"),
+                "password": tenant_http_auth.get("password"),
+            }
+
+        # Create tenant-specific manager with fallback to global config
+        return AttachmentManager(
+            storage_manager=self._storage_manager,
+            base_dir=tenant_base_dir or self._attachment_config.base_dir,
+            http_endpoint=tenant_http_endpoint or self._attachment_config.http_endpoint,
+            http_auth_config=http_auth_config or self._attachment_config.http_auth_config,
+            cache=self._attachment_cache,
+        )
+
+    async def _fetch_attachment_with_timeout(
+        self,
+        att: Dict[str, Any],
+        attachment_manager: Optional[AttachmentManager] = None,
+    ) -> Optional[Tuple[bytes, str]]:
         """Fetch an attachment using the configured timeout budget.
 
         The AttachmentManager.fetch() now returns Tuple[bytes, clean_filename]
         where clean_filename has any MD5 marker stripped.
+
+        Args:
+            att: Attachment specification dictionary.
+            attachment_manager: Optional manager to use. If None, uses self.attachments.
         """
+        manager = attachment_manager or self.attachments
         try:
-            result = await asyncio.wait_for(self.attachments.fetch(att), timeout=self._attachment_timeout)
+            result = await asyncio.wait_for(manager.fetch(att), timeout=self._attachment_timeout)
         except asyncio.TimeoutError as exc:
             raise TimeoutError(f"Attachment {att.get('filename', 'file.bin')} fetch timed out") from exc
         # result is Optional[Tuple[bytes, str]] - content and clean filename
