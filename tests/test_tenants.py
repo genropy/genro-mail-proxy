@@ -15,8 +15,8 @@ async def test_tenant_crud(tmp_path):
     await db.add_tenant({
         "id": "acme",
         "name": "ACME Corp",
-        "client_sync_url": "https://api.acme.com/sync",
-        "client_sync_auth": {"method": "bearer", "token": "secret"},
+        "client_auth": {"method": "bearer", "token": "secret"},
+        "client_base_url": "https://api.acme.com/sync",
         "rate_limits": {"hourly": 100, "daily": 1000},
         "active": True,
     })
@@ -26,9 +26,9 @@ async def test_tenant_crud(tmp_path):
     assert tenant is not None
     assert tenant["id"] == "acme"
     assert tenant["name"] == "ACME Corp"
-    assert tenant["client_sync_url"] == "https://api.acme.com/sync"
-    assert tenant["client_sync_auth"]["method"] == "bearer"
-    assert tenant["client_sync_auth"]["token"] == "secret"
+    assert tenant["client_base_url"] == "https://api.acme.com/sync"
+    assert tenant["client_auth"]["method"] == "bearer"
+    assert tenant["client_auth"]["token"] == "secret"
     assert tenant["rate_limits"]["hourly"] == 100
     assert tenant["active"] is True
 
@@ -121,7 +121,7 @@ async def test_get_tenant_for_account(tmp_path):
     await db.add_tenant({
         "id": "acme",
         "name": "ACME",
-        "client_sync_url": "https://api.acme.com/sync",
+        "client_base_url": "https://api.acme.com/sync",
     })
     await db.add_account({
         "id": "acme-main",
@@ -133,7 +133,7 @@ async def test_get_tenant_for_account(tmp_path):
     tenant = await db.get_tenant_for_account("acme-main")
     assert tenant is not None
     assert tenant["id"] == "acme"
-    assert tenant["client_sync_url"] == "https://api.acme.com/sync"
+    assert tenant["client_base_url"] == "https://api.acme.com/sync"
 
 
 @pytest.mark.asyncio
@@ -219,15 +219,12 @@ async def test_tenant_json_fields(tmp_path):
 
     await db.add_tenant({
         "id": "acme",
-        "client_sync_auth": {
+        "client_auth": {
             "method": "basic",
             "user": "admin",
             "password": "secret123",
         },
-        "attachment_config": {
-            "base_dir": "/var/attachments",
-            "http_endpoint": "https://api.acme.com/files",
-        },
+        "client_attachment_path": "https://api.acme.com/files",
         "rate_limits": {
             "hourly": 500,
             "daily": 5000,
@@ -237,12 +234,11 @@ async def test_tenant_json_fields(tmp_path):
     tenant = await db.get_tenant("acme")
 
     # Verify JSON fields are dicts, not strings
-    assert isinstance(tenant["client_sync_auth"], dict)
-    assert tenant["client_sync_auth"]["method"] == "basic"
-    assert tenant["client_sync_auth"]["user"] == "admin"
+    assert isinstance(tenant["client_auth"], dict)
+    assert tenant["client_auth"]["method"] == "basic"
+    assert tenant["client_auth"]["user"] == "admin"
 
-    assert isinstance(tenant["attachment_config"], dict)
-    assert tenant["attachment_config"]["base_dir"] == "/var/attachments"
+    assert tenant["client_attachment_path"] == "https://api.acme.com/files"
 
     assert isinstance(tenant["rate_limits"], dict)
     assert tenant["rate_limits"]["hourly"] == 500
@@ -257,16 +253,16 @@ async def test_tenant_update_partial(tmp_path):
     await db.add_tenant({
         "id": "acme",
         "name": "ACME Corp",
-        "client_sync_url": "https://old.url.com",
+        "client_base_url": "https://old.url.com",
         "active": True,
     })
 
     # Update only URL
-    await db.update_tenant("acme", {"client_sync_url": "https://new.url.com"})
+    await db.update_tenant("acme", {"client_base_url": "https://new.url.com"})
 
     tenant = await db.get_tenant("acme")
     assert tenant["name"] == "ACME Corp"  # Unchanged
-    assert tenant["client_sync_url"] == "https://new.url.com"  # Changed
+    assert tenant["client_base_url"] == "https://new.url.com"  # Changed
     assert tenant["active"] is True  # Unchanged
 
 
@@ -299,7 +295,7 @@ async def test_fetch_reports_includes_tenant_id(tmp_path):
     # Create tenant and account
     await db.add_tenant({
         "id": "acme",
-        "client_sync_url": "https://api.acme.com/sync",
+        "client_base_url": "https://api.acme.com/sync",
     })
     await db.add_account({
         "id": "acme-main",
@@ -368,8 +364,8 @@ async def test_fetch_reports_multiple_tenants(tmp_path):
     await db.init_db()
 
     # Create two tenants with accounts
-    await db.add_tenant({"id": "tenant1", "client_sync_url": "https://api1.com/sync"})
-    await db.add_tenant({"id": "tenant2", "client_sync_url": "https://api2.com/sync"})
+    await db.add_tenant({"id": "tenant1", "client_base_url": "https://api1.com/sync"})
+    await db.add_tenant({"id": "tenant2", "client_base_url": "https://api2.com/sync"})
     await db.add_account({"id": "acc1", "tenant_id": "tenant1", "host": "smtp1.com", "port": 587})
     await db.add_account({"id": "acc2", "tenant_id": "tenant2", "host": "smtp2.com", "port": 587})
 

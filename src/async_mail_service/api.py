@@ -48,14 +48,17 @@ API_TOKEN_HEADER_NAME = "X-API-Token"
 api_key_scheme = APIKeyHeader(name=API_TOKEN_HEADER_NAME, auto_error=False)
 app.state.api_token = None
 
-async def require_token(api_token: str | None = Depends(api_key_scheme)) -> None:
+async def require_token(
+    request: Request,
+    api_token: str | None = Depends(api_key_scheme)
+) -> None:
     """Validate the API token carried in the ``X-API-Token`` header.
 
     If a token has been configured through :func:`create_app` and a request
     provides either a missing or different value, a ``401`` error is raised.
     When no token is configured the dependency is effectively bypassed.
     """
-    expected = getattr(app.state, "api_token", None)
+    expected = getattr(request.app.state, "api_token", None)
     if expected is None:
         return
     if not api_token or api_token != expected:
@@ -323,10 +326,11 @@ def create_app(
         return BasicOkResponse(ok=True)
 
     @router.post("/run-now", response_model=BasicOkResponse, response_model_exclude_none=True)
-    async def run_now():
+    async def run_now(tenant_id: Optional[str] = None):
         if not service:
             raise HTTPException(500, "Service not initialized")
-        result = await service.handle_command("run now", {})
+        payload = {"tenant_id": tenant_id} if tenant_id else {}
+        result = await service.handle_command("run now", payload)
         return BasicOkResponse.model_validate(result)
 
     @router.post("/suspend", response_model=BasicOkResponse, response_model_exclude_none=True)

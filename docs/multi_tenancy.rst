@@ -83,26 +83,31 @@ Tenants are configured via the REST API. Each tenant has:
      - ``str``
      - No
      - URL where proxy sends delivery reports (e.g., ``https://api.tenant.com/proxy_sync``)
-   * - ``client_sync_auth``
-     - ``TenantSyncAuth``
+   * - ``client_auth``
+     - ``TenantAuth``
      - No
-     - Authentication configuration (see below)
+     - Common authentication for all HTTP endpoints (sync and attachments)
+   * - ``client_attachment_url``
+     - ``str``
+     - No
+     - URL for fetching attachments via HTTP (e.g., ``https://api.tenant.com/attachments``)
    * - ``active``
      - ``bool``
      - No
      - Whether tenant is enabled (default: ``true``)
 
-TenantSyncAuth Configuration
-----------------------------
+TenantAuth Configuration
+------------------------
 
-The ``client_sync_auth`` object supports multiple authentication methods:
+The ``client_auth`` object supports multiple authentication methods
+and is used for **both** delivery report sync and attachment fetching:
 
 **Bearer Token Authentication:**
 
 .. code-block:: json
 
    {
-     "client_sync_auth": {
+     "client_auth": {
        "method": "bearer",
        "token": "your-secret-token"
      }
@@ -115,7 +120,7 @@ The proxy will send: ``Authorization: Bearer your-secret-token``
 .. code-block:: json
 
    {
-     "client_sync_auth": {
+     "client_auth": {
        "method": "basic",
        "user": "username",
        "password": "password"
@@ -129,12 +134,12 @@ The proxy will send: ``Authorization: Basic <base64(user:password)>``
 .. code-block:: json
 
    {
-     "client_sync_auth": {
+     "client_auth": {
        "method": "none"
      }
    }
 
-Or simply omit the ``client_sync_auth`` field entirely.
+Or simply omit the ``client_auth`` field entirely.
 
 Tenant Management API
 ---------------------
@@ -150,7 +155,8 @@ Tenant Management API
         "id": "tenant-acme",
         "name": "ACME Corporation",
         "client_sync_url": "https://api.acme.com/proxy_sync",
-        "client_sync_auth": {
+        "client_attachment_url": "https://api.acme.com/attachments",
+        "client_auth": {
           "method": "bearer",
           "token": "acme-secret-token"
         },
@@ -346,7 +352,8 @@ Complete tenant setup example:
           "id": "acme",
           "name": "ACME Corp",
           "client_sync_url": "https://api.acme.com/proxy_sync",
-          "client_sync_auth": {
+          "client_attachment_url": "https://api.acme.com/attachments",
+          "client_auth": {
             "method": "bearer",
             "token": "acme-secret"
           }

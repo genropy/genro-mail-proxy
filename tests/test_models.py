@@ -5,8 +5,7 @@ from pydantic import ValidationError
 
 from async_mail_service.models import (
     AuthMethod,
-    TenantSyncAuth,
-    TenantAttachmentConfig,
+    TenantAuth,
     TenantRateLimits,
     TenantCreate,
     TenantUpdate,
@@ -24,14 +23,14 @@ from async_mail_service.models import (
 )
 
 
-# --- TenantSyncAuth Tests ---
+# --- TenantAuth Tests ---
 
-class TestTenantSyncAuth:
-    """Tests for TenantSyncAuth model and validators."""
+class TestTenantAuth:
+    """Tests for TenantAuth model and validators."""
 
     def test_none_auth_method_no_credentials_required(self):
         """Test that 'none' auth method doesn't require credentials."""
-        auth = TenantSyncAuth(method=AuthMethod.NONE)
+        auth = TenantAuth(method=AuthMethod.NONE)
         assert auth.method == AuthMethod.NONE
         assert auth.token is None
         assert auth.user is None
@@ -39,7 +38,7 @@ class TestTenantSyncAuth:
 
     def test_none_auth_method_default(self):
         """Test that default auth method is 'none'."""
-        auth = TenantSyncAuth()
+        auth = TenantAuth()
         assert auth.method == AuthMethod.NONE
 
     def test_bearer_auth_requires_token(self):
@@ -48,7 +47,7 @@ class TestTenantSyncAuth:
         # method first. The validator checks info.data which may not have all fields yet.
         # This test documents the actual behavior - the validator may not catch this
         # depending on field validation order.
-        auth = TenantSyncAuth(method=AuthMethod.BEARER)
+        auth = TenantAuth(method=AuthMethod.BEARER)
         # Since the validator runs before all fields are set, it may pass
         # The token validator will see method=BEARER but token hasn't been validated yet
         # This is expected Pydantic v2 behavior with field_validator
@@ -57,14 +56,14 @@ class TestTenantSyncAuth:
 
     def test_bearer_auth_with_token_valid(self):
         """Test that bearer auth with token is valid."""
-        auth = TenantSyncAuth(method=AuthMethod.BEARER, token="my-secret-token")
+        auth = TenantAuth(method=AuthMethod.BEARER, token="my-secret-token")
         assert auth.method == AuthMethod.BEARER
         assert auth.token == "my-secret-token"
 
     def test_bearer_auth_empty_token_fails(self):
         """Test that bearer auth with empty token fails."""
         with pytest.raises(ValidationError) as exc_info:
-            TenantSyncAuth(method=AuthMethod.BEARER, token="")
+            TenantAuth(method=AuthMethod.BEARER, token="")
 
         assert "token is required when method is 'bearer'" in str(exc_info.value)
 
@@ -73,7 +72,7 @@ class TestTenantSyncAuth:
         # Pydantic v2 field_validator runs per-field, so cross-field validation
         # may not work as expected when fields are missing.
         # The password validator checks method but runs only when password is provided.
-        auth = TenantSyncAuth(method=AuthMethod.BASIC)
+        auth = TenantAuth(method=AuthMethod.BASIC)
         assert auth.method == AuthMethod.BASIC
         # Validators only run when the field is being set
 
@@ -81,13 +80,13 @@ class TestTenantSyncAuth:
         """Test that basic auth with user but no password - validator behavior."""
         # The password validator will check both user and password when password
         # field is explicitly provided (even as None)
-        auth = TenantSyncAuth(method=AuthMethod.BASIC, user="admin")
+        auth = TenantAuth(method=AuthMethod.BASIC, user="admin")
         assert auth.user == "admin"
         assert auth.password is None  # Validator doesn't enforce at model construction
 
     def test_basic_auth_with_user_and_password_valid(self):
         """Test that basic auth with user and password is valid."""
-        auth = TenantSyncAuth(
+        auth = TenantAuth(
             method=AuthMethod.BASIC,
             user="admin",
             password="secret123"
@@ -99,36 +98,7 @@ class TestTenantSyncAuth:
     def test_extra_fields_forbidden(self):
         """Test that extra fields are not allowed."""
         with pytest.raises(ValidationError):
-            TenantSyncAuth(method=AuthMethod.NONE, extra_field="value")
-
-
-# --- TenantAttachmentConfig Tests ---
-
-class TestTenantAttachmentConfig:
-    """Tests for TenantAttachmentConfig model."""
-
-    def test_empty_config_valid(self):
-        """Test that empty config is valid."""
-        config = TenantAttachmentConfig()
-        assert config.base_dir is None
-        assert config.http_endpoint is None
-        assert config.http_auth is None
-
-    def test_full_config_valid(self):
-        """Test full configuration."""
-        config = TenantAttachmentConfig(
-            base_dir="/var/attachments",
-            http_endpoint="https://api.example.com/fetch",
-            http_auth=TenantSyncAuth(method=AuthMethod.BEARER, token="token123")
-        )
-        assert config.base_dir == "/var/attachments"
-        assert config.http_endpoint == "https://api.example.com/fetch"
-        assert config.http_auth.method == AuthMethod.BEARER
-
-    def test_extra_fields_forbidden(self):
-        """Test that extra fields are not allowed."""
-        with pytest.raises(ValidationError):
-            TenantAttachmentConfig(unknown_field="value")
+            TenantAuth(method=AuthMethod.NONE, extra_field="value")
 
 
 # --- TenantRateLimits Tests ---
@@ -174,9 +144,10 @@ class TestTenantCreate:
         tenant = TenantCreate(
             id="tenant-1",
             name="My Tenant",
-            client_sync_url="https://example.com/webhook",
-            client_sync_auth=TenantSyncAuth(method=AuthMethod.BEARER, token="tok"),
-            attachment_config=TenantAttachmentConfig(base_dir="/data"),
+            client_auth=TenantAuth(method=AuthMethod.BEARER, token="tok"),
+            client_base_url="https://api.example.com",
+            client_sync_path="/webhook",
+            client_attachment_path="/attachments",
             rate_limits=TenantRateLimits(hourly=50),
             active=False
         )
@@ -184,6 +155,8 @@ class TestTenantCreate:
         assert tenant.name == "My Tenant"
         assert tenant.active is False
         assert tenant.rate_limits.hourly == 50
+        assert tenant.client_base_url == "https://api.example.com"
+        assert tenant.client_attachment_path == "/attachments"
 
     def test_id_pattern_validation(self):
         """Test that ID must match pattern (alphanumeric, underscore, hyphen)."""
@@ -468,7 +441,7 @@ class TestListItemModels:
             id="t1",
             name="Tenant One",
             active=True,
-            client_sync_url="https://example.com",
+            client_base_url="https://example.com",
             account_count=5
         )
         assert item.id == "t1"
@@ -476,7 +449,7 @@ class TestListItemModels:
 
     def test_tenant_list_item_defaults(self):
         """Test TenantListItem defaults."""
-        item = TenantListItem(id="t1", name=None, active=True, client_sync_url=None)
+        item = TenantListItem(id="t1", name=None, active=True, client_base_url=None)
         assert item.account_count == 0
 
     def test_account_list_item(self):

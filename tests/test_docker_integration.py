@@ -126,8 +126,9 @@ async def setup_tenants(mail_proxy_core):
     await core.persistence.add_tenant({
         "id": "tenant1",
         "name": "Tenant 1",
-        "client_sync_url": f"{CLIENT_TENANT1_URL}/proxy_sync",
-        "client_sync_auth": {"method": "none"},
+        "client_base_url": CLIENT_TENANT1_URL,
+        "client_sync_path": "/proxy_sync",
+        "client_auth": {"method": "none"},
         "active": True,
     })
     await core.handle_command("addAccount", {
@@ -142,8 +143,9 @@ async def setup_tenants(mail_proxy_core):
     await core.persistence.add_tenant({
         "id": "tenant2",
         "name": "Tenant 2",
-        "client_sync_url": f"{CLIENT_TENANT2_URL}/proxy_sync",
-        "client_sync_auth": {"method": "bearer", "token": "tenant2-secret"},
+        "client_base_url": CLIENT_TENANT2_URL,
+        "client_sync_path": "/proxy_sync",
+        "client_auth": {"method": "bearer", "token": "tenant2-secret"},
         "active": True,
     })
     await core.handle_command("addAccount", {

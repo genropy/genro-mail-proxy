@@ -370,12 +370,14 @@ async def test_multitenant_smtp_dispatch(tmp_path, smtp_handler):
         # Create two tenants with different SMTP accounts
         await core.persistence.add_tenant({
             "id": "tenant1",
-            "client_sync_url": "https://tenant1.com/sync",
+            "client_base_url": "https://tenant1.com",
+            "client_sync_path": "/sync",
             "active": True,
         })
         await core.persistence.add_tenant({
             "id": "tenant2",
-            "client_sync_url": "https://tenant2.com/sync",
+            "client_base_url": "https://tenant2.com",
+            "client_sync_path": "/sync",
             "active": True,
         })
 

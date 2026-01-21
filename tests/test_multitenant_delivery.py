@@ -95,8 +95,9 @@ async def test_send_reports_to_tenant_bearer_auth(tmp_path):
 
     tenant = {
         "id": "acme",
-        "client_sync_url": "https://api.acme.com/sync",
-        "client_sync_auth": {"method": "bearer", "token": "secret123"},
+        "client_base_url": "https://api.acme.com",
+        "client_sync_path": "/sync",
+        "client_auth": {"method": "bearer", "token": "secret123"},
     }
     payloads = [{"id": "msg1", "sent_ts": 123456, "account_id": "acc1"}]
 
@@ -120,8 +121,9 @@ async def test_send_reports_to_tenant_basic_auth(tmp_path):
 
     tenant = {
         "id": "beta",
-        "client_sync_url": "https://api.beta.com/sync",
-        "client_sync_auth": {"method": "basic", "user": "admin", "password": "pass123"},
+        "client_base_url": "https://api.beta.com",
+        "client_sync_path": "/sync",
+        "client_auth": {"method": "basic", "user": "admin", "password": "pass123"},
     }
     payloads = [{"id": "msg2", "sent_ts": 123456}]
 
@@ -146,8 +148,9 @@ async def test_send_reports_to_tenant_no_auth(tmp_path):
 
     tenant = {
         "id": "gamma",
-        "client_sync_url": "https://api.gamma.com/sync",
-        "client_sync_auth": {"method": "none"},
+        "client_base_url": "https://api.gamma.com",
+        "client_sync_path": "/sync",
+        "client_auth": {"method": "none"},
     }
     payloads = [{"id": "msg3", "sent_ts": 123456}]
 
@@ -174,8 +177,9 @@ async def test_send_reports_to_tenant_http_error(tmp_path):
 
     tenant = {
         "id": "error-tenant",
-        "client_sync_url": "https://api.error.com/sync",
-        "client_sync_auth": {"method": "none"},
+        "client_base_url": "https://api.error.com",
+        "client_sync_path": "/sync",
+        "client_auth": {"method": "none"},
     }
     payloads = [{"id": "msg-err", "sent_ts": 123456}]
 
@@ -188,16 +192,16 @@ async def test_send_reports_to_tenant_http_error(tmp_path):
 
 @pytest.mark.asyncio
 async def test_send_reports_to_tenant_missing_url(tmp_path):
-    """Test that missing client_sync_url raises RuntimeError."""
+    """Test that missing client_base_url raises RuntimeError."""
     core = await make_core(tmp_path)
 
     tenant = {
         "id": "no-url-tenant",
-        "client_sync_url": None,
+        "client_base_url": None,
     }
     payloads = [{"id": "msg", "sent_ts": 123456}]
 
-    with pytest.raises(RuntimeError, match="has no client_sync_url configured"):
+    with pytest.raises(RuntimeError, match="has no sync URL configured"):
         await core._send_reports_to_tenant(tenant, payloads)
 
 
@@ -209,14 +213,16 @@ async def test_process_client_cycle_routes_to_tenants(tmp_path):
     # Create two tenants
     await core.persistence.add_tenant({
         "id": "tenant1",
-        "client_sync_url": "https://api.tenant1.com/sync",
-        "client_sync_auth": {"method": "bearer", "token": "token1"},
+        "client_base_url": "https://api.tenant1.com",
+        "client_sync_path": "/sync",
+        "client_auth": {"method": "bearer", "token": "token1"},
         "active": True,
     })
     await core.persistence.add_tenant({
         "id": "tenant2",
-        "client_sync_url": "https://api.tenant2.com/sync",
-        "client_sync_auth": {"method": "bearer", "token": "token2"},
+        "client_base_url": "https://api.tenant2.com",
+        "client_sync_path": "/sync",
+        "client_auth": {"method": "bearer", "token": "token2"},
         "active": True,
     })
 
@@ -256,8 +262,9 @@ async def test_process_client_cycle_routes_to_tenants(tmp_path):
     await core.persistence.mark_sent("msg2", sent_ts)
 
     with aioresponses() as m:
-        m.post("https://api.tenant1.com/sync", status=200, payload={"ok": True})
-        m.post("https://api.tenant2.com/sync", status=200, payload={"ok": True})
+        # New protocol: response with sent/error/not_found lists
+        m.post("https://api.tenant1.com/sync", status=200, payload={"sent": ["msg1"], "error": [], "not_found": []})
+        m.post("https://api.tenant2.com/sync", status=200, payload={"sent": ["msg2"], "error": [], "not_found": []})
 
         await core._process_client_cycle()
 
@@ -279,7 +286,7 @@ async def test_process_client_cycle_fallback_global(tmp_path):
     # Create tenant without sync URL
     await core.persistence.add_tenant({
         "id": "no-url-tenant",
-        "client_sync_url": None,
+        "client_base_url": None,
         "active": True,
     })
     await core.persistence.add_account({
@@ -317,7 +324,8 @@ async def test_process_client_cycle_mixed_tenants(tmp_path):
     # Tenant with sync URL
     await core.persistence.add_tenant({
         "id": "with-url",
-        "client_sync_url": "https://api.with-url.com/sync",
+        "client_base_url": "https://api.with-url.com",
+        "client_sync_path": "/sync",
         "active": True,
     })
     await core.persistence.add_account({
@@ -373,12 +381,14 @@ async def test_process_client_cycle_partial_failure(tmp_path):
     # Two tenants
     await core.persistence.add_tenant({
         "id": "success-tenant",
-        "client_sync_url": "https://api.success.com/sync",
+        "client_base_url": "https://api.success.com",
+        "client_sync_path": "/sync",
         "active": True,
     })
     await core.persistence.add_tenant({
         "id": "fail-tenant",
-        "client_sync_url": "https://api.fail.com/sync",
+        "client_base_url": "https://api.fail.com",
+        "client_sync_path": "/sync",
         "active": True,
     })
     await core.persistence.add_account({

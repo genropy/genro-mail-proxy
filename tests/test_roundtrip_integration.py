@@ -156,8 +156,9 @@ async def test_full_roundtrip_single_tenant(tmp_path, smtp_server, smtp_handler)
     await core.persistence.add_tenant({
         "id": "acme",
         "name": "ACME Corporation",
-        "client_sync_url": "https://api.acme.com/proxy_sync",
-        "client_sync_auth": {"method": "bearer", "token": "acme-secret-token"},
+        "client_base_url": "https://api.acme.com",
+        "client_sync_path": "/proxy_sync",
+        "client_auth": {"method": "bearer", "token": "acme-secret-token"},
         "active": True,
     })
 
@@ -245,14 +246,16 @@ async def test_full_roundtrip_multi_tenant(tmp_path, smtp_server, smtp_handler):
     # Create two tenants
     await core.persistence.add_tenant({
         "id": "tenant-alpha",
-        "client_sync_url": "https://api.alpha.com/proxy_sync",
-        "client_sync_auth": {"method": "bearer", "token": "alpha-token"},
+        "client_base_url": "https://api.alpha.com",
+        "client_sync_path": "/proxy_sync",
+        "client_auth": {"method": "bearer", "token": "alpha-token"},
         "active": True,
     })
     await core.persistence.add_tenant({
         "id": "tenant-beta",
-        "client_sync_url": "https://api.beta.com/proxy_sync",
-        "client_sync_auth": {"method": "basic", "user": "beta", "password": "pass"},
+        "client_base_url": "https://api.beta.com",
+        "client_sync_path": "/proxy_sync",
+        "client_auth": {"method": "basic", "user": "beta", "password": "pass"},
         "active": True,
     })
 
@@ -354,8 +357,9 @@ async def test_roundtrip_with_smtp_error(tmp_path, smtp_server, smtp_handler):
 
     await core.persistence.add_tenant({
         "id": "error-tenant",
-        "client_sync_url": "https://api.error.com/proxy_sync",
-        "client_sync_auth": {"method": "none"},
+        "client_base_url": "https://api.error.com",
+        "client_sync_path": "/proxy_sync",
+        "client_auth": {"method": "none"},
         "active": True,
     })
 
@@ -416,8 +420,9 @@ async def test_roundtrip_tenant_sync_failure_retry(tmp_path, smtp_server, smtp_h
 
     await core.persistence.add_tenant({
         "id": "flaky-tenant",
-        "client_sync_url": "https://api.flaky.com/proxy_sync",
-        "client_sync_auth": {"method": "none"},
+        "client_base_url": "https://api.flaky.com",
+        "client_sync_path": "/proxy_sync",
+        "client_auth": {"method": "none"},
         "active": True,
     })
 
@@ -481,7 +486,7 @@ async def test_roundtrip_fallback_to_global_url(tmp_path, smtp_server, smtp_hand
     # Create tenant without sync URL
     await core.persistence.add_tenant({
         "id": "no-url-tenant",
-        "client_sync_url": None,
+        "client_base_url": None,
         "active": True,
     })
 
@@ -526,8 +531,9 @@ async def test_roundtrip_batch_messages(tmp_path, smtp_server, smtp_handler):
 
     await core.persistence.add_tenant({
         "id": "batch-tenant",
-        "client_sync_url": "https://api.batch.com/proxy_sync",
-        "client_sync_auth": {"method": "bearer", "token": "batch-token"},
+        "client_base_url": "https://api.batch.com",
+        "client_sync_path": "/proxy_sync",
+        "client_auth": {"method": "bearer", "token": "batch-token"},
         "active": True,
     })
 
