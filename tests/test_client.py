@@ -142,14 +142,18 @@ class TestTenantDataclass:
             "id": "tenant-1",
             "name": "My Tenant",
             "active": True,
-            "client_sync_url": "https://example.com/webhook"
+            "client_base_url": "https://example.com",
+            "client_sync_path": "/webhook",
+            "client_attachment_path": "/files"
         }
         tenant = Tenant.from_dict(data)
 
         assert tenant.id == "tenant-1"
         assert tenant.name == "My Tenant"
         assert tenant.active is True
-        assert tenant.client_sync_url == "https://example.com/webhook"
+        assert tenant.client_base_url == "https://example.com"
+        assert tenant.client_sync_path == "/webhook"
+        assert tenant.client_attachment_path == "/files"
 
     def test_tenant_from_dict_defaults(self):
         """Test Tenant defaults when fields missing."""

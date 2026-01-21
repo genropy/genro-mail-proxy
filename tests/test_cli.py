@@ -19,7 +19,7 @@ from async_mail_service.cli import (
     _write_pid_file,
     _remove_pid_file,
     _generate_api_token,
-    _ensure_config_file,
+    _ensure_instance,
     _get_instance_config,
     _stop_instance,
 )
@@ -60,7 +60,7 @@ class TestHelperFunctions:
 
     def test_get_instance_dir(self, tmp_path):
         """Test _get_instance_dir returns correct path."""
-        with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
             instance_dir = _get_instance_dir("myserver")
 
         expected = tmp_path / ".mail-proxy" / "myserver"
@@ -68,7 +68,7 @@ class TestHelperFunctions:
 
     def test_get_pid_file(self, tmp_path):
         """Test _get_pid_file returns correct path."""
-        with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
             pid_file = _get_pid_file("myserver")
 
         expected = tmp_path / ".mail-proxy" / "myserver" / "server.pid"
@@ -80,7 +80,7 @@ class TestPidFileManagement:
 
     def test_write_and_read_pid_file(self, tmp_path):
         """Test writing and reading PID file."""
-        with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
             # Create instance directory
             instance_dir = tmp_path / ".mail-proxy" / "testserver"
             instance_dir.mkdir(parents=True)
@@ -100,7 +100,7 @@ class TestPidFileManagement:
 
     def test_remove_pid_file(self, tmp_path):
         """Test removing PID file."""
-        with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
             # Create instance directory and PID file
             instance_dir = tmp_path / ".mail-proxy" / "testserver"
             instance_dir.mkdir(parents=True)
@@ -116,13 +116,13 @@ class TestPidFileManagement:
 
     def test_remove_pid_file_nonexistent(self, tmp_path):
         """Test removing nonexistent PID file doesn't raise error."""
-        with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
             # Should not raise
             _remove_pid_file("nonexistent")
 
     def test_is_instance_running_no_pid_file(self, tmp_path):
         """Test _is_instance_running when no PID file exists."""
-        with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
             is_running, pid, port = _is_instance_running("nonexistent")
 
         assert is_running is False
@@ -131,7 +131,7 @@ class TestPidFileManagement:
 
     def test_is_instance_running_corrupt_pid_file(self, tmp_path):
         """Test _is_instance_running with corrupt PID file."""
-        with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
             # Create corrupt PID file
             instance_dir = tmp_path / ".mail-proxy" / "testserver"
             instance_dir.mkdir(parents=True)
@@ -145,7 +145,7 @@ class TestPidFileManagement:
 
     def test_is_instance_running_dead_process(self, tmp_path):
         """Test _is_instance_running when process is not running."""
-        with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
             # Create PID file with non-existent PID
             instance_dir = tmp_path / ".mail-proxy" / "testserver"
             instance_dir.mkdir(parents=True)
@@ -160,7 +160,7 @@ class TestPidFileManagement:
         """Test _is_instance_running when process is running."""
         current_pid = os.getpid()
 
-        with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
             # Create PID file with current process PID (guaranteed to be running)
             instance_dir = tmp_path / ".mail-proxy" / "testserver"
             instance_dir.mkdir(parents=True)
@@ -174,66 +174,55 @@ class TestPidFileManagement:
         assert port == 8000
 
 
-class TestConfigFile:
-    """Tests for config file management."""
+class TestInstanceConfig:
+    """Tests for instance config management (database-based)."""
 
-    def test_ensure_config_file_creates_new(self, tmp_path):
-        """Test _ensure_config_file creates new config."""
-        with patch("pathlib.Path.home", return_value=tmp_path):
-            config_path = _ensure_config_file("newserver", port=9000, host="127.0.0.1")
+    def test_ensure_instance_creates_new(self, tmp_path):
+        """Test _ensure_instance creates new instance with config in DB."""
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+            config = _ensure_instance("newserver", port=9000, host="127.0.0.1")
 
-        assert Path(config_path).exists()
-        content = Path(config_path).read_text()
+        # Check DB file was created
+        db_path = Path(config["db_path"])
+        assert db_path.exists()
 
-        # Check config contents
-        assert "name = newserver" in content
-        assert "port = 9000" in content
-        assert "host = 127.0.0.1" in content
-        assert "api_token = " in content  # Should have generated token
+        # Check config values
+        assert config["name"] == "newserver"
+        assert config["port"] == 9000
+        assert config["host"] == "127.0.0.1"
+        assert config["api_token"] is not None
+        assert len(config["api_token"]) > 20  # Token should be generated
 
-    def test_ensure_config_file_existing(self, tmp_path):
-        """Test _ensure_config_file doesn't overwrite existing."""
-        with patch("pathlib.Path.home", return_value=tmp_path):
-            # Create existing config
-            instance_dir = tmp_path / ".mail-proxy" / "existingserver"
-            instance_dir.mkdir(parents=True)
-            config_file = instance_dir / "config.ini"
-            config_file.write_text("[server]\nname = existing\napi_token = original")
+    def test_ensure_instance_existing(self, tmp_path):
+        """Test _ensure_instance doesn't overwrite existing token."""
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+            # Create first instance
+            config1 = _ensure_instance("existingserver", port=9000, host="127.0.0.1")
+            original_token = config1["api_token"]
 
-            # Call ensure - should not overwrite
-            config_path = _ensure_config_file("existingserver", port=9000, host="127.0.0.1")
+            # Call ensure again - should not overwrite token
+            config2 = _ensure_instance("existingserver", port=9000, host="127.0.0.1")
 
-        # Should still have original content
-        content = Path(config_path).read_text()
-        assert "name = existing" in content
-        assert "api_token = original" in content
+        # Should still have original token
+        assert config2["api_token"] == original_token
 
     def test_get_instance_config_existing(self, tmp_path):
-        """Test _get_instance_config reads config."""
-        with patch("pathlib.Path.home", return_value=tmp_path):
-            # Create config file
-            instance_dir = tmp_path / ".mail-proxy" / "testserver"
-            instance_dir.mkdir(parents=True)
-            config_file = instance_dir / "config.ini"
-            config_file.write_text("""
-[server]
-name = testserver
-db_path = /data/test.db
-host = 0.0.0.0
-port = 8080
-api_token = secret123
-""")
+        """Test _get_instance_config reads config from DB."""
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+            # Create instance first
+            _ensure_instance("testserver", port=8080, host="0.0.0.0")
 
+            # Now read config
             config = _get_instance_config("testserver")
 
         assert config["name"] == "testserver"
         assert config["host"] == "0.0.0.0"
         assert config["port"] == 8080
-        assert config["api_token"] == "secret123"
+        assert config["api_token"] is not None
 
     def test_get_instance_config_not_found(self, tmp_path):
         """Test _get_instance_config returns None when not found."""
-        with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
             config = _get_instance_config("nonexistent")
 
         assert config is None
@@ -244,7 +233,7 @@ class TestStopInstance:
 
     def test_stop_instance_not_running(self, tmp_path):
         """Test stopping an instance that's not running."""
-        with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
             result = _stop_instance("nonexistent")
 
         assert result is False
@@ -254,7 +243,7 @@ class TestStopInstance:
         """Test stopping instance with permission error."""
         mock_kill.side_effect = PermissionError("No permission")
 
-        with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
             # Create PID file
             instance_dir = tmp_path / ".mail-proxy" / "testserver"
             instance_dir.mkdir(parents=True)
@@ -270,317 +259,6 @@ class TestStopInstance:
 
 # --- CLI Command Tests ---
 
-class TestInitCommand:
-    """Tests for the init command."""
-
-    def test_init_command(self, tmp_path):
-        """Test init command initializes database."""
-        runner = CliRunner()
-        db_path = str(tmp_path / "test.db")
-
-        result = runner.invoke(main, ["--db", db_path, "init"])
-
-        assert result.exit_code == 0
-        assert "Database initialized" in result.output
-
-    def test_init_with_env_var(self, tmp_path):
-        """Test init command uses GMP_DB_PATH env var."""
-        runner = CliRunner()
-        db_path = str(tmp_path / "env_test.db")
-
-        result = runner.invoke(main, ["init"], env={"GMP_DB_PATH": db_path})
-
-        assert result.exit_code == 0
-
-
-class TestTenantCommands:
-    """Tests for tenant CLI commands."""
-
-    def test_tenant_list_empty(self, tmp_path):
-        """Test tenant list when no tenants exist."""
-        runner = CliRunner()
-        db_path = str(tmp_path / "test.db")
-
-        # Initialize first
-        runner.invoke(main, ["--db", db_path, "init"])
-
-        result = runner.invoke(main, ["--db", db_path, "tenant", "list"])
-
-        assert result.exit_code == 0
-        assert "No tenants found" in result.output
-
-    def test_tenant_add_and_list(self, tmp_path):
-        """Test adding and listing tenants."""
-        runner = CliRunner()
-        db_path = str(tmp_path / "test.db")
-
-        # Initialize
-        runner.invoke(main, ["--db", db_path, "init"])
-
-        # Add tenant
-        result = runner.invoke(main, [
-            "--db", db_path,
-            "tenant", "add", "test-tenant",
-            "--name", "Test Tenant"
-        ])
-        assert result.exit_code == 0
-
-        # List tenants
-        result = runner.invoke(main, ["--db", db_path, "tenant", "list"])
-        assert "test-tenant" in result.output
-
-    def test_tenant_add_with_sync_auth_bearer(self, tmp_path):
-        """Test adding tenant with bearer auth."""
-        runner = CliRunner()
-        db_path = str(tmp_path / "test.db")
-
-        runner.invoke(main, ["--db", db_path, "init"])
-
-        result = runner.invoke(main, [
-            "--db", db_path,
-            "tenant", "add", "auth-tenant",
-            "--sync-url", "https://example.com/webhook",
-            "--sync-auth-method", "bearer",
-            "--sync-auth-token", "secret123"
-        ])
-
-        assert result.exit_code == 0
-
-    def test_tenant_show(self, tmp_path):
-        """Test showing tenant details."""
-        runner = CliRunner()
-        db_path = str(tmp_path / "test.db")
-
-        runner.invoke(main, ["--db", db_path, "init"])
-        runner.invoke(main, [
-            "--db", db_path,
-            "tenant", "add", "show-tenant",
-            "--name", "Show Test"
-        ])
-
-        result = runner.invoke(main, [
-            "--db", db_path,
-            "tenant", "show", "show-tenant"
-        ])
-
-        assert result.exit_code == 0
-        assert "show-tenant" in result.output
-        assert "Show Test" in result.output
-
-    def test_tenant_show_not_found(self, tmp_path):
-        """Test showing non-existent tenant."""
-        runner = CliRunner()
-        db_path = str(tmp_path / "test.db")
-
-        runner.invoke(main, ["--db", db_path, "init"])
-
-        result = runner.invoke(main, [
-            "--db", db_path,
-            "tenant", "show", "nonexistent"
-        ])
-
-        assert result.exit_code == 1
-        assert "not found" in result.output
-
-    def test_tenant_delete(self, tmp_path):
-        """Test deleting tenant."""
-        runner = CliRunner()
-        db_path = str(tmp_path / "test.db")
-
-        runner.invoke(main, ["--db", db_path, "init"])
-        runner.invoke(main, [
-            "--db", db_path,
-            "tenant", "add", "delete-tenant"
-        ])
-
-        # Use --force to skip confirmation
-        result = runner.invoke(main, [
-            "--db", db_path,
-            "tenant", "delete", "delete-tenant", "--force"
-        ])
-
-        assert result.exit_code == 0
-
-        # Verify deleted
-        result = runner.invoke(main, ["--db", db_path, "tenant", "list"])
-        assert "delete-tenant" not in result.output
-
-    def test_tenant_list_json(self, tmp_path):
-        """Test tenant list with JSON output."""
-        runner = CliRunner()
-        db_path = str(tmp_path / "test.db")
-
-        runner.invoke(main, ["--db", db_path, "init"])
-        runner.invoke(main, [
-            "--db", db_path,
-            "tenant", "add", "json-tenant"
-        ])
-
-        result = runner.invoke(main, [
-            "--db", db_path,
-            "tenant", "list", "--json"
-        ])
-
-        assert result.exit_code == 0
-        # Should be valid JSON
-        data = json.loads(result.output)
-        assert isinstance(data, list)
-
-
-class TestAccountCommands:
-    """Tests for account CLI commands."""
-
-    def test_account_add_and_list(self, tmp_path):
-        """Test adding and listing accounts."""
-        runner = CliRunner()
-        db_path = str(tmp_path / "test.db")
-
-        runner.invoke(main, ["--db", db_path, "init"])
-        runner.invoke(main, ["--db", db_path, "tenant", "add", "test-tenant"])
-
-        # Add account
-        result = runner.invoke(main, [
-            "--db", db_path,
-            "account", "add", "smtp-1",
-            "--tenant", "test-tenant",
-            "--host", "smtp.example.com",
-            "--port", "587"
-        ])
-        assert result.exit_code == 0
-
-        # List accounts
-        result = runner.invoke(main, ["--db", db_path, "account", "list"])
-        assert "smtp-1" in result.output
-        assert "smtp.example.com" in result.output
-
-    def test_account_add_with_credentials(self, tmp_path):
-        """Test adding account with SMTP credentials."""
-        runner = CliRunner()
-        db_path = str(tmp_path / "test.db")
-
-        runner.invoke(main, ["--db", db_path, "init"])
-        runner.invoke(main, ["--db", db_path, "tenant", "add", "test-tenant"])
-
-        result = runner.invoke(main, [
-            "--db", db_path,
-            "account", "add", "smtp-auth",
-            "--tenant", "test-tenant",
-            "--host", "smtp.example.com",
-            "--port", "587",
-            "--user", "smtp_user",
-            "--password", "smtp_pass",
-            "--tls"
-        ])
-
-        assert result.exit_code == 0
-
-    def test_account_delete(self, tmp_path):
-        """Test deleting account."""
-        runner = CliRunner()
-        db_path = str(tmp_path / "test.db")
-
-        runner.invoke(main, ["--db", db_path, "init"])
-        runner.invoke(main, ["--db", db_path, "tenant", "add", "test-tenant"])
-        runner.invoke(main, [
-            "--db", db_path,
-            "account", "add", "delete-smtp",
-            "--tenant", "test-tenant",
-            "--host", "smtp.example.com",
-            "--port", "587"
-        ])
-
-        result = runner.invoke(main, [
-            "--db", db_path,
-            "account", "delete", "delete-smtp"
-        ])
-
-        assert result.exit_code == 0
-
-
-class TestMessageCommands:
-    """Tests for message CLI commands."""
-
-    def test_message_list_empty(self, tmp_path):
-        """Test message list when no messages exist.
-
-        Note: The CLI command passes 'limit' parameter to persistence.list_messages()
-        but the persistence method doesn't support that parameter. This is a known issue.
-        We test that the command is registered but expect it to fail due to this mismatch.
-        """
-        runner = CliRunner()
-        db_path = str(tmp_path / "test.db")
-
-        runner.invoke(main, ["--db", db_path, "init"])
-
-        result = runner.invoke(main, ["--db", db_path, "message", "list"])
-
-        # Due to parameter mismatch between CLI and persistence, this currently fails
-        # TODO: Fix CLI to not pass 'limit' or add limit support to persistence
-        # For now we just verify the command exists and is invoked
-        assert "message" in result.output or result.exit_code != 0
-
-
-class TestRegisterCommand:
-    """Tests for the register command."""
-
-    def test_register_connection(self, tmp_path):
-        """Test registering a connection."""
-        runner = CliRunner()
-
-        with patch("pathlib.Path.home", return_value=tmp_path):
-            result = runner.invoke(main, [
-                "register", "prod",
-                "https://mail.example.com",
-                "--token", "secret123"
-            ])
-
-        assert result.exit_code == 0
-        assert "Registered connection" in result.output
-
-        # Verify file contents
-        connections_file = tmp_path / ".mail-proxy" / "connections.json"
-        assert connections_file.exists()
-
-        data = json.loads(connections_file.read_text())
-        assert "prod" in data
-        assert data["prod"]["url"] == "https://mail.example.com"
-        assert data["prod"]["token"] == "secret123"
-
-
-class TestConnectionsCommand:
-    """Tests for the connections command."""
-
-    def test_connections_empty(self, tmp_path):
-        """Test listing connections when none exist."""
-        runner = CliRunner()
-
-        with patch("pathlib.Path.home", return_value=tmp_path):
-            result = runner.invoke(main, ["connections"])
-
-        assert result.exit_code == 0
-        assert "No connections registered" in result.output
-
-    def test_connections_list(self, tmp_path):
-        """Test listing connections."""
-        runner = CliRunner()
-
-        # Create connections file
-        config_dir = tmp_path / ".mail-proxy"
-        config_dir.mkdir(parents=True)
-        connections_file = config_dir / "connections.json"
-        connections_file.write_text(json.dumps({
-            "prod": {"url": "https://prod.example.com", "token": "secret"},
-            "staging": {"url": "https://staging.example.com"}
-        }))
-
-        with patch("pathlib.Path.home", return_value=tmp_path):
-            result = runner.invoke(main, ["connections"])
-
-        assert result.exit_code == 0
-        assert "prod" in result.output
-        assert "staging" in result.output
-
-
 class TestListCommand:
     """Tests for the list (instances) command."""
 
@@ -588,7 +266,7 @@ class TestListCommand:
         """Test listing instances when none exist."""
         runner = CliRunner()
 
-        with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
             result = runner.invoke(main, ["list"])
 
         assert result.exit_code == 0
@@ -598,18 +276,232 @@ class TestListCommand:
         """Test listing instances."""
         runner = CliRunner()
 
-        # Create instance directory with config
-        instance_dir = tmp_path / ".mail-proxy" / "testserver"
-        instance_dir.mkdir(parents=True)
-        config_file = instance_dir / "config.ini"
-        config_file.write_text("""
-[server]
-name = testserver
-port = 8000
-""")
-
-        with patch("pathlib.Path.home", return_value=tmp_path):
+        # Create instance with config in database
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+            _ensure_instance("testserver", port=8000, host="0.0.0.0")
             result = runner.invoke(main, ["list"])
 
         assert result.exit_code == 0
         assert "testserver" in result.output
+
+
+class TestInstanceCommands:
+    """Tests for instance-level commands."""
+
+    def test_instance_help(self, tmp_path):
+        """Test instance help shows available commands."""
+        runner = CliRunner()
+
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+            result = runner.invoke(main, ["testserver", "--help"])
+
+        assert result.exit_code == 0
+        assert "tenants" in result.output
+        assert "stats" in result.output
+
+    def test_instance_shows_help(self, tmp_path):
+        """Test instance without subcommand shows help."""
+        runner = CliRunner()
+
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+            result = runner.invoke(main, ["nonexistent"])
+
+        # Now shows help with available commands
+        assert "Commands:" in result.output
+        assert "tenants" in result.output
+
+
+class TestTenantsCommands:
+    """Tests for tenants commands with new hierarchical structure."""
+
+    def test_tenants_list_empty(self, tmp_path):
+        """Test tenants list when no tenants exist."""
+        runner = CliRunner()
+
+        # Create instance with database
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+            _ensure_instance("testserver", port=8080, host="0.0.0.0")
+            result = runner.invoke(main, ["testserver", "tenants", "list"])
+
+        assert result.exit_code == 0
+        assert "No tenants found" in result.output
+
+    def test_tenants_add_and_list(self, tmp_path):
+        """Test adding and listing tenants."""
+        runner = CliRunner()
+
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+            # Create instance with database
+            _ensure_instance("testserver", port=8080, host="0.0.0.0")
+
+            # Add tenant
+            result = runner.invoke(main, [
+                "testserver", "tenants", "add", "test-tenant",
+                "--name", "Test Tenant"
+            ])
+            assert result.exit_code == 0
+
+            # List tenants
+            result = runner.invoke(main, ["testserver", "tenants", "list"])
+            assert "test-tenant" in result.output
+
+    def test_tenants_show(self, tmp_path):
+        """Test showing tenant details."""
+        runner = CliRunner()
+
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+            # Create instance with database
+            _ensure_instance("testserver", port=8080, host="0.0.0.0")
+
+            # Add tenant
+            runner.invoke(main, [
+                "testserver", "tenants", "add", "show-tenant",
+                "--name", "Show Test"
+            ])
+
+            # Show tenant
+            result = runner.invoke(main, [
+                "testserver", "tenants", "show", "show-tenant"
+            ])
+
+        assert result.exit_code == 0
+        assert "show-tenant" in result.output
+        assert "Show Test" in result.output
+
+    def test_tenants_delete(self, tmp_path):
+        """Test deleting tenant."""
+        runner = CliRunner()
+
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+            # Create instance with database
+            _ensure_instance("testserver", port=8080, host="0.0.0.0")
+
+            # Add tenant
+            runner.invoke(main, [
+                "testserver", "tenants", "add", "delete-tenant"
+            ])
+
+            # Delete tenant
+            result = runner.invoke(main, [
+                "testserver", "tenants", "delete", "delete-tenant", "--force"
+            ])
+            assert result.exit_code == 0
+
+            # Verify deleted
+            result = runner.invoke(main, ["testserver", "tenants", "list"])
+            assert "delete-tenant" not in result.output
+
+
+class TestTenantLevelCommands:
+    """Tests for tenant-level commands (accounts, messages)."""
+
+    def test_accounts_help(self, tmp_path):
+        """Test accounts help."""
+        runner = CliRunner()
+
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+            # Create instance with database and tenant
+            _ensure_instance("testserver", port=8080, host="0.0.0.0")
+
+            # Add tenant first
+            runner.invoke(main, [
+                "testserver", "tenants", "add", "test-tenant"
+            ])
+
+            # Get accounts help
+            result = runner.invoke(main, [
+                "testserver", "test-tenant", "accounts", "--help"
+            ])
+
+        assert result.exit_code == 0
+        assert "list" in result.output
+        assert "add" in result.output
+
+    def test_accounts_list_empty(self, tmp_path):
+        """Test accounts list when empty."""
+        runner = CliRunner()
+
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+            # Create instance with database and tenant
+            _ensure_instance("testserver", port=8080, host="0.0.0.0")
+
+            # Add tenant first
+            runner.invoke(main, [
+                "testserver", "tenants", "add", "test-tenant"
+            ])
+
+            # List accounts
+            result = runner.invoke(main, [
+                "testserver", "test-tenant", "accounts", "list"
+            ])
+
+        assert result.exit_code == 0
+        assert "No accounts found" in result.output
+
+    def test_accounts_add_and_list(self, tmp_path):
+        """Test adding and listing accounts."""
+        runner = CliRunner()
+
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+            # Create instance with database
+            _ensure_instance("testserver", port=8080, host="0.0.0.0")
+
+            # Add tenant first
+            runner.invoke(main, [
+                "testserver", "tenants", "add", "test-tenant"
+            ])
+
+            # Add account
+            result = runner.invoke(main, [
+                "testserver", "test-tenant", "accounts", "add", "smtp-1",
+                "--host", "smtp.example.com",
+                "--port", "587"
+            ])
+            assert result.exit_code == 0
+
+            # List accounts
+            result = runner.invoke(main, [
+                "testserver", "test-tenant", "accounts", "list"
+            ])
+            assert "smtp-1" in result.output
+            assert "smtp.example.com" in result.output
+
+    def test_messages_list_empty(self, tmp_path):
+        """Test messages list when empty."""
+        runner = CliRunner()
+
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+            # Create instance with database and tenant
+            _ensure_instance("testserver", port=8080, host="0.0.0.0")
+
+            # Add tenant first
+            runner.invoke(main, [
+                "testserver", "tenants", "add", "test-tenant"
+            ])
+
+            # List messages
+            result = runner.invoke(main, [
+                "testserver", "test-tenant", "messages", "list"
+            ])
+
+        assert result.exit_code == 0
+        assert "No messages found" in result.output
+
+
+class TestStatsCommand:
+    """Tests for stats command."""
+
+    def test_stats_empty(self, tmp_path):
+        """Test stats with empty database."""
+        runner = CliRunner()
+
+        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+            # Create instance with database
+            _ensure_instance("testserver", port=8080, host="0.0.0.0")
+
+            result = runner.invoke(main, ["testserver", "stats"])
+
+        assert result.exit_code == 0
+        assert "Tenants:" in result.output
+        assert "Accounts:" in result.output
+        assert "Messages:" in result.output

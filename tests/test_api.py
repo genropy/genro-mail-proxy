@@ -128,7 +128,7 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
             },
         ),
         ("deleteMessages", {"ids": ["msg-bulk"]}),
-        ("addAccount", {"id": "acc", "host": "smtp.local", "port": 25, "user": None, "password": None, "ttl": 300, "limit_per_minute": None, "limit_per_hour": None, "limit_per_day": None, "limit_behavior": "defer", "use_tls": None, "batch_size": None}),
+        ("addAccount", {"id": "acc", "tenant_id": None, "host": "smtp.local", "port": 25, "user": None, "password": None, "ttl": 300, "limit_per_minute": None, "limit_per_hour": None, "limit_per_day": None, "limit_behavior": "defer", "use_tls": None, "use_ssl": None, "batch_size": None}),
         ("listAccounts", {}),
         ("deleteAccount", {"id": "acc"}),
         ("listMessages", {}),
@@ -461,3 +461,86 @@ def test_delete_messages_empty_list(client_and_service):
     response = client.post("/commands/delete-messages", json={"ids": []})
     assert response.status_code == 200
     assert response.json()["removed"] == 0
+
+
+# ============================================================================
+# Tenant API Tests
+# ============================================================================
+
+def test_create_tenant_without_token_rejected():
+    """Test that creating a tenant without API token is rejected when token is configured."""
+    class TenantService(DummyService):
+        async def handle_command(self, cmd, payload):
+            self.calls.append((cmd, payload))
+            if cmd == "addTenant":
+                return {"ok": True}
+            return await super().handle_command(cmd, payload)
+
+    svc = TenantService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    # Do NOT set API token header
+
+    tenant_payload = {
+        "id": "test-tenant",
+        "name": "Test Tenant",
+        "active": True
+    }
+
+    response = client.post("/tenant", json=tenant_payload)
+    assert response.status_code == 401
+    assert "Invalid or missing API token" in response.json()["detail"]
+    # Verify the service was never called
+    assert len(svc.calls) == 0
+
+
+def test_create_tenant_with_wrong_token_rejected():
+    """Test that creating a tenant with wrong API token is rejected."""
+    class TenantService(DummyService):
+        async def handle_command(self, cmd, payload):
+            self.calls.append((cmd, payload))
+            if cmd == "addTenant":
+                return {"ok": True}
+            return await super().handle_command(cmd, payload)
+
+    svc = TenantService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    client.headers.update({API_TOKEN_HEADER_NAME: "wrong-token"})
+
+    tenant_payload = {
+        "id": "test-tenant",
+        "name": "Test Tenant",
+        "active": True
+    }
+
+    response = client.post("/tenant", json=tenant_payload)
+    assert response.status_code == 401
+    assert "Invalid or missing API token" in response.json()["detail"]
+    # Verify the service was never called
+    assert len(svc.calls) == 0
+
+
+def test_create_tenant_with_valid_token_succeeds():
+    """Test that creating a tenant with valid API token succeeds."""
+    class TenantService(DummyService):
+        async def handle_command(self, cmd, payload):
+            self.calls.append((cmd, payload))
+            if cmd == "addTenant":
+                return {"ok": True}
+            return await super().handle_command(cmd, payload)
+
+    svc = TenantService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
+
+    tenant_payload = {
+        "id": "test-tenant",
+        "name": "Test Tenant",
+        "active": True
+    }
+
+    response = client.post("/tenant", json=tenant_payload)
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    # Verify the service was called
+    assert len(svc.calls) == 1
+    assert svc.calls[0][0] == "addTenant"
