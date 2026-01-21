@@ -142,7 +142,8 @@ class TestFetch:
         mock_session.post.assert_called_once()
         call_args = mock_session.post.call_args
         assert call_args[0][0] == "https://other.com/api"
-        assert call_args[1]["data"] == "id=456"
+        # Now uses JSON body instead of form data
+        assert call_args[1]["json"] == {"storage_path": "id=456"}
 
 
 class TestFetchBatch:
@@ -169,15 +170,15 @@ class TestFetchBatch:
             __aexit__=AsyncMock(return_value=None),
         )):
             results = await fetcher.fetch_batch([
-                {"storage_path": "@doc_id=123"}
+                {"storage_path": "doc_id=123", "fetch_mode": "endpoint"}
             ])
 
-        assert "@doc_id=123" in results
-        assert results["@doc_id=123"] == expected_content
+        assert "doc_id=123" in results
+        assert results["doc_id=123"] == expected_content
 
     @pytest.mark.asyncio
-    async def test_batch_skips_non_http_paths(self):
-        """Test that non-HTTP paths are skipped in batch."""
+    async def test_batch_skips_empty_paths(self):
+        """Test that empty storage_path are skipped in batch."""
         fetcher = HttpFetcher(default_endpoint="https://api.example.com")
 
         with patch("aiohttp.ClientSession", return_value=AsyncMock(
@@ -185,9 +186,9 @@ class TestFetchBatch:
             __aexit__=AsyncMock(return_value=None),
         )):
             results = await fetcher.fetch_batch([
-                {"storage_path": "base64:SGVsbG8="},
-                {"storage_path": "/local/file.txt"},
-                {"storage_path": "volume:path/file.pdf"},
+                {"storage_path": ""},
+                {"storage_path": None},
+                {},  # No storage_path key
             ])
 
         assert results == {}
@@ -224,12 +225,12 @@ class TestFetchBatch:
             __aexit__=AsyncMock(return_value=None),
         )):
             results = await fetcher.fetch_batch([
-                {"storage_path": "@doc_id=1"},
-                {"storage_path": "@doc_id=2"},
+                {"storage_path": "doc_id=1", "fetch_mode": "endpoint"},
+                {"storage_path": "doc_id=2", "fetch_mode": "endpoint"},
             ])
 
-        assert results["@doc_id=1"] == content1
-        assert results["@doc_id=2"] == content2
+        assert results["doc_id=1"] == content1
+        assert results["doc_id=2"] == content2
 
     @pytest.mark.asyncio
     async def test_batch_groups_by_server(self):
@@ -261,12 +262,12 @@ class TestFetchBatch:
             __aexit__=AsyncMock(return_value=None),
         )):
             results = await fetcher.fetch_batch([
-                {"storage_path": "@doc_id=1"},  # Goes to default
-                {"storage_path": "@[https://other.com]doc_id=2"},  # Goes to other
+                {"storage_path": "doc_id=1", "fetch_mode": "endpoint"},  # Goes to default
+                {"storage_path": "[https://other.com]doc_id=2", "fetch_mode": "endpoint"},  # Goes to other
             ])
 
-        assert "@doc_id=1" in results
-        assert "@[https://other.com]doc_id=2" in results
+        assert "doc_id=1" in results
+        assert "[https://other.com]doc_id=2" in results
 
 
 class TestDefaultEndpointProperty:

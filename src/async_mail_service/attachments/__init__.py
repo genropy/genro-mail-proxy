@@ -4,19 +4,11 @@ This module provides the AttachmentManager class for retrieving email
 attachments from various storage backends with intelligent routing and
 optional MD5-based caching.
 
-Supported storage path formats (legacy prefix-based):
-- volume:path - genro-storage volume (requires genro-storage)
-- base64:content - Inline base64-encoded content
-- /absolute/path - Local filesystem absolute path
-- relative/path - Local filesystem path relative to base_dir
-- @params - HTTP POST to default endpoint
-- @[url]params - HTTP POST to specific URL
-
-Explicit fetch_mode parameter (recommended):
-- endpoint - HTTP POST to tenant's client_attachment_url
-- storage - genro-storage volume
+Supported fetch_mode values:
+- endpoint - HTTP POST to tenant's attachment URL (base_url + attachment_path)
+- storage - genro-storage volume (storage_path format: volume:path)
 - http_url - Direct HTTP fetch from URL in storage_path
-- base64 - Inline base64-encoded content
+- base64 - Inline base64-encoded content in storage_path
 
 Additional attachment parameters:
 - content_md5: MD5 hash for cache lookup (alternative to filename marker)
@@ -71,16 +63,14 @@ MD5_MARKER_PATTERN = re.compile(r'\{MD5:([a-fA-F0-9]+)\}')
 class AttachmentManager:
     """High-level interface for fetching email attachments from multiple sources.
 
-    Routes attachment requests to the appropriate fetcher based on storage_path
-    format. Supports optional MD5-based caching for deduplication and performance.
+    Routes attachment requests to the appropriate fetcher based on fetch_mode.
+    Supports optional MD5-based caching for deduplication and performance.
 
-    Supported storage_path formats:
-    - volume:path - genro-storage (requires genro-storage installed)
-    - base64:content - Inline base64 decode
-    - /absolute/path - Filesystem absolute path
-    - relative/path - Filesystem relative to base_dir
-    - @params - HTTP POST to default endpoint
-    - @[url]params - HTTP POST to explicit URL
+    Supported fetch_mode values:
+    - endpoint - HTTP POST to tenant's attachment URL
+    - storage - genro-storage volume (requires genro-storage installed)
+    - http_url - Direct HTTP fetch from URL
+    - base64 - Inline base64-encoded content
 
     Attributes:
         _storage_fetcher: Fetcher for genro-storage volumes (optional).
@@ -102,11 +92,10 @@ class AttachmentManager:
 
         Args:
             storage_manager: Optional AsyncStorageManager instance for
-                volume:path storage paths. If None and genro-storage is
-                not installed, volume paths will raise an error.
+                storage fetch_mode. If None and genro-storage is
+                not installed, storage paths will raise an error.
             base_dir: Base directory for relative filesystem paths.
-                Required if using relative paths without leading slash.
-            http_endpoint: Default HTTP endpoint for @params paths.
+            http_endpoint: Default HTTP endpoint for endpoint fetch_mode.
             http_auth_config: HTTP authentication config with keys:
                 method ("none", "bearer", "basic"), token, user, password.
             cache: Optional TieredCache for MD5-based content caching.
@@ -160,61 +149,33 @@ class AttachmentManager:
 
         Args:
             path: The storage_path value from attachment dict.
-            fetch_mode: Explicit fetch mode. If provided, overrides prefix-based
-                detection. Valid values: "endpoint", "storage", "http_url", "base64".
+            fetch_mode: Explicit fetch mode (required). Valid values:
+                "endpoint", "storage", "http_url", "base64".
 
         Returns:
             Tuple of (path_type, parsed_path) where path_type is one of:
-            "storage", "base64", "filesystem", "http".
+            "storage", "base64", "http".
 
         Raises:
-            ValueError: If path format is invalid or unsupported.
+            ValueError: If fetch_mode is missing or invalid.
         """
         if not path:
             raise ValueError("Empty storage_path")
 
-        # If fetch_mode is explicitly specified, use it
-        if fetch_mode:
-            if fetch_mode == "endpoint":
-                return ("http", path)
-            if fetch_mode == "storage":
-                return ("storage", path)
-            if fetch_mode == "http_url":
-                # Wrap URL in brackets for HttpFetcher
-                return ("http", f"[{path}]")
-            if fetch_mode == "base64":
-                return ("base64", path)
-            raise ValueError(f"Unknown fetch_mode: {fetch_mode}")
+        if not fetch_mode:
+            raise ValueError("fetch_mode is required")
 
-        # Legacy prefix-based detection
-        # HTTP: starts with @
-        if path.startswith("@"):
-            return ("http", path[1:])
+        if fetch_mode == "endpoint":
+            return ("http", path)
+        if fetch_mode == "storage":
+            return ("storage", path)
+        if fetch_mode == "http_url":
+            # Wrap URL in brackets for HttpFetcher
+            return ("http", f"[{path}]")
+        if fetch_mode == "base64":
+            return ("base64", path)
 
-        # Base64: starts with "base64:"
-        if path.startswith("base64:"):
-            return ("base64", path[7:])
-
-        # Absolute filesystem path: starts with /
-        if path.startswith("/"):
-            return ("filesystem", path)
-
-        # Check for volume:path format (genro-storage)
-        if ":" in path:
-            # Could be volume:path or windows path like C:\
-            # Volume names don't contain slashes before the colon
-            colon_pos = path.index(":")
-            potential_volume = path[:colon_pos]
-            if "/" not in potential_volume and "\\" not in potential_volume:
-                # Looks like volume:path
-                if not self._storage_fetcher:
-                    raise RuntimeError(
-                        f"genro-storage required for volume path: {path}"
-                    )
-                return ("storage", path)
-
-        # Relative filesystem path
-        return ("filesystem", path)
+        raise ValueError(f"Unknown fetch_mode: {fetch_mode}")
 
     async def fetch(self, att: Dict[str, Any]) -> Optional[Tuple[bytes, str]]:
         """Retrieve attachment content with caching and filename cleanup.

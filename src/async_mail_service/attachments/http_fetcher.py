@@ -4,9 +4,7 @@ This module provides a fetcher for attachments served via HTTP endpoints.
 It supports batching multiple requests to the same server into a single
 POST request with multipart response for efficiency.
 
-Supported path formats:
-- "@params" - POST to default endpoint with params as body
-- "@[url]params" - POST to specific URL with params as body
+The fetcher sends POST requests with JSON body containing the storage_path.
 
 Example:
     Fetching attachments via HTTP::
@@ -16,13 +14,13 @@ Example:
             auth_config={"method": "bearer", "token": "secret"}
         )
 
-        # Single fetch
-        content = await fetcher.fetch("doc_id=123&version=2")
+        # Single fetch - sends POST with {"storage_path": "vol:path/to/file.pdf"}
+        content = await fetcher.fetch("vol:path/to/file.pdf")
 
         # Batch fetch (more efficient)
         results = await fetcher.fetch_batch([
-            {"storage_path": "@doc_id=123"},
-            {"storage_path": "@doc_id=456"},
+            {"storage_path": "vol:path/to/file1.pdf", "fetch_mode": "endpoint"},
+            {"storage_path": "vol:path/to/file2.pdf", "fetch_mode": "endpoint"},
         ])
 """
 
@@ -119,7 +117,7 @@ class HttpFetcher:
     async def fetch(
         self, path: str, auth_override: Optional[Dict[str, str]] = None
     ) -> bytes:
-        """Fetch a single attachment via HTTP.
+        """Fetch a single attachment via HTTP POST with JSON body.
 
         Args:
             path: HTTP path (without the "@" prefix).
@@ -138,7 +136,7 @@ class HttpFetcher:
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 server_url,
-                data=params,
+                json={"storage_path": params},
                 headers=headers,
             ) as response:
                 response.raise_for_status()
@@ -155,8 +153,8 @@ class HttpFetcher:
         content containing all requested files.
 
         Args:
-            attachments: List of attachment dicts with "storage_path" key.
-                Paths should include the "@" prefix.
+            attachments: List of attachment dicts with "storage_path" and
+                "fetch_mode" keys.
 
         Returns:
             Dictionary mapping original storage_path to content bytes.
@@ -170,12 +168,11 @@ class HttpFetcher:
         by_server: Dict[str, List[Tuple[str, str]]] = {}
         for att in attachments:
             storage_path = att.get("storage_path", "")
-            if not storage_path.startswith("@"):
+            if not storage_path:
                 continue
 
-            path = storage_path[1:]  # Remove "@" prefix
             try:
-                server_url, params = self._parse_path(path)
+                server_url, params = self._parse_path(storage_path)
                 by_server.setdefault(server_url, []).append((storage_path, params))
             except ValueError:
                 continue
@@ -189,7 +186,7 @@ class HttpFetcher:
                     storage_path, params = items[0]
                     async with session.post(
                         server_url,
-                        data=params,
+                        json={"storage_path": params},
                         headers=headers,
                     ) as response:
                         response.raise_for_status()
@@ -208,7 +205,7 @@ class HttpFetcher:
                         for storage_path, params in items:
                             async with session.post(
                                 server_url,
-                                data=params,
+                                json={"storage_path": params},
                                 headers=headers,
                             ) as response:
                                 response.raise_for_status()

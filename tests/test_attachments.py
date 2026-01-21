@@ -11,8 +11,8 @@ async def test_attachment_manager_without_storage():
     """Test AttachmentManager raises error for volume paths without storage_manager."""
     mgr = AttachmentManager(storage_manager=None)
     # Without storage, fetch for volume path should raise RuntimeError
-    with pytest.raises(RuntimeError, match="genro-storage required"):
-        await mgr.fetch({"filename": "a.txt", "storage_path": "vol:path/to/file"})
+    with pytest.raises(RuntimeError, match="genro-storage not available"):
+        await mgr.fetch({"filename": "a.txt", "storage_path": "vol:path/to/file", "fetch_mode": "storage"})
 
 
 @pytest.mark.asyncio
@@ -80,7 +80,7 @@ async def test_attachment_manager_with_mock_storage(monkeypatch):
     mock_storage = MockStorageManager()
     mgr = AttachmentManager(storage_manager=mock_storage)
 
-    result = await mgr.fetch({"filename": "test.txt", "storage_path": "vol:test.txt"})
+    result = await mgr.fetch({"filename": "test.txt", "storage_path": "vol:test.txt", "fetch_mode": "storage"})
     assert result is not None
     content, filename = result
     assert content == expected_content

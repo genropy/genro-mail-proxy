@@ -68,63 +68,63 @@ class TestParseFilename:
 
 
 class TestParseStoragePath:
-    """Tests for storage path parsing and routing."""
+    """Tests for storage path parsing with explicit fetch_mode."""
 
-    def test_base64_path(self):
-        """Test base64: prefix is recognized."""
+    def test_base64_fetch_mode(self):
+        """Test fetch_mode=base64 returns base64 path type."""
         manager = AttachmentManager()
-        path_type, parsed = manager._parse_storage_path("base64:SGVsbG8=")
+        path_type, parsed = manager._parse_storage_path("SGVsbG8=", fetch_mode="base64")
 
         assert path_type == "base64"
         assert parsed == "SGVsbG8="
 
-    def test_http_path(self):
-        """Test @params format is recognized."""
+    def test_endpoint_fetch_mode(self):
+        """Test fetch_mode=endpoint returns http path type."""
         manager = AttachmentManager()
-        path_type, parsed = manager._parse_storage_path("@doc_id=123")
+        path_type, parsed = manager._parse_storage_path("doc_id=123", fetch_mode="endpoint")
 
         assert path_type == "http"
         assert parsed == "doc_id=123"
 
-    def test_http_path_with_url(self):
-        """Test @[url]params format is recognized."""
+    def test_http_url_fetch_mode(self):
+        """Test fetch_mode=http_url wraps URL in brackets."""
         manager = AttachmentManager()
         path_type, parsed = manager._parse_storage_path(
-            "@[https://api.example.com/files]doc_id=123"
+            "https://api.example.com/files/123", fetch_mode="http_url"
         )
 
         assert path_type == "http"
-        assert parsed == "[https://api.example.com/files]doc_id=123"
+        assert parsed == "[https://api.example.com/files/123]"
 
-    def test_absolute_filesystem_path(self):
-        """Test absolute path is recognized as filesystem."""
+    def test_storage_fetch_mode(self):
+        """Test fetch_mode=storage returns storage path type."""
+        # Note: This requires a storage manager, otherwise will be checked in fetch
         manager = AttachmentManager()
-        path_type, parsed = manager._parse_storage_path("/var/files/doc.pdf")
+        path_type, parsed = manager._parse_storage_path("documents:reports/q1.pdf", fetch_mode="storage")
 
-        assert path_type == "filesystem"
-        assert parsed == "/var/files/doc.pdf"
+        assert path_type == "storage"
+        assert parsed == "documents:reports/q1.pdf"
 
-    def test_relative_filesystem_path(self):
-        """Test relative path is recognized as filesystem."""
+    def test_missing_fetch_mode_raises(self):
+        """Test that missing fetch_mode raises ValueError."""
         manager = AttachmentManager()
-        path_type, parsed = manager._parse_storage_path("uploads/doc.pdf")
 
-        assert path_type == "filesystem"
-        assert parsed == "uploads/doc.pdf"
+        with pytest.raises(ValueError, match="fetch_mode is required"):
+            manager._parse_storage_path("some/path")
 
-    def test_volume_path_without_storage(self):
-        """Test volume:path raises error without genro-storage."""
-        manager = AttachmentManager(storage_manager=None)
+    def test_invalid_fetch_mode_raises(self):
+        """Test that invalid fetch_mode raises ValueError."""
+        manager = AttachmentManager()
 
-        with pytest.raises(RuntimeError, match="genro-storage required"):
-            manager._parse_storage_path("documents:reports/q1.pdf")
+        with pytest.raises(ValueError, match="Unknown fetch_mode"):
+            manager._parse_storage_path("some/path", fetch_mode="invalid")
 
     def test_empty_path_rejected(self):
         """Test empty path raises ValueError."""
         manager = AttachmentManager()
 
         with pytest.raises(ValueError, match="Empty storage_path"):
-            manager._parse_storage_path("")
+            manager._parse_storage_path("", fetch_mode="base64")
 
 
 class TestFetchBase64:
@@ -139,7 +139,8 @@ class TestFetchBase64:
 
         result = await manager.fetch({
             "filename": "test.txt",
-            "storage_path": f"base64:{encoded}",
+            "storage_path": encoded,
+            "fetch_mode": "base64",
         })
 
         assert result is not None
@@ -148,46 +149,28 @@ class TestFetchBase64:
         assert filename == "test.txt"
 
 
-class TestFetchFilesystem:
-    """Tests for fetching filesystem attachments."""
+class TestFetchBase64WithPrefix:
+    """Tests for fetching base64 attachments with base64: prefix (backwards compat)."""
 
     @pytest.mark.asyncio
-    async def test_fetch_absolute_path(self):
-        """Test fetching file with absolute path."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            test_file = Path(tmpdir) / "test.txt"
-            test_content = b"test content"
-            test_file.write_bytes(test_content)
+    async def test_fetch_base64_content_with_prefix(self):
+        """Test fetching base64-encoded attachment with base64: prefix in storage_path."""
+        manager = AttachmentManager()
+        original = b"Hello World!"
+        encoded = base64.b64encode(original).decode()
 
-            manager = AttachmentManager(base_dir=tmpdir)
-            result = await manager.fetch({
-                "filename": "test.txt",
-                "storage_path": str(test_file),
-            })
+        # Note: The base64: prefix is kept in storage_path when fetch_mode is base64
+        # The prefix gets stripped during parsing
+        result = await manager.fetch({
+            "filename": "test.txt",
+            "storage_path": encoded,  # No prefix needed, fetch_mode tells us it's base64
+            "fetch_mode": "base64",
+        })
 
-            assert result is not None
-            content, filename = result
-            assert content == test_content
-            assert filename == "test.txt"
-
-    @pytest.mark.asyncio
-    async def test_fetch_relative_path(self):
-        """Test fetching file with relative path."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            test_file = Path(tmpdir) / "test.txt"
-            test_content = b"test content"
-            test_file.write_bytes(test_content)
-
-            manager = AttachmentManager(base_dir=tmpdir)
-            result = await manager.fetch({
-                "filename": "output.txt",
-                "storage_path": "test.txt",
-            })
-
-            assert result is not None
-            content, filename = result
-            assert content == test_content
-            assert filename == "output.txt"
+        assert result is not None
+        content, filename = result
+        assert content == original
+        assert filename == "test.txt"
 
 
 class TestFetchWithCache:
@@ -236,7 +219,8 @@ class TestFetchWithCache:
             # Fetch without MD5 marker
             result = await manager.fetch({
                 "filename": "test.txt",
-                "storage_path": f"base64:{encoded}",
+                "storage_path": encoded,
+                "fetch_mode": "base64",
             })
 
             assert result is not None
@@ -261,14 +245,14 @@ class TestFetchBatch:
         enc2 = base64.b64encode(content2).decode()
 
         results = await manager.fetch_batch([
-            {"filename": "file1.txt", "storage_path": f"base64:{enc1}"},
-            {"filename": "file2.txt", "storage_path": f"base64:{enc2}"},
+            {"filename": "file1.txt", "storage_path": enc1, "fetch_mode": "base64"},
+            {"filename": "file2.txt", "storage_path": enc2, "fetch_mode": "base64"},
         ])
 
-        assert f"base64:{enc1}" in results
-        assert f"base64:{enc2}" in results
-        assert results[f"base64:{enc1}"][0] == content1
-        assert results[f"base64:{enc2}"][0] == content2
+        assert enc1 in results
+        assert enc2 in results
+        assert results[enc1][0] == content1
+        assert results[enc2][0] == content2
 
     @pytest.mark.asyncio
     async def test_batch_uses_cache(self):

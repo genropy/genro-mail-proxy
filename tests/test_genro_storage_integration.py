@@ -17,7 +17,8 @@ async def test_base64_attachment_fetch():
     b64_content = base64.b64encode(b"Hello World").decode()
     att = {
         "filename": "test.txt",
-        "storage_path": f"base64:{b64_content}"
+        "storage_path": b64_content,
+        "fetch_mode": "base64",
     }
 
     result = await manager.fetch(att)
@@ -45,7 +46,8 @@ async def test_storage_path_attachment(tmp_path):
 
     att = {
         "filename": "test_document.pdf",
-        "storage_path": "local-test:test_document.pdf"
+        "storage_path": "local-test:test_document.pdf",
+        "fetch_mode": "storage",
     }
 
     # Fetch the attachment
@@ -80,14 +82,14 @@ async def test_attachment_from_multiple_volumes(tmp_path):
     manager = AttachmentManager(storage_manager=storage)
 
     # Fetch from volume 1
-    att1 = {"filename": "doc1.txt", "storage_path": "vol1:doc1.txt"}
+    att1 = {"filename": "doc1.txt", "storage_path": "vol1:doc1.txt", "fetch_mode": "storage"}
     result1 = await manager.fetch(att1)
     assert result1 is not None
     content1, _ = result1
     assert content1 == b"Content from volume 1"
 
     # Fetch from volume 2
-    att2 = {"filename": "doc2.txt", "storage_path": "vol2:doc2.txt"}
+    att2 = {"filename": "doc2.txt", "storage_path": "vol2:doc2.txt", "fetch_mode": "storage"}
     result2 = await manager.fetch(att2)
     assert result2 is not None
     content2, _ = result2
@@ -106,7 +108,8 @@ async def test_attachment_not_found_raises(tmp_path):
 
     att = {
         "filename": "nonexistent.pdf",
-        "storage_path": "test:nonexistent.pdf"
+        "storage_path": "test:nonexistent.pdf",
+        "fetch_mode": "storage",
     }
 
     # Should raise an error when file doesn't exist
@@ -157,7 +160,7 @@ async def test_binary_file_handling(tmp_path):
 
     manager = AttachmentManager(storage_manager=storage)
 
-    att = {"filename": "binary.dat", "storage_path": "bin:binary.dat"}
+    att = {"filename": "binary.dat", "storage_path": "bin:binary.dat", "fetch_mode": "storage"}
     result = await manager.fetch(att)
     assert result is not None
     content, _ = result
@@ -181,7 +184,7 @@ async def test_large_file_handling(tmp_path):
 
     manager = AttachmentManager(storage_manager=storage)
 
-    att = {"filename": "large.bin", "storage_path": "large:large.bin"}
+    att = {"filename": "large.bin", "storage_path": "large:large.bin", "fetch_mode": "storage"}
     result = await manager.fetch(att)
     assert result is not None
     content, _ = result
@@ -209,7 +212,8 @@ async def test_nested_path_handling(tmp_path):
 
     att = {
         "filename": "report.pdf",
-        "storage_path": "docs:documents/2024/reports/report.pdf"
+        "storage_path": "docs:documents/2024/reports/report.pdf",
+        "fetch_mode": "storage",
     }
     result = await manager.fetch(att)
     assert result is not None
@@ -230,7 +234,8 @@ async def test_volume_not_configured_raises():
 
     att = {
         "filename": "test.txt",
-        "storage_path": "unconfigured:test.txt"
+        "storage_path": "unconfigured:test.txt",
+        "fetch_mode": "storage",
     }
 
     # Should raise error for unconfigured volume
@@ -258,7 +263,7 @@ async def test_concurrent_fetches(tmp_path):
     # Create fetch tasks
     tasks = []
     for i in range(10):
-        att = {"filename": f"file{i}.txt", "storage_path": f"concurrent:file{i}.txt"}
+        att = {"filename": f"file{i}.txt", "storage_path": f"concurrent:file{i}.txt", "fetch_mode": "storage"}
         tasks.append(manager.fetch(att))
 
     # Fetch all concurrently
@@ -288,7 +293,7 @@ async def test_storage_manager_add_volumes(tmp_path):
 
     manager = AttachmentManager(storage_manager=storage)
 
-    att1 = {"filename": "test.txt", "storage_path": "initial:test.txt"}
+    att1 = {"filename": "test.txt", "storage_path": "initial:test.txt", "fetch_mode": "storage"}
     result1 = await manager.fetch(att1)
     assert result1 is not None
     content1, _ = result1
@@ -300,7 +305,7 @@ async def test_storage_manager_add_volumes(tmp_path):
     ])
 
     # Both volumes should work
-    att2 = {"filename": "test.txt", "storage_path": "another:test.txt"}
+    att2 = {"filename": "test.txt", "storage_path": "another:test.txt", "fetch_mode": "storage"}
     result2 = await manager.fetch(att2)
     assert result2 is not None
     content2, _ = result2
