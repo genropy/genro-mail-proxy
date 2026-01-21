@@ -152,65 +152,34 @@ def _generate_api_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-DEFAULT_CONFIG_TEMPLATE = """\
-# genro-mail-proxy configuration
-# Generated automatically - edit as needed
+def _get_next_available_port(start_port: int = 8000) -> int:
+    """Find the next available port by checking existing instances.
 
-[server]
-# Instance name for identification
-name = {name}
+    Reads the 'port' config from each instance's database and returns
+    the next available port starting from start_port.
+    """
+    mail_proxy_dir = Path.home() / ".mail-proxy"
 
-# Database path
-db_path = {db_path}
+    if not mail_proxy_dir.exists():
+        return start_port
 
-# Server binding
-host = {host}
-port = {port}
+    used_ports = set()
 
-# API token for authentication (auto-generated)
-api_token = {api_token}
+    # Read port from each instance's database
+    for item in mail_proxy_dir.iterdir():
+        if item.is_dir():
+            db_file = item / "mail_service.db"
+            if db_file.exists():
+                config = _get_instance_config(item.name)
+                if config and config.get("port"):
+                    used_ports.add(config["port"])
 
-[scheduler]
-# Start scheduler active (true/false)
-start_active = true
+    # Find next available port
+    port = start_port
+    while port in used_ports:
+        port += 1
 
-# Dispatch loop interval in seconds
-send_loop_interval = 0.5
-
-# Messages per account per dispatch cycle
-batch_size_per_account = 50
-
-[retry]
-# Maximum retry attempts for temporary failures
-max_retries = 5
-
-# Retry delays in seconds (comma-separated)
-retry_delays = 60, 300, 900, 3600, 7200
-
-[attachments]
-# Base directory for relative filesystem paths
-# base_dir = /var/mail-proxy/attachments
-
-# Default HTTP endpoint for @params paths
-# default_endpoint = https://api.example.com/attachments
-# auth_method = bearer
-# auth_token =
-
-# Cache settings (uncomment to enable)
-# cache_disk_dir = /var/mail-proxy/cache
-# cache_memory_max_mb = 50
-# cache_disk_max_mb = 500
-
-[client_sync]
-# Base URL for delivery report callbacks
-# client_base_url = https://api.example.com
-
-# Authentication (bearer or basic)
-# auth_method = bearer
-# auth_token =
-# auth_user =
-# auth_password =
-"""
+    return port
 
 
 def _ensure_instance(name: str, port: int = 8000, host: str = "0.0.0.0") -> Dict[str, Any]:
@@ -218,51 +187,56 @@ def _ensure_instance(name: str, port: int = 8000, host: str = "0.0.0.0") -> Dict
 
     Returns the instance config.
     """
-    config_dir = _get_instance_dir(name)
-    config_file = config_dir / "config.ini"
-    db_path = str(config_dir / "mail_service.db")
+    instance_dir = _get_instance_dir(name)
+    db_path = str(instance_dir / "mail_service.db")
 
-    if not config_file.exists():
-        # Create directory if needed
-        config_dir.mkdir(parents=True, exist_ok=True)
+    # Create directory if needed
+    instance_dir.mkdir(parents=True, exist_ok=True)
 
-        # Generate API token automatically
-        api_token = _generate_api_token()
+    # Initialize DB and save config
+    persistence = Persistence(db_path)
 
-        # Generate default config
-        config_content = DEFAULT_CONFIG_TEMPLATE.format(
-            name=name,
-            db_path=db_path,
-            port=port,
-            host=host,
-            api_token=api_token,
-        )
-        config_file.write_text(config_content)
-        console.print(f"[green]Created new instance:[/green] {name}")
-        console.print(f"  Config: {config_file}")
-        console.print(f"  API Token: {api_token}")
+    async def _init():
+        await persistence.init_db()
+        # Check if already configured
+        existing_token = await persistence.get_config("api_token")
+        if not existing_token:
+            # First initialization
+            api_token = _generate_api_token()
+            await persistence.set_config("api_token", api_token)
+            await persistence.set_config("name", name)
+            await persistence.set_config("host", host)
+            await persistence.set_config("port", str(port))
+            await persistence.set_config("start_active", "true")
+            console.print(f"[green]Created new instance:[/green] {name}")
+            console.print(f"  API Token: {api_token}")
 
+    run_async(_init())
     return _get_instance_config(name)
 
 
 def _get_instance_config(name: str) -> Optional[Dict[str, Any]]:
-    """Read instance configuration from config.ini."""
-    import configparser
-
-    config_file = _get_instance_dir(name) / "config.ini"
-    if not config_file.exists():
+    """Read instance configuration from database."""
+    db_path = _get_db_path(name)
+    if not Path(db_path).exists():
         return None
 
-    config = configparser.ConfigParser()
-    config.read(config_file)
+    persistence = Persistence(db_path)
+
+    async def _get():
+        await persistence.init_db()
+        return await persistence.get_all_config()
+
+    config = run_async(_get())
+    if not config:
+        return None
 
     return {
-        "name": config.get("server", "name", fallback=name),
-        "db_path": config.get("server", "db_path", fallback=str(_get_instance_dir(name) / "mail_service.db")),
-        "host": config.get("server", "host", fallback="0.0.0.0"),
-        "port": config.getint("server", "port", fallback=8000),
-        "api_token": config.get("server", "api_token", fallback=None) or None,
-        "config_file": str(config_file),
+        "name": config.get("name", name),
+        "db_path": db_path,
+        "host": config.get("host", "0.0.0.0"),
+        "port": int(config.get("port", "8000")),
+        "api_token": config.get("api_token"),
     }
 
 
@@ -333,43 +307,40 @@ def list_instances() -> None:
 
     Shows all instances in ~/.mail-proxy/ with running status.
     """
-    import configparser
-
     mail_proxy_dir = Path.home() / ".mail-proxy"
 
     if not mail_proxy_dir.exists():
         console.print("[dim]No instances configured.[/dim]")
-        console.print("Use 'mail-proxy <name> serve start' to create one.")
+        console.print("Use 'mail-proxy start <name>' to create one.")
         return
 
-    # Find all instance directories (those with config.ini)
+    # Find all instance directories (those with mail_service.db)
     instances = []
     for item in mail_proxy_dir.iterdir():
         if item.is_dir():
-            config_file = item / "config.ini"
-            if config_file.exists():
-                # Parse config to get details
-                config = configparser.ConfigParser()
-                config.read(config_file)
-
+            db_file = item / "mail_service.db"
+            if db_file.exists():
                 instance_name = item.name
-                port = config.getint("server", "port", fallback=8000)
-                host = config.get("server", "host", fallback="0.0.0.0")
+                config = _get_instance_config(instance_name)
 
-                # Check if running
-                is_running, pid, running_port = _is_instance_running(instance_name)
+                if config:
+                    port = config.get("port", 8000)
+                    host = config.get("host", "0.0.0.0")
 
-                instances.append({
-                    "name": instance_name,
-                    "port": running_port or port,
-                    "host": host,
-                    "running": is_running,
-                    "pid": pid,
-                })
+                    # Check if running
+                    is_running, pid, running_port = _is_instance_running(instance_name)
+
+                    instances.append({
+                        "name": instance_name,
+                        "port": running_port or port,
+                        "host": host,
+                        "running": is_running,
+                        "pid": pid,
+                    })
 
     if not instances:
         console.print("[dim]No instances configured.[/dim]")
-        console.print("Use 'mail-proxy <name> serve start' to create one.")
+        console.print("Use 'mail-proxy start <name>' to create one.")
         return
 
     table = Table(title="Mail Proxy Instances")
@@ -536,6 +507,7 @@ def _create_instance_group(instance_name: str) -> click.Group:
             click.echo(ctx.get_help())
 
     # Add instance-level commands
+    _add_instance_info_command(instance_group, instance_name)
     _add_tenants_commands(instance_group, instance_name)
     _add_stats_command(instance_group, instance_name)
     _add_connect_command(instance_group, instance_name)
@@ -570,16 +542,16 @@ def _do_start_instance(instance_name: str, host: Optional[str], port: Optional[i
     instance_config = _get_instance_config(instance_name)
 
     if instance_config is None:
-        # New instance - use provided values or defaults
+        # New instance - use provided values or find next available port
         host = host or "0.0.0.0"
-        port = port or 8000
+        if port is None:
+            port = _get_next_available_port()
         instance_config = _ensure_instance(instance_name, port, host)
     else:
         # Existing instance - use config values, allow override
         host = host or instance_config["host"]
         port = port or instance_config["port"]
 
-    config_path = instance_config["config_file"]
     db_path = instance_config["db_path"]
 
     if background:
@@ -589,11 +561,16 @@ def _do_start_instance(instance_name: str, host: Optional[str], port: Optional[i
         if reload:
             cmd.append("--reload")
 
+        # Pass only GMP_DB_PATH - server reads all config from database
+        env = os.environ.copy()
+        env["GMP_DB_PATH"] = db_path
+
         subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
+            env=env,
         )
 
         # Wait for server to be ready
@@ -616,15 +593,10 @@ def _do_start_instance(instance_name: str, host: Optional[str], port: Optional[i
         console.print("[yellow]Server starting in background...[/yellow]")
         return
 
-    # Set environment variables for config (used by server.py)
-    os.environ["GMP_CONFIG_FILE"] = config_path
-    os.environ["GMP_INSTANCE_NAME"] = instance_name
+    # Set environment variable for server.py (reads all config from database)
     os.environ["GMP_DB_PATH"] = db_path
-    os.environ["GMP_PORT"] = str(port)
-    os.environ["GMP_HOST"] = host
 
     console.print(f"\n[bold cyan]Starting {instance_name}[/bold cyan]")
-    console.print(f"  Config:  {config_path}")
     console.print(f"  DB:      {db_path}")
     console.print(f"  Listen:  {host}:{port}")
     console.print()
@@ -678,13 +650,13 @@ def _do_status_instance(instance_name: str) -> None:
         console.print(f"  PID:     {pid}")
         console.print(f"  Port:    {port}")
         console.print(f"  URL:     http://localhost:{port}")
-    console.print(f"  Config:  {config['config_file']}")
     console.print(f"  DB:      {config['db_path']}")
     console.print()
 
 
 def _do_restart_instance(instance_name: str, force: bool, reload: bool) -> None:
     """Restart an instance."""
+    import os
     import signal as sig
     import subprocess
     import time
@@ -716,11 +688,16 @@ def _do_restart_instance(instance_name: str, force: bool, reload: bool) -> None:
     if reload:
         cmd.append("--reload")
 
+    # Pass only GMP_DB_PATH - server reads all config from database
+    env = os.environ.copy()
+    env["GMP_DB_PATH"] = config["db_path"]
+
     subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
+        env=env,
     )
 
     # Wait for startup
@@ -856,7 +833,10 @@ def _add_tenants_commands(group: click.Group, instance_name: str) -> None:
 
         if tenant_data.get("client_auth"):
             auth = tenant_data["client_auth"]
-            console.print(f"  Auth Method:     {auth.get('method', 'none')}")
+            method = auth.get('method', 'none')
+            console.print(f"  Auth Method:     {method}")
+            if method == "basic" and auth.get("user"):
+                console.print(f"  Auth User:       {auth.get('user')}")
 
         if tenant_data.get("rate_limits"):
             limits = tenant_data["rate_limits"]
@@ -1074,6 +1054,53 @@ def _add_tenants_commands(group: click.Group, instance_name: str) -> None:
 
 
 # ============================================================================
+# INSTANCE INFO command
+# ============================================================================
+
+def _add_instance_info_command(group: click.Group, instance_name: str) -> None:
+    """Add info command for instance."""
+
+    @group.command("info")
+    @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+    def info(as_json: bool) -> None:
+        """Show instance configuration and status."""
+        config = _get_instance_config(instance_name)
+        if not config:
+            print_error(f"Instance '{instance_name}' not found.")
+            sys.exit(1)
+
+        is_running, pid, running_port = _is_instance_running(instance_name)
+
+        data = {
+            "name": config["name"],
+            "db_path": config["db_path"],
+            "host": config["host"],
+            "port": config["port"],
+            "api_token": config.get("api_token"),
+            "status": "running" if is_running else "stopped",
+            "pid": pid,
+        }
+
+        if as_json:
+            print_json(data)
+            return
+
+        console.print(f"\n[bold cyan]Instance: {instance_name}[/bold cyan]\n")
+        console.print(f"  Database:    {config['db_path']}")
+        console.print(f"  Host:        {config['host']}")
+        console.print(f"  Port:        {config['port']}")
+        console.print(f"  API Token:   {config.get('api_token') or '-'}")
+
+        if is_running:
+            console.print(f"  Status:      [green]Running[/green] (PID: {pid})")
+            console.print(f"  URL:         http://localhost:{running_port or config['port']}")
+        else:
+            console.print(f"  Status:      [dim]Stopped[/dim]")
+
+        console.print()
+
+
+# ============================================================================
 # STATS command
 # ============================================================================
 
@@ -1219,6 +1246,51 @@ def _add_connect_command(group: click.Group, instance_name: str) -> None:
 
 
 # ============================================================================
+# RUN-NOW command (tenant-level)
+# ============================================================================
+
+def _add_run_now_command(group: click.Group, instance_name: str, tenant_id: str) -> None:
+    """Add run-now command to trigger immediate dispatch cycle for a tenant."""
+
+    @group.command("run-now")
+    def run_now_cmd() -> None:
+        """Trigger immediate dispatch and sync cycle for this tenant."""
+        config = _get_instance_config(instance_name)
+        if not config:
+            print_error(f"Instance '{instance_name}' not found or not configured.")
+            sys.exit(1)
+
+        running, pid, port = _is_instance_running(instance_name)
+        if not running:
+            print_error(f"Instance '{instance_name}' is not running.")
+            sys.exit(1)
+
+        host = config.get("host", "127.0.0.1")
+        if host == "0.0.0.0":
+            host = "127.0.0.1"
+        token = config.get("api_token")
+
+        import requests
+        try:
+            headers = {"X-API-Token": token} if token else {}
+            resp = requests.post(
+                f"http://{host}:{port}/commands/run-now",
+                headers=headers,
+                params={"tenant_id": tenant_id},
+                timeout=10
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            if result.get("ok"):
+                print_success(f"Dispatch cycle triggered for tenant '{tenant_id}'.")
+            else:
+                print_error(f"Server returned: {result}")
+        except requests.RequestException as e:
+            print_error(f"Failed to trigger run-now: {e}")
+            sys.exit(1)
+
+
+# ============================================================================
 # TOKEN command
 # ============================================================================
 
@@ -1229,40 +1301,29 @@ def _add_token_command(group: click.Group, instance_name: str) -> None:
     @click.option("--regenerate", "-r", is_flag=True, help="Generate a new token.")
     def token_cmd(regenerate: bool) -> None:
         """Show or regenerate the API token for this instance."""
-        import configparser
+        persistence = _get_persistence_for_instance(instance_name)
 
-        config_dir = _get_instance_dir(instance_name)
-        config_file = config_dir / "config.ini"
+        async def _token():
+            await persistence.init_db()
+            if regenerate:
+                new_token = _generate_api_token()
+                await persistence.set_config("api_token", new_token)
+                return new_token, True
+            return await persistence.get_config("api_token"), False
 
-        if not config_file.exists():
-            print_error(f"Instance '{instance_name}' not found.")
-            sys.exit(1)
+        token, is_new = run_async(_token())
 
-        config = configparser.ConfigParser()
-        config.read(config_file)
-
-        if regenerate:
-            new_token = _generate_api_token()
-
-            if not config.has_section("server"):
-                config.add_section("server")
-            config.set("server", "api_token", new_token)
-
-            with open(config_file, "w") as f:
-                config.write(f)
-
+        if is_new:
             console.print(f"[green]Token regenerated for instance:[/green] {instance_name}")
             console.print(f"[yellow]Note:[/yellow] Restart the instance for the new token to take effect.")
-            console.print(f"\n{new_token}")
+            console.print(f"\n{token}")
         else:
-            token_value = config.get("server", "api_token", fallback=None)
-
-            if not token_value or token_value.strip() == "":
+            if not token:
                 console.print(f"[yellow]No API token configured for instance:[/yellow] {instance_name}")
                 console.print("Use --regenerate to generate one.")
                 sys.exit(1)
 
-            console.print(token_value.strip())
+            console.print(token)
 
 
 # ============================================================================
@@ -1289,6 +1350,7 @@ def _create_tenant_group(instance_name: str, tenant_id: str) -> click.Group:
     _add_accounts_commands(tenant_group, instance_name, tenant_id)
     _add_messages_commands(tenant_group, instance_name, tenant_id)
     _add_send_command(tenant_group, instance_name, tenant_id)
+    _add_run_now_command(tenant_group, instance_name, tenant_id)
 
     return tenant_group
 
@@ -1327,7 +1389,10 @@ def _add_info_command(group: click.Group, instance_name: str, tenant_id: str) ->
 
         if tenant_data.get("client_auth"):
             auth = tenant_data["client_auth"]
-            console.print(f"  Auth Method:     {auth.get('method', 'none')}")
+            method = auth.get('method', 'none')
+            console.print(f"  Auth Method:     {method}")
+            if method == "basic" and auth.get("user"):
+                console.print(f"  Auth User:       {auth.get('user')}")
 
         if tenant_data.get("rate_limits"):
             limits = tenant_data["rate_limits"]

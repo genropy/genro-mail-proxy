@@ -114,9 +114,10 @@ class Persistence:
                 CREATE TABLE IF NOT EXISTS tenants (
                     id TEXT PRIMARY KEY,
                     name TEXT,
-                    client_sync_url TEXT,
-                    client_sync_auth TEXT,
-                    attachment_config TEXT,
+                    client_auth TEXT,
+                    client_base_url TEXT,
+                    client_sync_path TEXT,
+                    client_attachment_path TEXT,
                     rate_limits TEXT,
                     active INTEGER DEFAULT 1,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -218,6 +219,17 @@ class Persistence:
                 "CREATE INDEX IF NOT EXISTS idx_volumes_account ON volumes(account_id)"
             )
 
+            # Instance configuration table (replaces config.ini)
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS instance_config (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+
             await db.commit()
 
     # Tenants ------------------------------------------------------------------
@@ -225,22 +237,23 @@ class Persistence:
         """Insert or replace a tenant configuration.
 
         Args:
-            tenant: Dict with keys: id, name, client_sync_url, client_sync_auth,
-                   attachment_config, rate_limits, active.
+            tenant: Dict with keys: id, name, client_auth, client_base_url,
+                   client_sync_path, client_attachment_path, rate_limits, active.
         """
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
                 INSERT OR REPLACE INTO tenants
-                (id, name, client_sync_url, client_sync_auth, attachment_config, rate_limits, active, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                (id, name, client_auth, client_base_url, client_sync_path, client_attachment_path, rate_limits, active, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 """,
                 (
                     tenant["id"],
                     tenant.get("name"),
-                    tenant.get("client_sync_url"),
-                    json.dumps(tenant.get("client_sync_auth")) if tenant.get("client_sync_auth") else None,
-                    json.dumps(tenant.get("attachment_config")) if tenant.get("attachment_config") else None,
+                    json.dumps(tenant.get("client_auth")) if tenant.get("client_auth") else None,
+                    tenant.get("client_base_url"),
+                    tenant.get("client_sync_path"),
+                    tenant.get("client_attachment_path"),
                     json.dumps(tenant.get("rate_limits")) if tenant.get("rate_limits") else None,
                     1 if tenant.get("active", True) else 0,
                 ),
@@ -264,7 +277,7 @@ class Persistence:
                 tenant = dict(zip(cols, row))
 
         # Decode JSON fields
-        for field in ("client_sync_auth", "attachment_config", "rate_limits"):
+        for field in ("client_auth", "rate_limits"):
             if tenant.get(field):
                 tenant[field] = json.loads(tenant[field])
         tenant["active"] = bool(tenant.get("active", 1))
@@ -288,7 +301,7 @@ class Persistence:
         result = []
         for row in rows:
             tenant = dict(zip(cols, row))
-            for field in ("client_sync_auth", "attachment_config", "rate_limits"):
+            for field in ("client_auth", "rate_limits"):
                 if tenant.get(field):
                     tenant[field] = json.loads(tenant[field])
             tenant["active"] = bool(tenant.get("active", 1))
@@ -312,13 +325,13 @@ class Persistence:
         set_parts = []
         values = []
         for key, value in updates.items():
-            if key in ("client_sync_auth", "attachment_config", "rate_limits"):
+            if key in ("client_auth", "rate_limits"):
                 set_parts.append(f"{key} = ?")
                 values.append(json.dumps(value) if value else None)
             elif key == "active":
                 set_parts.append("active = ?")
                 values.append(1 if value else 0)
-            elif key in ("name", "client_sync_url"):
+            elif key in ("name", "client_base_url", "client_sync_path", "client_attachment_path"):
                 set_parts.append(f"{key} = ?")
                 values.append(value)
 
@@ -387,7 +400,7 @@ class Persistence:
                 cols = [c[0] for c in cur.description]
                 tenant = dict(zip(cols, row))
 
-        for field in ("client_sync_auth", "attachment_config", "rate_limits"):
+        for field in ("client_auth", "rate_limits"):
             if tenant.get(field):
                 tenant[field] = json.loads(tenant[field])
         tenant["active"] = bool(tenant.get("active", 1))
@@ -927,3 +940,48 @@ class Persistence:
 
         return result
 
+    # Instance config ------------------------------------------------------
+    async def get_config(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        """Get a configuration value by key.
+
+        Args:
+            key: The configuration key to retrieve.
+            default: Default value if key not found.
+
+        Returns:
+            The configuration value or default if not found.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT value FROM instance_config WHERE key = ?", (key,)
+            ) as cur:
+                row = await cur.fetchone()
+                return row[0] if row else default
+
+    async def set_config(self, key: str, value: str) -> None:
+        """Set a configuration value.
+
+        Args:
+            key: The configuration key.
+            value: The value to set.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO instance_config (key, value, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                """,
+                (key, value),
+            )
+            await db.commit()
+
+    async def get_all_config(self) -> Dict[str, str]:
+        """Get all configuration values.
+
+        Returns:
+            Dict mapping keys to values.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT key, value FROM instance_config") as cur:
+                rows = await cur.fetchall()
+        return {row[0]: row[1] for row in rows}
