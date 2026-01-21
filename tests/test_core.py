@@ -122,10 +122,10 @@ async def test_run_now_triggers_wakeup(tmp_path):
     await core.persistence.init_db()
     result = await core.handle_command("run now", {})
     assert result["ok"] is True
-    # "run now" wakes up only the client loop (for immediate report delivery)
-    # SMTP loop runs every 0.5s by default, which is fast enough
-    assert not core._wake_event.is_set()
-    assert core._wake_client_event.is_set()
+    # "run now" wakes up both loops for immediate processing
+    assert core._wake_event.is_set()  # SMTP dispatch loop
+    assert core._wake_client_event.is_set()  # Client report loop
+    core._wake_event.clear()
     core._wake_client_event.clear()
 
 
@@ -652,7 +652,7 @@ async def test_mime_type_fallback_when_not_specified(tmp_path):
 
 @pytest.mark.asyncio
 async def test_tenant_attachment_config_applied(tmp_path):
-    """Test that tenant's attachment_config is used for message attachments."""
+    """Test that tenant's client_base_url is used for message attachments."""
     core = await make_core(tmp_path)
 
     # Track which config was used
@@ -683,10 +683,8 @@ async def test_tenant_attachment_config_applied(tmp_path):
     await core.handle_command("addTenant", {
         "id": "tenant1",
         "name": "Test Tenant",
-        "attachment_config": {
-            "base_dir": "/tenant1/files",
-            "http_endpoint": "https://tenant1.example.com/attachments",
-        }
+        "client_base_url": "https://tenant1.example.com",
+        "client_attachment_path": "/attachments",
     })
 
     # Associate account with tenant
@@ -710,7 +708,8 @@ async def test_tenant_attachment_config_applied(tmp_path):
                 "attachments": [
                     {
                         "filename": "report.pdf",
-                        "storage_path": "base64:dGVzdA=="
+                        "storage_path": "dGVzdA==",
+                        "fetch_mode": "base64"
                     }
                 ]
             }
@@ -730,14 +729,14 @@ async def test_tenant_attachment_config_applied(tmp_path):
 
 @pytest.mark.asyncio
 async def test_tenant_attachment_config_fallback_to_global(tmp_path):
-    """Test that global config is used when tenant has no attachment_config."""
+    """Test that global config is used when tenant has no client_base_url."""
     core = await make_core(tmp_path)
 
     # Create tenant WITHOUT attachment config
     await core.handle_command("addTenant", {
         "id": "tenant-no-config",
         "name": "Tenant No Config",
-        # No attachment_config
+        # No client_base_url
     })
 
     # Associate account with tenant

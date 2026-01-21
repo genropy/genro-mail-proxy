@@ -207,7 +207,7 @@ async def test_message_rejection_invalid_volume(tmp_path):
                 "subject": "Test",
                 "body": "Test body",
                 "attachments": [
-                    {"filename": "doc.pdf", "storage_path": "valid-storage:documents/doc.pdf"}
+                    {"filename": "doc.pdf", "storage_path": "valid-storage:documents/doc.pdf", "fetch_mode": "storage"}
                 ]
             }
         ]
@@ -228,7 +228,7 @@ async def test_message_rejection_invalid_volume(tmp_path):
                 "subject": "Test",
                 "body": "Test body",
                 "attachments": [
-                    {"filename": "doc.pdf", "storage_path": "invalid-storage:documents/doc.pdf"}
+                    {"filename": "doc.pdf", "storage_path": "invalid-storage:documents/doc.pdf", "fetch_mode": "storage"}
                 ]
             }
         ]
