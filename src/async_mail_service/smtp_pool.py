@@ -76,16 +76,17 @@ class SMTPPool:
         and performs authentication if credentials are provided. The connection
         process is wrapped in a timeout to prevent indefinite blocking.
 
-        For plain SMTP connections (use_tls=False), neither TLS nor STARTTLS
-        is used. For secure connections (use_tls=True), direct TLS is used
-        (typically on port 465).
+        TLS behavior based on port and use_tls flag:
+        - Port 465 with use_tls=True: Direct TLS (implicit TLS)
+        - Port 587 with use_tls=True: STARTTLS (upgrade plain to TLS)
+        - use_tls=False: Plain SMTP (no encryption)
 
         Args:
             host: SMTP server hostname or IP address.
             port: SMTP server port number (typically 25, 465, or 587).
             user: Username for SMTP authentication, or None for no auth.
             password: Password for SMTP authentication, or None for no auth.
-            use_tls: Whether to use direct TLS connection (implicit TLS).
+            use_tls: Whether to use TLS (direct TLS on 465, STARTTLS on other ports).
 
         Returns:
             A connected and optionally authenticated aiosmtplib.SMTP instance.
@@ -95,9 +96,18 @@ class SMTPPool:
             aiosmtplib.SMTPException: If connection or authentication fails.
         """
         # Use explicit 10 second timeout to prevent hanging connections
-        # For plain SMTP (use_tls=False): both use_tls and start_tls should be False
-        # For TLS/SSL (use_tls=True): use_tls=True, start_tls=False (direct TLS on port 465)
-        smtp = aiosmtplib.SMTP(hostname=host, port=port, start_tls=False, use_tls=use_tls, timeout=10.0)
+        # Port 465: Direct TLS (use_tls=True, start_tls=False)
+        # Port 587 or other with TLS: STARTTLS (use_tls=False, start_tls=True)
+        # No TLS: Plain connection (use_tls=False, start_tls=False)
+        if use_tls and port == 465:
+            # Direct TLS (implicit TLS) for port 465
+            smtp = aiosmtplib.SMTP(hostname=host, port=port, start_tls=False, use_tls=True, timeout=10.0)
+        elif use_tls:
+            # STARTTLS for other ports (typically 587)
+            smtp = aiosmtplib.SMTP(hostname=host, port=port, start_tls=True, use_tls=False, timeout=10.0)
+        else:
+            # Plain SMTP (no encryption)
+            smtp = aiosmtplib.SMTP(hostname=host, port=port, start_tls=False, use_tls=False, timeout=10.0)
         # Wrap in asyncio.wait_for to ensure we don't hang even if aiosmtplib timeout fails
         async def _do_connect():
             await smtp.connect()
