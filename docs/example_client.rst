@@ -178,7 +178,7 @@ Integration Flow
    │ genro-mail-proxy │────────► SMTP Server
    └────────┬─────────┘
             │
-            │ 3. POST /email/mailproxy/mp_endpoint/proxy_sync
+            │ 3. POST /delivery-report (to your app)
             │    (delivery reports)
             │
             ▼
@@ -363,8 +363,8 @@ Step 4: Receive Delivery Reports
 
 .. code-block:: python
 
-   @app.post("/email/mailproxy/mp_endpoint/proxy_sync")
-   async def proxy_sync(request: Request):
+   @app.post("/delivery-report")
+   async def delivery_report(request: Request):
        """Handle delivery confirmations from mail service."""
        data = await request.json()
        reports = data.get('reports', [])

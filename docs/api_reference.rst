@@ -13,7 +13,7 @@ is available at:
 * ReDoc: ``http://localhost:8000/redoc``
 
 All endpoints require the ``X-API-Token`` header when
-``[server] api_token`` (or ``API_TOKEN``) is configured.
+``GMP_API_TOKEN`` is configured.
 
 Core endpoints
 --------------
@@ -173,8 +173,8 @@ Outbound proxy sync
 -------------------
 
 Besides REST endpoints that clients call, the service also issues a
-``POST`` request to the configured ``proxy_sync_url`` whenever there are
-delivery results to share with Genropy.  Example payload:
+``POST`` request to the configured ``client_sync_url`` whenever there are
+delivery results to share with your application.  Example payload:
 
 The payload contains the delivery results read from the ``messages`` table:
 
@@ -203,7 +203,60 @@ The payload contains the delivery results read from the ``messages`` table:
      ]
    }
 
-The proxy replies with a JSON summary (for example ``{"sent": 12, "error": 1, "deferred": 3}``).
-Upon success the dispatcher sets ``reported_ts`` on the transmitted rows and
-cleans up any message whose ``reported_ts`` is older than the configured
-retention window.
+Your application should reply with a JSON summary (for example
+``{"sent": 12, "error": 1, "deferred": 3}``). Upon success the dispatcher sets
+``reported_ts`` on the transmitted rows and cleans up any message whose
+``reported_ts`` is older than the configured retention window.
+
+Client Callback Endpoints
+-------------------------
+
+These endpoints are **NOT** exposed by the proxy. Your application must implement
+them to receive callbacks from the proxy.
+
+Delivery Report Endpoint
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+The proxy sends delivery reports to your ``client_sync_url`` (configured per-tenant
+or globally). Your endpoint must:
+
+- Accept POST requests with JSON body containing ``delivery_report`` array
+- Return a JSON summary response
+
+Example implementation:
+
+.. code-block:: python
+
+   @app.post("/delivery-report")
+   async def receive_delivery_report(request: Request):
+       data = await request.json()
+       reports = data.get("delivery_report", [])
+
+       sent = sum(1 for r in reports if r.get("sent_ts"))
+       error = sum(1 for r in reports if r.get("error_ts"))
+       deferred = sum(1 for r in reports if r.get("deferred_ts"))
+
+       # Update your local database with delivery status...
+
+       return {"sent": sent, "error": error, "deferred": deferred}
+
+Attachment Endpoint (optional)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+If using ``fetch_mode: "endpoint"`` for attachments, the proxy fetches file content
+from your ``client_attachment_url``. Your endpoint receives a POST with the
+``storage_path`` value and must return the file content.
+
+Example implementation:
+
+.. code-block:: python
+
+   @app.post("/attachments")
+   async def serve_attachment(request: Request):
+       data = await request.json()
+       storage_path = data.get("storage_path")  # e.g., "doc_id=123"
+
+       # Parse storage_path and fetch file from your storage
+       file_content = fetch_file_from_storage(storage_path)
+
+       return Response(content=file_content, media_type="application/octet-stream")
