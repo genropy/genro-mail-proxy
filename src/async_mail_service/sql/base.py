@@ -1,8 +1,5 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
-"""Base adapter class for async database backends.
-
-Minimal SQL layer with adapter pattern, ready to be extracted to genro-sql.
-"""
+"""Base adapter class for async database backends."""
 
 from __future__ import annotations
 
@@ -16,10 +13,8 @@ if TYPE_CHECKING:
 class DbAdapter(ABC):
     """Abstract base class for async database adapters.
 
-    Adapters handle dialect-specific differences:
-    - Placeholder syntax (? for SQLite, %s for PostgreSQL)
-    - UPSERT syntax differences
-    - Connection management
+    Handles dialect-specific differences (placeholders, connection management).
+    All queries use ? placeholders, converted automatically for PostgreSQL.
     """
 
     placeholder: str = "?"  # Override in subclass

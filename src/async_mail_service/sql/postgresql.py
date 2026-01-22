@@ -1,8 +1,5 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
-"""PostgreSQL async adapter using psycopg3.
-
-Requires: pip install genro-mail-proxy[postgresql]
-"""
+"""PostgreSQL async adapter using psycopg3 with connection pooling."""
 
 from __future__ import annotations
 
@@ -15,10 +12,7 @@ if TYPE_CHECKING:
 
 
 class PostgresAdapter(DbAdapter):
-    """PostgreSQL async adapter using psycopg3 with connection pooling.
-
-    PostgreSQL uses %s placeholders. Queries with ? are converted automatically.
-    """
+    """PostgreSQL async adapter. Queries with ? are converted to %s automatically."""
 
     placeholder = "%s"
 
@@ -47,8 +41,6 @@ class PostgresAdapter(DbAdapter):
 
     def _convert_placeholders(self, query: str) -> str:
         """Convert ? placeholders to %s for psycopg."""
-        # Simple replacement - works for most cases
-        # Does not handle ? inside strings, but that's rare in our queries
         return query.replace("?", "%s")
 
     async def connect(self) -> None:

@@ -1,16 +1,10 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Minimal async SQL layer with adapter pattern.
 
-Ready to be extracted to genro-sql when needed.
-
 Usage:
-    # SQLite (default)
-    adapter = create_adapter("sqlite:/data/mail.db")
+    adapter = create_adapter("/data/mail.db")  # SQLite (path)
+    adapter = create_adapter("postgresql://user:pass@host/db")  # PostgreSQL
 
-    # PostgreSQL
-    adapter = create_adapter("postgresql://user:pass@localhost/db")
-
-    # Use adapter
     await adapter.connect()
     rows = await adapter.fetch_all("SELECT * FROM users WHERE active = ?", (1,))
     await adapter.close()

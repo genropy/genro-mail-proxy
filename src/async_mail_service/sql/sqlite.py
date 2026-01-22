@@ -14,11 +14,7 @@ if TYPE_CHECKING:
 
 
 class SqliteAdapter(DbAdapter):
-    """SQLite async adapter using aiosqlite.
-
-    SQLite uses ? placeholders natively.
-    Each method opens/closes its own connection for thread safety.
-    """
+    """SQLite async adapter. Opens connection per-operation for thread safety."""
 
     placeholder = "?"
 
