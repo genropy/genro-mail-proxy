@@ -69,7 +69,24 @@ async def require_token(
 auth_dependency = Depends(require_token)
 
 class AccountPayload(BaseModel):
-    """SMTP account definition used when adding or updating accounts."""
+    """SMTP account definition used when adding or updating accounts.
+
+    Attributes:
+        id: Unique account identifier.
+        tenant_id: Parent tenant identifier. If None, account is not associated
+            with any tenant (standalone mode for single-tenant deployments).
+        host: SMTP server hostname.
+        port: SMTP server port.
+        user: SMTP username for authentication.
+        password: SMTP password for authentication.
+        ttl: Connection TTL in seconds (default: 300).
+        limit_per_minute: Max emails per minute (None = unlimited).
+        limit_per_hour: Max emails per hour (None = unlimited).
+        limit_per_day: Max emails per day (None = unlimited).
+        limit_behavior: Behavior when rate limit hit ("defer" or "reject").
+        use_tls: Use STARTTLS (port 587) or implicit TLS (port 465).
+        batch_size: Max messages per dispatch cycle.
+    """
     id: str
     tenant_id: str | None = None
     host: str
@@ -99,7 +116,27 @@ class BasicOkResponse(CommandStatus):
 
 
 class MessagePayload(BaseModel):
-    """Payload accepted by the ``addMessages`` command."""
+    """Payload accepted by the ``addMessages`` command.
+
+    Attributes:
+        id: Unique message identifier (client-provided).
+        account_id: SMTP account to use for sending. If None, uses the instance's
+            default SMTP settings (default_host, default_port, etc.).
+        from_addr: Sender email address (aliased as "from" in JSON).
+        to: Recipient address(es), string or list.
+        cc: CC address(es), string or list.
+        bcc: BCC address(es), string or list.
+        reply_to: Reply-To address.
+        return_path: Return-Path (envelope sender) address.
+        subject: Email subject.
+        body: Email body content.
+        content_type: Body content type ("plain" or "html").
+        headers: Additional custom email headers.
+        message_id: Custom Message-ID header.
+        attachments: List of attachment specifications.
+        priority: Message priority (0-3 or "immediate"/"high"/"medium"/"low").
+        deferred_ts: Unix timestamp to defer delivery until.
+    """
     model_config = ConfigDict(populate_by_name=True)
     id: str
     account_id: str | None = None
@@ -205,6 +242,7 @@ class TenantPayload(BaseModel):
     client_sync_path: str | None = None
     client_attachment_path: str | None = None
     rate_limits: dict[str, Any] | None = None
+    large_file_config: dict[str, Any] | None = None
     active: bool = True
 
 
@@ -216,6 +254,7 @@ class TenantUpdatePayload(BaseModel):
     client_sync_path: str | None = None
     client_attachment_path: str | None = None
     rate_limits: dict[str, Any] | None = None
+    large_file_config: dict[str, Any] | None = None
     active: bool | None = None
 
 
@@ -228,6 +267,7 @@ class TenantInfo(BaseModel):
     client_sync_path: str | None = None
     client_attachment_path: str | None = None
     rate_limits: dict[str, Any] | None = None
+    large_file_config: dict[str, Any] | None = None
     active: bool = True
     created_at: str | None = None
     updated_at: str | None = None

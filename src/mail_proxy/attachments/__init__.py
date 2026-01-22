@@ -9,18 +9,19 @@ Supported fetch_mode values:
 - endpoint - HTTP POST to tenant's attachment URL (base_url + attachment_path)
 - http_url - Direct HTTP fetch from URL in storage_path
 - base64 - Inline base64-encoded content in storage_path
+- filesystem - Local filesystem path (absolute or relative to base_dir)
 
 Additional attachment parameters:
 - content_md5: MD5 hash for cache lookup (alternative to filename marker)
 - auth: Authentication override for HTTP requests (uses TenantAuth format)
 
 MD5 marker in filename (legacy):
-The filename can include an MD5 marker in the format {MD5:hash} which
+The filename can include an MD5 marker in the format ``{MD5:hash}`` which
 enables cache lookup before fetching. The marker is stripped from the
 final filename.
 
 Example:
-    filename="report_{MD5:a1b2c3d4}.pdf" -> clean filename="report.pdf"
+    ``filename="report_{MD5:a1b2c3d4}.pdf"`` -> clean ``filename="report.pdf"``
 
 Example:
     Using AttachmentManager with explicit fetch_mode::
@@ -59,6 +60,7 @@ class AttachmentManager:
     - endpoint - HTTP POST to tenant's attachment URL
     - http_url - Direct HTTP fetch from URL
     - base64 - Inline base64-encoded content
+    - filesystem - Local filesystem path
 
     Attributes:
         _base64_fetcher: Fetcher for base64-encoded inline content.
@@ -95,7 +97,7 @@ class AttachmentManager:
     def parse_filename(filename: str) -> tuple[str, str | None]:
         """Extract MD5 marker from filename if present.
 
-        Parses filenames like "report_{MD5:a1b2c3d4}.pdf" to extract
+        Parses filenames like ``report_{MD5:a1b2c3d4}.pdf`` to extract
         the hash and return a clean filename.
 
         Args:
@@ -127,11 +129,11 @@ class AttachmentManager:
         Args:
             path: The storage_path value from attachment dict.
             fetch_mode: Explicit fetch mode (required). Valid values:
-                "endpoint", "http_url", "base64".
+                "endpoint", "http_url", "base64", "filesystem".
 
         Returns:
             Tuple of (path_type, parsed_path) where path_type is one of:
-            "base64", "http".
+            "base64", "http", "filesystem".
 
         Raises:
             ValueError: If fetch_mode is missing or invalid.
@@ -149,6 +151,8 @@ class AttachmentManager:
             return ("http", f"[{path}]")
         if fetch_mode == "base64":
             return ("base64", path)
+        if fetch_mode == "filesystem":
+            return ("filesystem", path)
 
         raise ValueError(f"Unknown fetch_mode: {fetch_mode}")
 

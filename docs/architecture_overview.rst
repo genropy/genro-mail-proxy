@@ -549,6 +549,12 @@ The proxy exposes Prometheus metrics at ``GET /metrics``:
                "filename": "logo.png",
                "storage_path": "iVBORw0KGgoAAAANSUhEUgAA...",
                "fetch_mode": "base64"
+           },
+           # Local filesystem
+           {
+               "filename": "contract.pdf",
+               "storage_path": "/var/attachments/contracts/2025/contract.pdf",
+               "fetch_mode": "filesystem"
            }
        ]
    }

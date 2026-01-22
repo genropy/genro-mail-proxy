@@ -79,7 +79,7 @@ Attachments
    - **base64**: Inline encoded content (``fetch_mode: "base64"``)
    - **HTTP endpoint**: POST to configured URL (``fetch_mode: "endpoint"``)
    - **HTTP URL**: Direct URL fetch (``fetch_mode: "http_url"``)
-   - **Filesystem**: Absolute or relative paths
+   - **Filesystem**: Absolute or relative paths (``fetch_mode: "filesystem"``)
 
 **How do I attach a file from my server?**
    Use an HTTP endpoint that returns the file content::

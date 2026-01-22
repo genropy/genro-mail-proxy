@@ -19,11 +19,13 @@ class FetchMode(str, Enum):
         ENDPOINT: Fetch from configured HTTP endpoint with path parameter.
         HTTP_URL: Fetch directly from a full HTTP/HTTPS URL.
         BASE64: Inline base64-encoded content.
+        FILESYSTEM: Fetch from local filesystem path.
     """
 
     ENDPOINT = "endpoint"
     HTTP_URL = "http_url"
     BASE64 = "base64"
+    FILESYSTEM = "filesystem"
 
 
 class AttachmentPayload(BaseModel):
@@ -40,7 +42,7 @@ class AttachmentPayload(BaseModel):
         fetch_mode: Explicit fetch mode (endpoint, http_url, base64, filesystem).
             Required for determining how to retrieve the content.
         content_md5: MD5 hash for cache lookup. Alternative to embedding
-            {MD5:hash} marker in filename.
+            ``{MD5:hash}`` marker in filename.
         auth: Optional authentication override for HTTP requests.
             Uses TenantAuth format. If not specified, uses tenant's client_auth.
     """

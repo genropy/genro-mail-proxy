@@ -35,8 +35,11 @@ class PostgresAdapter(DbAdapter):
             ) from e
 
     def _convert_placeholders(self, query: str) -> str:
-        """Convert :name placeholders to %(name)s for psycopg."""
-        return re.sub(r":([a-zA-Z_][a-zA-Z0-9_]*)", r"%(\1)s", query)
+        """Convert :name placeholders to %(name)s for psycopg.
+
+        Uses negative lookbehind to preserve PostgreSQL :: cast operators.
+        """
+        return re.sub(r"(?<!:):([a-zA-Z_][a-zA-Z0-9_]*)", r"%(\1)s", query)
 
     async def connect(self) -> None:
         """Establish connection pool."""

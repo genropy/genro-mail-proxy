@@ -62,13 +62,43 @@ See :doc:`multi_tenancy` for full architecture details.
       {
         "id": "tenant-acme",
         "name": "ACME Corporation",
-        "client_sync_url": "https://api.acme.com/proxy_sync",
-        "client_sync_auth": {
+        "client_base_url": "https://api.acme.com",
+        "client_sync_path": "/mail-proxy/sync",
+        "client_attachment_path": "/mail-proxy/attachments",
+        "client_auth": {
           "method": "bearer",
           "token": "secret-token"
         },
+        "rate_limits": {
+          "hourly": 1000,
+          "daily": 10000
+        },
+        "large_file_config": {
+          "enabled": true,
+          "max_size_mb": 10,
+          "storage_url": "s3://bucket/mail-attachments",
+          "file_ttl_days": 30,
+          "action": "rewrite"
+        },
         "active": true
       }
+
+   **large_file_config fields:**
+
+   - ``enabled`` (bool): Enable large file handling (default: false)
+   - ``max_size_mb`` (float): Size threshold in MB (default: 10.0)
+   - ``storage_url`` (string): fsspec URL for storage backend:
+     - S3/MinIO: ``s3://bucket/path``
+     - Google Cloud Storage: ``gs://bucket/path``
+     - Azure Blob: ``az://container/path``
+     - Local filesystem: ``file:///var/www/downloads``
+   - ``public_base_url`` (string): Required for local filesystem storage
+   - ``file_ttl_days`` (int): Days before files expire (default: 30)
+   - ``lifespan_after_download_days`` (int): Days to keep after first download
+   - ``action`` (string): Behavior when limit exceeded:
+     - ``warn``: Log warning, send normally (default)
+     - ``reject``: Reject message with error
+     - ``rewrite``: Upload to storage, replace with download link
 
    Response: ``{"ok": true}``
 

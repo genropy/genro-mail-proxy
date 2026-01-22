@@ -103,6 +103,13 @@ class TestParseStoragePath:
         with pytest.raises(ValueError, match="fetch_mode is required"):
             manager._parse_storage_path("some/path")
 
+    def test_filesystem_fetch_mode(self):
+        """Test fetch_mode=filesystem returns filesystem path type."""
+        manager = AttachmentManager()
+        path_type, parsed = manager._parse_storage_path("/var/attachments/file.pdf", fetch_mode="filesystem")
+        assert path_type == "filesystem"
+        assert parsed == "/var/attachments/file.pdf"
+
     def test_invalid_fetch_mode_raises(self):
         """Test that invalid fetch_mode raises ValueError."""
         manager = AttachmentManager()
