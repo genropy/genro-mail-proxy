@@ -84,6 +84,7 @@ class Persistence:
                 client_sync_path TEXT,
                 client_attachment_path TEXT,
                 rate_limits TEXT,
+                large_file_config TEXT,
                 active INTEGER DEFAULT 1,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -154,6 +155,12 @@ class Persistence:
             except Exception:
                 pass  # Column already exists
 
+        # Migration for tenants table
+        try:
+            await self.adapter.execute("ALTER TABLE tenants ADD COLUMN large_file_config TEXT")
+        except Exception:
+            pass  # Column already exists
+
     # -------------------------------------------------------------------------
     # Tenants
     # -------------------------------------------------------------------------
@@ -169,6 +176,7 @@ class Persistence:
                 "client_sync_path": tenant.get("client_sync_path"),
                 "client_attachment_path": tenant.get("client_attachment_path"),
                 "rate_limits": json.dumps(tenant.get("rate_limits")) if tenant.get("rate_limits") else None,
+                "large_file_config": json.dumps(tenant.get("large_file_config")) if tenant.get("large_file_config") else None,
                 "active": 1 if tenant.get("active", True) else 0,
             },
             conflict_columns=["id"],
@@ -202,7 +210,7 @@ class Persistence:
         set_parts = []
         params: dict[str, Any] = {"tenant_id": tenant_id}
         for key, value in updates.items():
-            if key in ("client_auth", "rate_limits"):
+            if key in ("client_auth", "rate_limits", "large_file_config"):
                 set_parts.append(f"{key} = :{key}")
                 params[key] = json.dumps(value) if value else None
             elif key == "active":
@@ -269,7 +277,7 @@ class Persistence:
 
     def _decode_tenant(self, tenant: dict[str, Any]) -> dict[str, Any]:
         """Decode JSON fields in tenant dict."""
-        for field in ("client_auth", "rate_limits"):
+        for field in ("client_auth", "rate_limits", "large_file_config"):
             if tenant.get(field):
                 tenant[field] = json.loads(tenant[field])
         tenant["active"] = bool(tenant.get("active", 1))

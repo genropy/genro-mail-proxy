@@ -110,6 +110,77 @@ class TenantRateLimits(BaseModel):
     ]
 
 
+class LargeFileAction(str, Enum):
+    """Action to take when attachment exceeds size limit.
+
+    Attributes:
+        WARN: Log warning but send attachment normally (default).
+        REJECT: Reject the message with an error.
+        REWRITE: Upload to storage and replace with download link.
+    """
+
+    WARN = "warn"
+    REJECT = "reject"
+    REWRITE = "rewrite"
+
+
+class TenantLargeFileConfig(BaseModel):
+    """Configuration for large file handling via external storage.
+
+    When enabled, attachments exceeding max_size_mb are uploaded to external
+    storage (via fsspec) and replaced with download links in the email body.
+
+    Attributes:
+        enabled: Whether large file handling is active.
+        max_size_mb: Size threshold in MB (attachments larger than this are processed).
+        storage_url: fsspec-compatible URL (s3://bucket/path, file:///data, etc.).
+        public_base_url: Public URL for download links (required for local filesystem).
+        file_ttl_days: Days before uploaded files expire if never downloaded.
+        lifespan_after_download_days: Days to keep file after first download.
+        action: Behavior when attachment exceeds limit (warn, reject, rewrite).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: Annotated[
+        bool,
+        Field(default=False, description="Enable large file handling")
+    ]
+    max_size_mb: Annotated[
+        float,
+        Field(default=10.0, gt=0, description="Size threshold in MB")
+    ]
+    storage_url: Annotated[
+        str | None,
+        Field(default=None, description="fsspec URL (s3://bucket/path, file:///data)")
+    ]
+    public_base_url: Annotated[
+        str | None,
+        Field(default=None, description="Public URL for download links")
+    ]
+    file_ttl_days: Annotated[
+        int,
+        Field(default=30, ge=1, description="Days before files expire if never downloaded")
+    ]
+    lifespan_after_download_days: Annotated[
+        int | None,
+        Field(default=None, ge=1, description="Days to keep after first download")
+    ]
+    action: Annotated[
+        LargeFileAction,
+        Field(default=LargeFileAction.WARN, description="Action when limit exceeded")
+    ]
+
+    @field_validator("storage_url")
+    @classmethod
+    def storage_url_required_for_rewrite(cls, v: str | None, info) -> str | None:
+        """Validate that storage_url is provided when action is rewrite."""
+        if info.data.get("enabled") and info.data.get("action") == LargeFileAction.REWRITE:
+            if not v:
+                raise ValueError("storage_url is required when action is 'rewrite'")
+        return v
+
+
 class TenantCreate(BaseModel):
     """Payload for creating a new tenant.
 
@@ -155,6 +226,10 @@ class TenantCreate(BaseModel):
         TenantRateLimits | None,
         Field(default=None, description="Rate limiting configuration")
     ]
+    large_file_config: Annotated[
+        TenantLargeFileConfig | None,
+        Field(default=None, description="Large file storage configuration")
+    ]
     active: Annotated[
         bool,
         Field(default=True, description="Whether tenant is active")
@@ -192,6 +267,10 @@ class TenantUpdate(BaseModel):
     rate_limits: Annotated[
         TenantRateLimits | None,
         Field(default=None, description="Rate limiting configuration")
+    ]
+    large_file_config: Annotated[
+        TenantLargeFileConfig | None,
+        Field(default=None, description="Large file storage configuration")
     ]
     active: Annotated[
         bool | None,
