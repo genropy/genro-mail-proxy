@@ -135,6 +135,7 @@ with separate databases.
    network_requirements
    usage
    example_client
+   django_integration
    multi_tenancy
    protocol
    api_reference
