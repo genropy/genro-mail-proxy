@@ -96,12 +96,45 @@ class TestParseStoragePath:
         assert path_type == "http"
         assert parsed == "[https://api.example.com/files/123]"
 
-    def test_missing_fetch_mode_raises(self):
-        """Test that missing fetch_mode raises ValueError."""
+    def test_missing_fetch_mode_infers_endpoint(self):
+        """Test that missing fetch_mode defaults to endpoint for non-URL paths."""
         manager = AttachmentManager()
+        path_type, parsed = manager._parse_storage_path("doc_id=123")
 
-        with pytest.raises(ValueError, match="fetch_mode is required"):
-            manager._parse_storage_path("some/path")
+        assert path_type == "http"
+        assert parsed == "doc_id=123"
+
+    def test_infer_http_url_from_https(self):
+        """Test that https:// URL infers http_url fetch_mode."""
+        manager = AttachmentManager()
+        path_type, parsed = manager._parse_storage_path("https://example.com/file.pdf")
+
+        assert path_type == "http"
+        assert parsed == "[https://example.com/file.pdf]"
+
+    def test_infer_http_url_from_http(self):
+        """Test that http:// URL infers http_url fetch_mode."""
+        manager = AttachmentManager()
+        path_type, parsed = manager._parse_storage_path("http://example.com/file.pdf")
+
+        assert path_type == "http"
+        assert parsed == "[http://example.com/file.pdf]"
+
+    def test_infer_filesystem_from_absolute_path(self):
+        """Test that absolute path infers filesystem fetch_mode."""
+        manager = AttachmentManager()
+        path_type, parsed = manager._parse_storage_path("/var/attachments/file.pdf")
+
+        assert path_type == "filesystem"
+        assert parsed == "/var/attachments/file.pdf"
+
+    def test_infer_base64_from_prefix(self):
+        """Test that base64: prefix infers base64 fetch_mode and strips prefix."""
+        manager = AttachmentManager()
+        path_type, parsed = manager._parse_storage_path("base64:SGVsbG8gV29ybGQ=")
+
+        assert path_type == "base64"
+        assert parsed == "SGVsbG8gV29ybGQ="  # Prefix stripped
 
     def test_filesystem_fetch_mode(self):
         """Test fetch_mode=filesystem returns filesystem path type."""

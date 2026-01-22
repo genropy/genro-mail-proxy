@@ -11,6 +11,12 @@ Supported fetch_mode values:
 - base64 - Inline base64-encoded content in storage_path
 - filesystem - Local filesystem path (absolute or relative to base_dir)
 
+If fetch_mode is not specified, it is inferred from storage_path format:
+- "base64:..." prefix → base64 (prefix is stripped)
+- "http://" or "https://" → http_url
+- "/" (absolute path) → filesystem
+- otherwise → endpoint (default)
+
 Additional attachment parameters:
 - content_md5: MD5 hash for cache lookup (alternative to filename marker)
 - auth: Authentication override for HTTP requests (uses TenantAuth format)
@@ -128,21 +134,33 @@ class AttachmentManager:
 
         Args:
             path: The storage_path value from attachment dict.
-            fetch_mode: Explicit fetch mode (required). Valid values:
-                "endpoint", "http_url", "base64", "filesystem".
+            fetch_mode: Explicit fetch mode. If None, inferred from path format:
+                - "base64:" prefix → base64
+                - "http://" or "https://" → http_url
+                - absolute path starting with "/" → filesystem
+                - otherwise → endpoint (default)
 
         Returns:
             Tuple of (path_type, parsed_path) where path_type is one of:
             "base64", "http", "filesystem".
 
         Raises:
-            ValueError: If fetch_mode is missing or invalid.
+            ValueError: If path is empty or fetch_mode is invalid.
         """
         if not path:
             raise ValueError("Empty storage_path")
 
+        # Infer fetch_mode from path format if not provided
         if not fetch_mode:
-            raise ValueError("fetch_mode is required")
+            if path.startswith("base64:"):
+                fetch_mode = "base64"
+                path = path[7:]  # Strip "base64:" prefix
+            elif path.startswith(("http://", "https://")):
+                fetch_mode = "http_url"
+            elif path.startswith("/"):
+                fetch_mode = "filesystem"
+            else:
+                fetch_mode = "endpoint"
 
         if fetch_mode == "endpoint":
             return ("http", path)
