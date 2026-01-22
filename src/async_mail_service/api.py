@@ -82,7 +82,6 @@ class AccountPayload(BaseModel):
     limit_per_day: int | None = None
     limit_behavior: str | None = "defer"
     use_tls: bool | None = None
-    use_ssl: bool | None = None
     batch_size: int | None = None
 
 
@@ -133,7 +132,6 @@ class AccountInfo(BaseModel):
     limit_per_day: int | None = None
     limit_behavior: str | None = None
     use_tls: bool | None = None
-    use_ssl: bool | None = None
     batch_size: int | None = None
     created_at: str | None = None
 

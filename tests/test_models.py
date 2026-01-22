@@ -203,7 +203,6 @@ class TestAccountCreate:
         assert account.host == "smtp.example.com"
         assert account.port == 587
         assert account.use_tls is True
-        assert account.use_ssl is False
 
     def test_full_account(self):
         """Test full account creation."""
@@ -214,13 +213,12 @@ class TestAccountCreate:
             port=465,
             user="smtp_user",
             password="smtp_pass",
-            use_tls=False,
-            use_ssl=True,
+            use_tls=True,
             batch_size=50
         )
         assert account.user == "smtp_user"
         assert account.password == "smtp_pass"
-        assert account.use_ssl is True
+        assert account.use_tls is True
         assert account.batch_size == 50
 
     def test_port_validation(self):

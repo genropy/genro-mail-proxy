@@ -225,8 +225,7 @@ class AccountCreate(BaseModel):
         port: SMTP server port.
         user: SMTP authentication username.
         password: SMTP authentication password.
-        use_tls: Whether to use STARTTLS.
-        use_ssl: Whether to use SSL/TLS.
+        use_tls: Whether to use TLS (STARTTLS on 587, implicit on 465).
         batch_size: Max messages per dispatch cycle for this account.
         ttl: Connection TTL in seconds.
         limit_per_minute: Max emails per minute (0 = unlimited).
@@ -264,11 +263,7 @@ class AccountCreate(BaseModel):
     ]
     use_tls: Annotated[
         bool,
-        Field(default=True, description="Use STARTTLS")
-    ]
-    use_ssl: Annotated[
-        bool,
-        Field(default=False, description="Use SSL/TLS connection")
+        Field(default=True, description="Use STARTTLS (587) or implicit TLS (465)")
     ]
     batch_size: Annotated[
         int | None,
@@ -326,11 +321,7 @@ class AccountUpdate(BaseModel):
     ]
     use_tls: Annotated[
         bool | None,
-        Field(default=None, description="Use STARTTLS")
-    ]
-    use_ssl: Annotated[
-        bool | None,
-        Field(default=None, description="Use SSL/TLS connection")
+        Field(default=None, description="Use TLS (STARTTLS on 587, implicit on 465)")
     ]
     batch_size: Annotated[
         int | None,

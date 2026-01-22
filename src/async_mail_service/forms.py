@@ -562,7 +562,6 @@ class AccountForm(InteractiveForm):
         "user",
         "password",
         "use_tls",
-        "use_ssl",
         "batch_size",
         "ttl",
         "limit_per_minute",
@@ -572,7 +571,7 @@ class AccountForm(InteractiveForm):
     ]
     field_groups = {
         "Identity": ["id", "tenant_id"],
-        "SMTP Server": ["host", "port", "use_tls", "use_ssl"],
+        "SMTP Server": ["host", "port", "use_tls"],
         "Authentication": ["user", "password"],
         "Settings": ["batch_size", "ttl"],
         "Rate Limits": ["limit_per_minute", "limit_per_hour", "limit_per_day", "limit_behavior"],

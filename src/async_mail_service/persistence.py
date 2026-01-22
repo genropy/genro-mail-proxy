@@ -146,11 +146,6 @@ class Persistence:
                 """
             )
 
-            await db.execute("DROP TABLE IF EXISTS pending_messages")
-            await db.execute("DROP TABLE IF EXISTS deferred_messages")
-            await db.execute("DROP TABLE IF EXISTS delivery_reports")
-            await db.execute("DROP TABLE IF EXISTS queued_messages")
-
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS messages (

@@ -116,8 +116,7 @@ class Account:
         host: SMTP server hostname.
         port: SMTP server port.
         user: SMTP username for authentication.
-        use_tls: Whether to use STARTTLS.
-        use_ssl: Whether to use implicit SSL.
+        use_tls: Whether to use TLS (STARTTLS on 587, implicit on 465).
         ttl: Connection TTL in seconds.
         limit_per_minute: Rate limit per minute.
         limit_per_hour: Rate limit per hour.
@@ -132,7 +131,6 @@ class Account:
     port: int = 587
     user: str | None = None
     use_tls: bool = True
-    use_ssl: bool = False
     ttl: int = 300
     limit_per_minute: int | None = None
     limit_per_hour: int | None = None
@@ -157,7 +155,6 @@ class Account:
             port=data.get("port", 587),
             user=data.get("user"),
             use_tls=bool(data.get("use_tls", True)),
-            use_ssl=bool(data.get("use_ssl", False)),
             ttl=data.get("ttl", 300),
             limit_per_minute=data.get("limit_per_minute"),
             limit_per_hour=data.get("limit_per_hour"),

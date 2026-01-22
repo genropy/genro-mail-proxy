@@ -486,7 +486,6 @@ class TestTenantLevelCommands:
                 "--port", "587",
                 "--user", "",
                 "--tls",
-                "--no-ssl",
                 "--batch-size", "10",
                 "--ttl", "300",
                 "--limit-minute", "0",

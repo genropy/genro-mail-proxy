@@ -1604,8 +1604,7 @@ def _add_accounts_commands(group: click.Group, instance_name: str, tenant_id: st
     @click.option("--port", "-p", type=int, help="SMTP server port.")
     @click.option("--user", "-u", help="SMTP username.")
     @click.option("--password", help="SMTP password.")
-    @click.option("--tls/--no-tls", default=None, help="Use STARTTLS (default: yes).")
-    @click.option("--ssl/--no-ssl", default=None, help="Use SSL/TLS connection.")
+    @click.option("--tls/--no-tls", default=None, help="Use TLS (STARTTLS on 587, implicit on 465).")
     @click.option("--batch-size", type=int, help="Max messages per dispatch cycle.")
     @click.option("--ttl", type=int, help="Connection TTL in seconds (default: 300).")
     @click.option("--limit-minute", type=int, help="Max emails per minute.")
@@ -1619,7 +1618,6 @@ def _add_accounts_commands(group: click.Group, instance_name: str, tenant_id: st
         user: str | None,
         password: str | None,
         tls: bool | None,
-        ssl: bool | None,
         batch_size: int | None,
         ttl: int | None,
         limit_minute: int | None,
@@ -1649,10 +1647,7 @@ def _add_accounts_commands(group: click.Group, instance_name: str, tenant_id: st
             password = click.prompt("SMTP password", hide_input=True, default="", show_default=False) or None
 
         if tls is None:
-            tls = click.confirm("Use STARTTLS?", default=True)
-
-        if ssl is None:
-            ssl = click.confirm("Use SSL/TLS connection?", default=False)
+            tls = click.confirm("Use TLS?", default=True)
 
         if batch_size is None:
             batch_size_str = click.prompt("Batch size (empty=default)", default="", show_default=False)
@@ -1692,7 +1687,6 @@ def _add_accounts_commands(group: click.Group, instance_name: str, tenant_id: st
                 user=user,
                 password=password,
                 use_tls=tls,
-                use_ssl=ssl,
                 batch_size=batch_size,
                 ttl=ttl,
                 limit_per_minute=limit_minute if limit_minute else None,
