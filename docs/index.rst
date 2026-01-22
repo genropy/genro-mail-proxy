@@ -136,6 +136,8 @@ with separate databases.
    usage
    example_client
    django_integration
+   flask_integration
+   express_integration
    multi_tenancy
    protocol
    api_reference
