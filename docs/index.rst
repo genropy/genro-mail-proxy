@@ -7,7 +7,7 @@ genro-mail-proxy
    :align: right
    :width: 120px
 
-Asynchronous email dispatcher microservice with scheduling, rate limiting, attachments (S3/URL/base64),
+Asynchronous email dispatcher microservice with scheduling, rate limiting, attachments (URL/base64),
 Prometheus metrics, and a FastAPI control plane.
 
 .. toctree::

@@ -532,33 +532,33 @@ The proxy exposes Prometheus metrics at ``GET /metrics``:
 
    message = {
        "attachments": [
-           # S3 bucket (no download needed)
+           # HTTP endpoint (proxy fetches via POST)
            {
                "filename": "invoice.pdf",
-               "s3": {
-                   "bucket": "company-documents",
-                   "key": "invoices/2025/INV-001.pdf"
-               }
+               "storage_path": "@doc_id=123",
+               "fetch_mode": "endpoint"
            },
            # External URL (proxy fetches)
            {
                "filename": "report.pdf",
-               "url": "https://storage.company.com/reports/monthly.pdf"
+               "storage_path": "https://storage.company.com/reports/monthly.pdf",
+               "fetch_mode": "http_url"
            },
            # Base64 inline
            {
                "filename": "logo.png",
-               "content": "iVBORw0KGgoAAAANSUhEUgAA..."
+               "storage_path": "iVBORw0KGgoAAAANSUhEUgAA...",
+               "fetch_mode": "base64"
            }
        ]
    }
 
 **Benefits:**
 
-- ✅ No need to download S3 files to application server
 - ✅ Proxy handles URL fetching with timeout/retry
 - ✅ Unified interface for different sources
 - ✅ Memory efficient (streaming)
+- ✅ Caching with MD5 markers
 
 9. Priority Queuing
 ^^^^^^^^^^^^^^^^^^^^
@@ -676,7 +676,7 @@ Comparison Summary
      - Automatic reporting ✅
    * - **Attachment Handling**
      - Manual download ❌
-     - S3/URL/inline ✅
+     - URL/base64/filesystem ✅
 
 When to Use This Architecture
 ------------------------------

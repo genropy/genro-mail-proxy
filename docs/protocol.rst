@@ -150,10 +150,7 @@ the content. The following formats are supported:
      - Description
    * - ``base64:content``
      - ``base64:SGVsbG8=``
-     - Inline base64-encoded content (always available)
-   * - ``volume:path``
-     - ``s3-uploads:docs/report.pdf``
-     - genro-storage volume (requires genro-storage dependency)
+     - Inline base64-encoded content
    * - ``/absolute/path``
      - ``/tmp/attachments/file.pdf``
      - Local filesystem absolute path
@@ -174,7 +171,6 @@ the content. The following formats are supported:
    report_{MD5:a1b2c3d4e5f6}.pdf
 
 The marker is extracted for cache lookup and removed from the final filename.
-This is compatible with genro-storage and Genropy which use MD5 from S3 ETag.
 
 Example attachment payload:
 
@@ -182,7 +178,6 @@ Example attachment payload:
 
    {
      "attachments": [
-       {"filename": "report.pdf", "storage_path": "s3-uploads:documents/report.pdf"},
        {"filename": "logo.png", "storage_path": "base64:iVBORw0KGgo..."},
        {"filename": "invoice_{MD5:abc123}.pdf", "storage_path": "@doc_id=456"},
        {"filename": "local.txt", "storage_path": "/var/attachments/local.txt"}
