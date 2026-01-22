@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from ..sql import String, Table, Timestamp
+from ...sql import String, Table, Timestamp
 
 
 class InstanceConfigTable(Table):

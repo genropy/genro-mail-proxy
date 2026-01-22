@@ -7,7 +7,7 @@ import json
 from collections.abc import Iterable, Sequence
 from typing import Any
 
-from ..sql import Integer, String, Table, Timestamp
+from ...sql import Integer, String, Table, Timestamp
 
 
 class MessagesTable(Table):

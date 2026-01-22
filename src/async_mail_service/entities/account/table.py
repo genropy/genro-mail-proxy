@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..sql import Integer, String, Table, Timestamp
+from ...sql import Integer, String, Table, Timestamp
 
 
 class AccountsTable(Table):

@@ -22,14 +22,14 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from typing import Any
 
-from .sql import SqlDb
-from .tables import (
+from .entities import (
     AccountsTable,
     InstanceConfigTable,
     MessagesTable,
     SendLogTable,
     TenantsTable,
 )
+from .sql import SqlDb
 
 
 class MailProxyDb(SqlDb):

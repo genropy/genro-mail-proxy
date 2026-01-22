@@ -527,7 +527,7 @@ class InteractiveForm:
 class TenantForm(InteractiveForm):
     """Interactive form for creating a tenant."""
 
-    from async_mail_service.models import TenantCreate
+    from async_mail_service.entities.tenant.schema import TenantCreate
     model = TenantCreate
     title = "Create New Tenant"
     fields = [
@@ -551,7 +551,7 @@ class TenantForm(InteractiveForm):
 class AccountForm(InteractiveForm):
     """Interactive form for creating an SMTP account."""
 
-    from async_mail_service.models import AccountCreate
+    from async_mail_service.entities.account.schema import AccountCreate
     model = AccountCreate
     title = "Create New SMTP Account"
     fields = [
@@ -581,7 +581,7 @@ class AccountForm(InteractiveForm):
 class MessageForm(InteractiveForm):
     """Interactive form for creating an email message."""
 
-    from async_mail_service.models import MessageCreate
+    from async_mail_service.entities.message.schema import MessageCreate
     model = MessageCreate
     title = "Create New Message"
     fields = [

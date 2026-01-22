@@ -57,7 +57,7 @@ from .attachments.cache import TieredCache
 from .config_loader import CacheConfig, load_cache_config
 from .logger import get_logger
 from .mailproxy_db import MailProxyDb
-from .models import get_tenant_attachment_url, get_tenant_sync_url
+from .entities.tenant.schema import get_tenant_attachment_url, get_tenant_sync_url
 from .prometheus import MailMetrics
 from .rate_limit import RateLimiter
 from .smtp_pool import SMTPPool

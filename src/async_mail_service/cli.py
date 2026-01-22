@@ -44,10 +44,10 @@ from rich.console import Console
 from rich.table import Table
 
 from async_mail_service.mailproxy_db import MailProxyDb
-from async_mail_service.models import (
+from async_mail_service.entities.account.schema import AccountCreate
+from async_mail_service.entities.tenant.schema import (
     DEFAULT_ATTACHMENT_PATH,
     DEFAULT_SYNC_PATH,
-    AccountCreate,
     TenantAuth,
     TenantCreate,
     TenantRateLimits,

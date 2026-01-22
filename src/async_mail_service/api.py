@@ -40,7 +40,7 @@ from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, ConfigDict, Field
 
 from .core import AsyncMailCore
-from .models import AttachmentPayload
+from .entities.message.schema import AttachmentPayload
 
 logger = logging.getLogger(__name__)
 

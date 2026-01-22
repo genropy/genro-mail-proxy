@@ -3,14 +3,15 @@
 import pytest
 from pydantic import ValidationError
 
-from async_mail_service.models import (
-    AccountCreate,
-    AccountListItem,
+from async_mail_service.entities.account.schema import AccountCreate, AccountListItem
+from async_mail_service.entities.message.schema import (
     AttachmentPayload,
-    AuthMethod,
     MessageCreate,
     MessageListItem,
     MessageStatus,
+)
+from async_mail_service.entities.tenant.schema import (
+    AuthMethod,
     TenantAuth,
     TenantCreate,
     TenantListItem,

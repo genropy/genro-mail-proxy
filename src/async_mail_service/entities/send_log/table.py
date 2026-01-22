@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from ..sql import Integer, String, Table
+from ...sql import Integer, String, Table
 
 
 class SendLogTable(Table):
