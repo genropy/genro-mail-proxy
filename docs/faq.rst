@@ -30,21 +30,24 @@ Configuration
 -------------
 
 **How do I configure the service?**
-   Via ``config.ini`` file or environment variables prefixed with ``GMP_``.
-   Environment variables take precedence. See :doc:`usage` for details.
+   Use the ``mail-proxy`` CLI to configure instances, tenants, and accounts
+   interactively. For Docker deployments, use environment variables prefixed
+   with ``GMP_``. See :doc:`usage` for details.
 
-**What's the difference between config.ini and environment variables?**
-   They're equivalent. Use ``config.ini`` for local development and environment
-   variables for Docker/Kubernetes deployments. All ``GMP_`` prefixed variables
-   map to config sections (e.g., ``GMP_DB_PATH`` → ``[storage] db_path``).
+**What's the CLI workflow?**
+   Start an instance with ``mail-proxy start myserver``, add tenants with
+   ``mail-proxy myserver tenants add``, and configure SMTP accounts with
+   ``mail-proxy myserver <tenant> accounts add``. All commands support
+   interactive prompts for easy setup.
 
 **How do I secure the API?**
-   Set ``api_token`` in config or ``GMP_API_TOKEN`` environment variable. All
-   requests must include the ``X-API-Token`` header with this value.
+   The CLI generates an API token automatically when creating an instance.
+   View it with ``mail-proxy myserver token``. All requests must include
+   the ``X-API-Token`` header with this value.
 
 **Can I run multiple instances?**
-   Yes, but they must share the same SQLite database file. For high availability,
-   consider using a shared volume or migrating to PostgreSQL (future feature).
+   Yes. Each instance has its own database at ``~/.mail-proxy/<name>/``.
+   Instances are independent and can run on different ports.
 
 Messages and Delivery
 ---------------------
@@ -98,8 +101,9 @@ Attachments
    The marker is removed from the final filename.
 
 **How do I configure attachment caching?**
-   Set ``cache_disk_dir`` in the ``[attachments]`` section. Small files go to
-   memory cache, large files to disk. See :doc:`usage` for all cache options.
+   Set the ``GMP_CACHE_DISK_DIR`` environment variable or configure it when
+   starting the instance. Small files go to memory cache, large files to disk.
+   See :doc:`usage` for all cache options.
 
 Multi-tenancy
 -------------
@@ -109,13 +113,16 @@ Multi-tenancy
    Each tenant can have its own SMTP accounts and delivery report endpoint.
 
 **How do I create a tenant?**
-   POST to ``/tenant`` with the tenant configuration::
+   Use the CLI with interactive prompts::
 
-      {
-        "id": "tenant-acme",
-        "name": "ACME Corp",
-        "client_sync_url": "https://acme.com/mail-reports"
-      }
+      mail-proxy myserver tenants add
+
+   Or with explicit arguments::
+
+      mail-proxy myserver tenants add acme \
+        --name "ACME Corp" \
+        --base-url "https://acme.com" \
+        --sync-path "/mail-proxy/sync"
 
 **Can tenants share SMTP accounts?**
    No. Each account belongs to one tenant (via ``tenant_id``). This ensures

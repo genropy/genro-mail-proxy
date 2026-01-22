@@ -124,17 +124,29 @@ A two-tiered cache (memory + disk) reduces redundant fetches. Filenames can incl
 
 ## Configuration
 
-Configuration via `config.ini` or environment variables (prefixed with `GMP_`):
+Configuration is managed via the CLI. Each instance stores its settings in `~/.mail-proxy/<name>/mail_service.db`.
 
-```ini
-[attachments]
-base_dir = /var/attachments
-http_endpoint = https://api.example.com/attachments
-http_auth_method = bearer
-http_auth_token = your-secret-token
+```bash
+# Start an instance (creates it if new)
+mail-proxy start myserver
 
-cache_memory_max_items = 100
-cache_disk_dir = /var/cache/mail-proxy
+# Add a tenant with attachment endpoint
+mail-proxy myserver tenants add
+# Interactive prompts: tenant_id, name, base_url, attachment_path, auth method
+
+# Add an SMTP account
+mail-proxy myserver acme accounts add
+# Interactive prompts: account_id, host, port, user, password, TLS, rate limits
+```
+
+For Docker deployments, use environment variables (prefixed with `GMP_`):
+
+```bash
+docker run -p 8000:8000 \
+  -e GMP_API_TOKEN=your-secret-token \
+  -e GMP_DB_PATH=/data/mail_service.db \
+  -v mail-data:/data \
+  genro-mail-proxy
 ```
 
 See [Usage](https://genro-mail-proxy.readthedocs.io/en/latest/usage.html) for all options.

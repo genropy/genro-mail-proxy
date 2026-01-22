@@ -212,9 +212,9 @@ Client synchronisation protocol
 -------------------------------
 
 The "client report loop" sends ``POST`` requests to the configured
-``client_sync_url`` (``[client]`` section in ``config.ini``). Authentication
-uses either HTTP basic auth (``client_sync_user`` / ``client_sync_password``)
-or a bearer token (``client_sync_token``). A typical exchange:
+``client_sync_url`` (configured per-tenant or via ``GMP_CLIENT_SYNC_URL``).
+Authentication uses either HTTP basic auth or a bearer token (configured
+per-tenant via CLI or environment variables). A typical exchange:
 
 1. Dispatcher computes a batch of pending delivery results (respecting the
    configured batch size).

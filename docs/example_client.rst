@@ -591,7 +591,7 @@ Authentication Failed
 
 **Solution**:
 
-Ensure ``example_config.ini`` token matches ``config.ini``:
+Ensure ``example_config.ini`` token matches the mail service token:
 
 .. code-block:: bash
 
@@ -599,9 +599,8 @@ Ensure ``example_config.ini`` token matches ``config.ini``:
    [mail_service]
    api_token = your-secret-token
 
-   # config.ini (mail service)
-   [api]
-   token = your-secret-token
+   # Check mail service token with CLI
+   mail-proxy myserver token
 
 Messages Stuck in "submitted" State
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

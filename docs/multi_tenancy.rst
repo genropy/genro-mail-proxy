@@ -215,7 +215,7 @@ When the proxy has delivery reports to send, it routes them based on the
    tenant's ``client_sync_url`` with the appropriate authentication.
 
 2. **Messages without tenant_id**: Reports are sent to the global
-   ``client_sync_url`` configured in ``config.ini``.
+   ``client_sync_url`` (configured via ``GMP_CLIENT_SYNC_URL`` environment variable).
 
 3. **Tenants without client_sync_url**: Falls back to the global URL.
 
