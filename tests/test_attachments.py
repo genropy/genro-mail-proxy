@@ -1,7 +1,6 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Tests for the attachments module."""
 
-import base64
 import pytest
 
 from async_mail_service.attachments import AttachmentManager

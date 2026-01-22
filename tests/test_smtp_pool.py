@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from async_mail_service.smtp_pool import SMTPPool, PooledConnection
+from async_mail_service.smtp_pool import PooledConnection, SMTPPool
 
 
 class DummySMTP:

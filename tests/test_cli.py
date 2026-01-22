@@ -2,28 +2,25 @@
 
 import json
 import os
-import pytest
 from pathlib import Path
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import patch
+
 from click.testing import CliRunner
 
 from async_mail_service.cli import (
-    main,
-    get_persistence,
-    run_async,
-    print_error,
-    print_success,
+    _ensure_instance,
+    _generate_api_token,
+    _get_instance_config,
     _get_instance_dir,
     _get_pid_file,
     _is_instance_running,
-    _write_pid_file,
     _remove_pid_file,
-    _generate_api_token,
-    _ensure_instance,
-    _get_instance_config,
     _stop_instance,
+    _write_pid_file,
+    get_persistence,
+    main,
+    run_async,
 )
-
 
 # --- Helper function tests ---
 
@@ -31,12 +28,12 @@ class TestHelperFunctions:
     """Tests for CLI helper functions."""
 
     def test_get_persistence(self, tmp_path):
-        """Test get_persistence creates a Persistence instance."""
+        """Test get_persistence creates a MailProxyDb instance."""
         db_path = str(tmp_path / "test.db")
         persistence = get_persistence(db_path)
 
-        from async_mail_service.persistence import Persistence
-        assert isinstance(persistence, Persistence)
+        from async_mail_service.mailproxy_db import MailProxyDb
+        assert isinstance(persistence, MailProxyDb)
 
     def test_run_async(self):
         """Test run_async executes coroutine synchronously."""

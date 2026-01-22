@@ -10,10 +10,9 @@ These tests verify the complete message lifecycle:
 This validates the architecture described in docs/multi_tenancy.rst
 """
 
-import asyncio
 import socket
 import types
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
 from aioresponses import aioresponses
@@ -36,7 +35,7 @@ class CapturingHandler:
     """SMTP handler that captures received messages."""
 
     def __init__(self):
-        self.messages: List[Dict[str, Any]] = []
+        self.messages: list[dict[str, Any]] = []
 
     async def handle_RCPT(self, server, session, envelope, address, rcpt_options):
         envelope.rcpt_tos.append(address)
@@ -114,7 +113,7 @@ async def make_roundtrip_core(tmp_path, smtp_port: int) -> AsyncMailCore:
         start_active=True,
         test_mode=True,
     )
-    await core.persistence.init_db()
+    await core.db.init_db()
     core.rate_limiter = DummyRateLimiter()
     core.metrics = DummyMetrics()
     core.attachments = DummyAttachments()
@@ -153,7 +152,7 @@ async def test_full_roundtrip_single_tenant(tmp_path, smtp_server, smtp_handler)
     core = await make_roundtrip_core(tmp_path, smtp_port)
 
     # 1. Create tenant with sync endpoint
-    await core.persistence.add_tenant({
+    await core.db.add_tenant({
         "id": "acme",
         "name": "ACME Corporation",
         "client_base_url": "https://api.acme.com",
@@ -196,7 +195,7 @@ async def test_full_roundtrip_single_tenant(tmp_path, smtp_server, smtp_handler)
     assert "Welcome to ACME" in msg["data"]
 
     # Verify: Message marked as sent but not reported yet
-    messages = await core.persistence.list_messages()
+    messages = await core.db.list_messages()
     assert len(messages) == 1
     assert messages[0]["sent_ts"] is not None
     assert messages[0]["reported_ts"] is None
@@ -229,7 +228,7 @@ async def test_full_roundtrip_single_tenant(tmp_path, smtp_server, smtp_handler)
         assert report["sent_ts"] is not None
 
     # 6. Verify: Message is now marked as reported
-    messages = await core.persistence.list_messages()
+    messages = await core.db.list_messages()
     assert len(messages) == 1
     assert messages[0]["reported_ts"] is not None
 
@@ -244,14 +243,14 @@ async def test_full_roundtrip_multi_tenant(tmp_path, smtp_server, smtp_handler):
     core = await make_roundtrip_core(tmp_path, smtp_port)
 
     # Create two tenants
-    await core.persistence.add_tenant({
+    await core.db.add_tenant({
         "id": "tenant-alpha",
         "client_base_url": "https://api.alpha.com",
         "client_sync_path": "/proxy_sync",
         "client_auth": {"method": "bearer", "token": "alpha-token"},
         "active": True,
     })
-    await core.persistence.add_tenant({
+    await core.db.add_tenant({
         "id": "tenant-beta",
         "client_base_url": "https://api.beta.com",
         "client_sync_path": "/proxy_sync",
@@ -325,7 +324,7 @@ async def test_full_roundtrip_multi_tenant(tmp_path, smtp_server, smtp_handler):
         assert beta_req.kwargs["auth"].login == "beta"
 
     # All messages should be marked as reported
-    messages = await core.persistence.list_messages()
+    messages = await core.db.list_messages()
     assert all(msg["reported_ts"] is not None for msg in messages)
 
 
@@ -355,7 +354,7 @@ async def test_roundtrip_with_smtp_error(tmp_path, smtp_server, smtp_handler):
 
     smtp_handler.handle_DATA = handle_data_with_reject
 
-    await core.persistence.add_tenant({
+    await core.db.add_tenant({
         "id": "error-tenant",
         "client_base_url": "https://api.error.com",
         "client_sync_path": "/proxy_sync",
@@ -387,7 +386,7 @@ async def test_roundtrip_with_smtp_error(tmp_path, smtp_server, smtp_handler):
     await core._process_smtp_cycle()
 
     # Message should be marked with error
-    messages = await core.persistence.list_messages()
+    messages = await core.db.list_messages()
     assert len(messages) == 1
     assert messages[0]["error_ts"] is not None
     assert messages[0]["error"] is not None
@@ -418,7 +417,7 @@ async def test_roundtrip_tenant_sync_failure_retry(tmp_path, smtp_server, smtp_h
     controller, smtp_port = smtp_server
     core = await make_roundtrip_core(tmp_path, smtp_port)
 
-    await core.persistence.add_tenant({
+    await core.db.add_tenant({
         "id": "flaky-tenant",
         "client_base_url": "https://api.flaky.com",
         "client_sync_path": "/proxy_sync",
@@ -456,7 +455,7 @@ async def test_roundtrip_tenant_sync_failure_retry(tmp_path, smtp_server, smtp_h
         await core._process_client_cycle()
 
     # Message should NOT be marked as reported (will retry)
-    messages = await core.persistence.list_messages()
+    messages = await core.db.list_messages()
     assert messages[0]["sent_ts"] is not None
     assert messages[0]["reported_ts"] is None  # Not reported due to error
 
@@ -467,7 +466,7 @@ async def test_roundtrip_tenant_sync_failure_retry(tmp_path, smtp_server, smtp_h
         await core._process_client_cycle()
 
     # Now message should be marked as reported
-    messages = await core.persistence.list_messages()
+    messages = await core.db.list_messages()
     assert messages[0]["reported_ts"] is not None
 
 
@@ -484,7 +483,7 @@ async def test_roundtrip_fallback_to_global_url(tmp_path, smtp_server, smtp_hand
     core._client_sync_url = "https://global.fallback.com/sync"
 
     # Create tenant without sync URL
-    await core.persistence.add_tenant({
+    await core.db.add_tenant({
         "id": "no-url-tenant",
         "client_base_url": None,
         "active": True,
@@ -529,7 +528,7 @@ async def test_roundtrip_batch_messages(tmp_path, smtp_server, smtp_handler):
     controller, smtp_port = smtp_server
     core = await make_roundtrip_core(tmp_path, smtp_port)
 
-    await core.persistence.add_tenant({
+    await core.db.add_tenant({
         "id": "batch-tenant",
         "client_base_url": "https://api.batch.com",
         "client_sync_path": "/proxy_sync",
@@ -577,5 +576,5 @@ async def test_roundtrip_batch_messages(tmp_path, smtp_server, smtp_handler):
         assert len(payload["delivery_report"]) == 5
 
     # All should be marked as reported
-    messages = await core.persistence.list_messages()
+    messages = await core.db.list_messages()
     assert all(msg["reported_ts"] is not None for msg in messages)

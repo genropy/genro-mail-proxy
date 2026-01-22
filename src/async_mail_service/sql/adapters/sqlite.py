@@ -14,14 +14,11 @@ if TYPE_CHECKING:
 
 
 class SqliteAdapter(DbAdapter):
-    """SQLite async adapter. Opens connection per-operation for thread safety."""
+    """SQLite async adapter. Uses :name placeholders natively."""
+
+    placeholder = ":name"
 
     def __init__(self, db_path: str):
-        """Initialize SQLite adapter.
-
-        Args:
-            db_path: Path to SQLite file, or ":memory:" for in-memory DB.
-        """
         self.db_path = db_path or ":memory:"
 
     async def connect(self) -> None:

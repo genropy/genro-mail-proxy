@@ -4,24 +4,18 @@ import pytest
 from pydantic import ValidationError
 
 from async_mail_service.models import (
-    AuthMethod,
-    TenantAuth,
-    TenantRateLimits,
-    TenantCreate,
-    TenantUpdate,
-    Tenant,
     AccountCreate,
-    AccountUpdate,
-    Account,
-    AttachmentPayload,
-    MessageCreate,
-    MessageStatus,
-    Message,
-    TenantListItem,
     AccountListItem,
+    AttachmentPayload,
+    AuthMethod,
+    MessageCreate,
     MessageListItem,
+    MessageStatus,
+    TenantAuth,
+    TenantCreate,
+    TenantListItem,
+    TenantRateLimits,
 )
-
 
 # --- TenantAuth Tests ---
 

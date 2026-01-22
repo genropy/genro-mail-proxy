@@ -3,6 +3,7 @@
 
 import asyncio
 import sys
+
 from async_mail_service.core import AsyncMailCore
 
 DB_PATH = "/tmp/mail_service_test.db"
@@ -26,7 +27,7 @@ async def main():
     print()
 
     # Fetch one ready message
-    messages = await core.persistence.fetch_ready_messages(limit=1, now_ts=now_ts)
+    messages = await core.db.fetch_ready_messages(limit=1, now_ts=now_ts)
 
     if not messages:
         print("❌ Nessun messaggio pronto per invio")
@@ -35,7 +36,7 @@ async def main():
     msg = messages[0]
     print(f"✅ Trovato messaggio: {msg['id']}")
     print()
-    print(f"📋 Dettagli:")
+    print("📋 Dettagli:")
     print(f"   Account ID: {msg.get('account_id')}")
     print(f"   Priority: {msg.get('priority')}")
     print(f"   Message: {msg.get('message')}")
@@ -57,7 +58,7 @@ async def main():
     # Check final state
     print()
     print("📊 Stato messaggio dopo dispatch:")
-    conn = await core.persistence._connect()
+    conn = await core.db._connect()
     async with conn.execute(
         "SELECT sent_ts, error_ts, error, deferred_ts FROM messages WHERE id = ?",
         (msg['id'],)

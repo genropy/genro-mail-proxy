@@ -1,11 +1,13 @@
 import pytest
-from async_mail_service.persistence import Persistence
+
+from async_mail_service.mailproxy_db import MailProxyDb
 from async_mail_service.rate_limit import RateLimiter
+
 
 @pytest.mark.asyncio
 async def test_rate_limiter_defer(tmp_path):
     db = tmp_path / "test.db"
-    p = Persistence(str(db))
+    p = MailProxyDb(str(db))
     await p.init_db()
     limiter = RateLimiter(p)
     acc = {"id":"acc1","limit_per_minute":1}
@@ -17,7 +19,7 @@ async def test_rate_limiter_defer(tmp_path):
 @pytest.mark.asyncio
 async def test_rate_limiter_ignores_zero_limits(tmp_path):
     db = tmp_path / "zero.db"
-    p = Persistence(str(db))
+    p = MailProxyDb(str(db))
     await p.init_db()
     limiter = RateLimiter(p)
 
@@ -28,7 +30,7 @@ async def test_rate_limiter_ignores_zero_limits(tmp_path):
 @pytest.mark.asyncio
 async def test_rate_limiter_hour_and_day(tmp_path, monkeypatch):
     db = tmp_path / "limits.db"
-    p = Persistence(str(db))
+    p = MailProxyDb(str(db))
     await p.init_db()
     limiter = RateLimiter(p)
 

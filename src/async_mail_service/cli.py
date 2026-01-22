@@ -43,6 +43,7 @@ from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table
 
+from async_mail_service.mailproxy_db import MailProxyDb
 from async_mail_service.models import (
     DEFAULT_ATTACHMENT_PATH,
     DEFAULT_SYNC_PATH,
@@ -51,22 +52,21 @@ from async_mail_service.models import (
     TenantCreate,
     TenantRateLimits,
 )
-from async_mail_service.persistence import Persistence
 
 console = Console()
 err_console = Console(stderr=True)
 
 
-def get_persistence(db_path: str) -> Persistence:
-    """Create a Persistence instance for database operations.
+def get_persistence(db_path: str) -> MailProxyDb:
+    """Create a MailProxyDb instance for database operations.
 
     Args:
         db_path: Path to the SQLite database file.
 
     Returns:
-        Persistence: Configured persistence instance.
+        MailProxyDb: Configured persistence instance.
     """
-    return Persistence(db_path)
+    return MailProxyDb(db_path)
 
 
 def run_async(coro):
@@ -272,7 +272,7 @@ def _ensure_instance(name: str, port: int = 8000, host: str = "0.0.0.0") -> dict
     instance_dir.mkdir(parents=True, exist_ok=True)
 
     # Initialize DB and save config
-    persistence = Persistence(db_path)
+    persistence = MailProxyDb(db_path)
 
     async def _init():
         await persistence.init_db()
@@ -307,7 +307,7 @@ def _get_instance_config(name: str) -> dict[str, Any] | None:
     if not Path(db_path).exists():
         return None
 
-    persistence = Persistence(db_path)
+    persistence = MailProxyDb(db_path)
 
     async def _get():
         await persistence.init_db()
@@ -326,14 +326,14 @@ def _get_instance_config(name: str) -> dict[str, Any] | None:
     }
 
 
-def _get_persistence_for_instance(name: str) -> Persistence:
-    """Get a Persistence instance for database operations.
+def _get_persistence_for_instance(name: str) -> MailProxyDb:
+    """Get a MailProxyDb instance for database operations.
 
     Args:
         name: Instance name.
 
     Returns:
-        Persistence: Configured for the instance's database.
+        MailProxyDb: Configured for the instance's database.
 
     Raises:
         SystemExit: If the instance doesn't exist.
@@ -342,7 +342,7 @@ def _get_persistence_for_instance(name: str) -> Persistence:
     if not config:
         print_error(f"Instance '{name}' not found. Use 'mail-proxy {name} serve start' to create it.")
         sys.exit(1)
-    return Persistence(config["db_path"])
+    return MailProxyDb(config["db_path"])
 
 
 # ============================================================================

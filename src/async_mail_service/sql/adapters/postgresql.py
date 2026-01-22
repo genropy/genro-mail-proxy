@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 
 from .base import DbAdapter
@@ -17,16 +18,9 @@ class PostgresAdapter(DbAdapter):
     Converts :name placeholders to %(name)s for psycopg compatibility.
     """
 
+    placeholder = "%(name)s"
+
     def __init__(self, dsn: str, pool_size: int = 10):
-        """Initialize PostgreSQL adapter.
-
-        Args:
-            dsn: PostgreSQL connection string (e.g., "postgresql://user:pass@host/db").
-            pool_size: Maximum connections in pool.
-
-        Raises:
-            ImportError: If psycopg is not installed.
-        """
         self.dsn = dsn
         self.pool_size = pool_size
         self._pool: Any = None
@@ -42,7 +36,6 @@ class PostgresAdapter(DbAdapter):
 
     def _convert_placeholders(self, query: str) -> str:
         """Convert :name placeholders to %(name)s for psycopg."""
-        import re
         return re.sub(r":([a-zA-Z_][a-zA-Z0-9_]*)", r"%(\1)s", query)
 
     async def connect(self) -> None:
@@ -66,22 +59,20 @@ class PostgresAdapter(DbAdapter):
     async def execute(self, query: str, params: dict[str, Any] | None = None) -> int:
         """Execute query, return affected row count."""
         query = self._convert_placeholders(query)
-        async with self._pool.connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(query, params or {})
-                await conn.commit()
-                return cur.rowcount
+        async with self._pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(query, params or {})
+            await conn.commit()
+            return cur.rowcount
 
     async def execute_many(
         self, query: str, params_list: Sequence[dict[str, Any]]
     ) -> int:
         """Execute query multiple times with different params (batch insert)."""
         query = self._convert_placeholders(query)
-        async with self._pool.connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.executemany(query, params_list)
-                await conn.commit()
-                return len(params_list)
+        async with self._pool.connection() as conn, conn.cursor() as cur:
+            await cur.executemany(query, params_list)
+            await conn.commit()
+            return len(params_list)
 
     async def fetch_one(
         self, query: str, params: dict[str, Any] | None = None
@@ -135,11 +126,10 @@ class PostgresAdapter(DbAdapter):
             INSERT INTO {table} ({col_list}) VALUES ({placeholders})
             ON CONFLICT ({conflict_cols}) DO UPDATE SET {update_cols}
         """
-        async with self._pool.connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(query, data)
-                await conn.commit()
-                return cur.rowcount
+        async with self._pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(query, data)
+            await conn.commit()
+            return cur.rowcount
 
     async def commit(self) -> None:
         """Commit is handled per-operation with connection pooling."""

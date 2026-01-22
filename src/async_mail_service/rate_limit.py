@@ -26,7 +26,7 @@ Example:
 import time
 from typing import Any
 
-from .persistence import Persistence
+from .mailproxy_db import MailProxyDb
 
 
 class RateLimiter:
@@ -41,17 +41,17 @@ class RateLimiter:
     at which the message can be safely sent without violating the limit.
 
     Attributes:
-        persistence: The Persistence instance used to query send history.
+        db: The MailProxyDb instance used to query send history.
     """
 
-    def __init__(self, persistence: Persistence):
-        """Initialize the rate limiter with a persistence backend.
+    def __init__(self, db: MailProxyDb):
+        """Initialize the rate limiter with a database backend.
 
         Args:
-            persistence: A Persistence instance providing access to the
+            db: A MailProxyDb instance providing access to the
                 send log table for counting recent sends.
         """
-        self.persistence = persistence
+        self.db = db
 
     async def check_and_plan(self, account: dict[str, Any]) -> int | None:
         """Check rate limits and calculate deferral timestamp if exceeded.
@@ -89,15 +89,15 @@ class RateLimiter:
         per_day = lim("limit_per_day")
 
         if per_min is not None:
-            c = await self.persistence.count_sends_since(account_id, now - 60)
+            c = await self.db.count_sends_since(account_id, now - 60)
             if c >= per_min:
                 return (now // 60 + 1) * 60
         if per_hour is not None:
-            c = await self.persistence.count_sends_since(account_id, now - 3600)
+            c = await self.db.count_sends_since(account_id, now - 3600)
             if c >= per_hour:
                 return (now // 3600 + 1) * 3600
         if per_day is not None:
-            c = await self.persistence.count_sends_since(account_id, now - 86400)
+            c = await self.db.count_sends_since(account_id, now - 86400)
             if c >= per_day:
                 return (now // 86400 + 1) * 86400
         return None
@@ -111,4 +111,4 @@ class RateLimiter:
         Args:
             account_id: The SMTP account identifier that sent the message.
         """
-        await self.persistence.log_send(account_id, int(time.time()))
+        await self.db.log_send(account_id, int(time.time()))

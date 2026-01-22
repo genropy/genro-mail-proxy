@@ -1,7 +1,7 @@
 import asyncio
 import math
 import types
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
 
@@ -10,7 +10,7 @@ from async_mail_service.core import AsyncMailCore
 
 class DummySMTP:
     def __init__(self):
-        self.sent: List[Dict[str, Any]] = []
+        self.sent: list[dict[str, Any]] = []
         self.raise_error: Exception | None = None
         self.raise_error_persistent: bool = False  # If True, error persists across sends
 
@@ -26,7 +26,7 @@ class DummySMTP:
 class DummyPool:
     def __init__(self):
         self.smtp = DummySMTP()
-        self.requests: List[Any] = []
+        self.requests: list[Any] = []
 
     async def get_connection(self, host, port, user, password, use_tls):
         self.requests.append((host, port, user, password, use_tls))
@@ -73,7 +73,7 @@ class _DummyConnectionContext:
 class DummyRateLimiter:
     def __init__(self):
         self.plan_result: int | None = None
-        self.logged: List[str] = []
+        self.logged: list[str] = []
 
     async def check_and_plan(self, account):
         return self.plan_result
@@ -85,10 +85,10 @@ class DummyRateLimiter:
 class DummyMetrics:
     def __init__(self):
         self.pending_value = None
-        self.sent_accounts: List[str] = []
-        self.error_accounts: List[str] = []
-        self.deferred_accounts: List[str] = []
-        self.rate_limited_accounts: List[str] = []
+        self.sent_accounts: list[str] = []
+        self.error_accounts: list[str] = []
+        self.deferred_accounts: list[str] = []
+        self.rate_limited_accounts: list[str] = []
 
     def set_pending(self, value: int):
         self.pending_value = value
@@ -116,9 +116,9 @@ class DummyAttachments:
 
 class DummyReporter:
     def __init__(self):
-        self.payloads: List[Dict[str, Any]] = []
+        self.payloads: list[dict[str, Any]] = []
 
-    async def __call__(self, payload: Dict[str, Any]):
+    async def __call__(self, payload: dict[str, Any]):
         self.payloads.append(payload)
 
 
@@ -133,7 +133,7 @@ async def make_core(tmp_path, max_retries=5) -> AsyncMailCore:
         test_mode=True,
         max_retries=max_retries,
     )
-    await core.persistence.init_db()
+    await core.db.init_db()
     core.pool = DummyPool()
     core.rate_limiter = DummyRateLimiter()
     core.metrics = DummyMetrics()
@@ -153,7 +153,7 @@ async def make_core(tmp_path, max_retries=5) -> AsyncMailCore:
 async def test_run_now_triggers_wakeup(tmp_path):
     db_path = tmp_path / "core-prod.db"
     core = AsyncMailCore(db_path=str(db_path), start_active=True)
-    await core.persistence.init_db()
+    await core.db.init_db()
     result = await core.handle_command("run now", {})
     assert result["ok"] is True
     # "run now" wakes up both loops for immediate processing
@@ -208,20 +208,20 @@ async def test_add_messages_and_dispatch(tmp_path):
     assert len(core.pool.smtp.sent) == 1
     assert core.metrics.sent_accounts == ["acc"]
     # Message stored with sent_ts
-    messages = await core.persistence.list_messages()
+    messages = await core.db.list_messages()
     assert messages[0]["sent_ts"] is not None
 
     # Delivery report cycle marks message as reported
     await core._process_client_cycle()
     assert core.rate_limiter.logged == ["acc"]
-    reported = await core.persistence.list_messages()
+    reported = await core.db.list_messages()
     assert reported[0]["reported_ts"] is not None
 
     # Retention removes the message after threshold
     past_ts = core._utc_now_epoch() - (core._report_retention_seconds + 10)
-    await core.persistence.mark_reported(["msg1"], past_ts)
+    await core.db.mark_reported(["msg1"], past_ts)
     await core._apply_retention()
-    assert await core.persistence.list_messages() == []
+    assert await core.db.list_messages() == []
 
 
 @pytest.mark.asyncio
@@ -294,7 +294,7 @@ async def test_rate_limited_message_is_deferred(tmp_path):
     await core.handle_command("addMessages", payload)
     await core._process_smtp_cycle()
     assert core.metrics.deferred_accounts == ["acc"]
-    ready = await core.persistence.fetch_ready_messages(limit=5, now_ts=core._utc_now_epoch())
+    ready = await core.db.fetch_ready_messages(limit=5, now_ts=core._utc_now_epoch())
     assert ready == []
 
 
@@ -317,7 +317,7 @@ async def test_send_failure_sets_error(tmp_path):
     }
     await core.handle_command("addMessages", payload)
     await core._process_smtp_cycle()
-    messages = await core.persistence.list_messages()
+    messages = await core.db.list_messages()
 
     # RuntimeError("boom") is classified as temporary, so message should be deferred
     assert messages[0]["error_ts"] is None, "Temporary errors should not set error_ts"
@@ -354,11 +354,11 @@ async def test_temporary_error_retry_exhaustion(tmp_path):
         # If not the first attempt, clear deferred_ts to make message ready for processing
         if attempt > 0:
             # Clear deferred_ts so the message is immediately ready
-            await core.persistence.clear_deferred("msg-retry-exhausted")
+            await core.db.clear_deferred("msg-retry-exhausted")
 
         # Process the SMTP cycle
         processed = await core._process_smtp_cycle()
-        messages = await core.persistence.list_messages()
+        messages = await core.db.list_messages()
 
         if attempt < 3:
             # Should be deferred for retries
@@ -402,7 +402,7 @@ async def test_permanent_error_no_retry(tmp_path):
     }
     await core.handle_command("addMessages", payload)
     await core._process_smtp_cycle()
-    messages = await core.persistence.list_messages()
+    messages = await core.db.list_messages()
 
     # 5xx errors should be marked as permanent errors immediately
     assert messages[0]["error_ts"] is not None
@@ -537,7 +537,7 @@ async def test_batch_size_per_account_override(tmp_path):
 async def test_cleanup_messages_command(tmp_path):
     """Test manual cleanup of reported messages via command."""
     core = await make_core(tmp_path)
-    
+
     # Add and send a message
     payload = {
         "messages": [
@@ -553,29 +553,28 @@ async def test_cleanup_messages_command(tmp_path):
     }
     await core.handle_command("addMessages", payload)
     await core._process_smtp_cycle()
-    
+
     # Mark as reported (artificially old)
     old_ts = core._utc_now_epoch() - 10000
-    await core.persistence.mark_reported(["msg-cleanup"], old_ts)
-    
+    await core.db.mark_reported(["msg-cleanup"], old_ts)
+
     # Verify message exists
-    messages = await core.persistence.list_messages()
+    messages = await core.db.list_messages()
     assert len(messages) == 1
-    
+
     # Cleanup with custom threshold (older than 5000 seconds)
     result = await core.handle_command("cleanupMessages", {"older_than_seconds": 5000})
     assert result["ok"] is True
     assert result["removed"] == 1
-    
+
     # Verify message was removed
-    messages = await core.persistence.list_messages()
+    messages = await core.db.list_messages()
     assert len(messages) == 0
 
 
 @pytest.mark.asyncio
 async def test_mime_type_override_in_attachment(tmp_path):
     """Test that explicit mime_type in attachment overrides auto-detection."""
-    from email.message import EmailMessage as EmailMsg
 
     core = await make_core(tmp_path)
 
@@ -872,7 +871,7 @@ async def test_classify_smtp_error_permanent():
 @pytest.mark.asyncio
 async def test_calculate_retry_delay():
     """Test retry delay calculation."""
-    from async_mail_service.core import _calculate_retry_delay, DEFAULT_RETRY_DELAYS
+    from async_mail_service.core import DEFAULT_RETRY_DELAYS, _calculate_retry_delay
 
     # Use default delays
     assert _calculate_retry_delay(0) == DEFAULT_RETRY_DELAYS[0]

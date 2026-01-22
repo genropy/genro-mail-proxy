@@ -2,7 +2,7 @@
 
 import asyncio
 import types
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
 
@@ -72,7 +72,7 @@ class DummyPool:
     """Dummy SMTP pool for testing."""
 
     def __init__(self):
-        self.sent: List[Dict[str, Any]] = []
+        self.sent: list[dict[str, Any]] = []
 
     async def get_connection(self, host, port, user, password, use_tls):
         return self
@@ -88,9 +88,9 @@ class DummyReporter:
     """Dummy delivery reporter for testing."""
 
     def __init__(self):
-        self.payloads: List[Dict[str, Any]] = []
+        self.payloads: list[dict[str, Any]] = []
 
-    async def __call__(self, payload: Dict[str, Any]):
+    async def __call__(self, payload: dict[str, Any]):
         self.payloads.append(payload)
 
 

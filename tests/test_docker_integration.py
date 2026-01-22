@@ -8,7 +8,6 @@ HTTP echo servers for simulating tenant client endpoints.
 """
 
 import asyncio
-import os
 from pathlib import Path
 
 import pytest
@@ -100,6 +99,7 @@ def docker_services():
 async def mail_proxy_core(tmp_path):
     """Create a mail proxy core instance configured for Docker services."""
     import types
+
     from async_mail_service.core import AsyncMailCore
 
     db_path = tmp_path / "docker_test.db"
@@ -108,7 +108,7 @@ async def mail_proxy_core(tmp_path):
         start_active=True,
         test_mode=True,
     )
-    await core.persistence.init_db()
+    await core.db.init_db()
 
     # Mock rate limiter
     class DummyRateLimiter:
@@ -152,7 +152,7 @@ async def setup_tenants(mail_proxy_core):
     core = mail_proxy_core
 
     # Create tenant1
-    await core.persistence.add_tenant({
+    await core.db.add_tenant({
         "id": "tenant1",
         "name": "Tenant 1",
         "client_base_url": CLIENT_TENANT1_URL,
@@ -169,7 +169,7 @@ async def setup_tenants(mail_proxy_core):
     })
 
     # Create tenant2
-    await core.persistence.add_tenant({
+    await core.db.add_tenant({
         "id": "tenant2",
         "name": "Tenant 2",
         "client_base_url": CLIENT_TENANT2_URL,

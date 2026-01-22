@@ -370,9 +370,7 @@ class SMTPPool:
             for key in list(self._idle.keys()):
                 valid: list[PooledConnection] = []
                 for conn in self._idle[key]:
-                    if conn.age() > self.ttl:
-                        to_close.append(conn)
-                    elif not await self._is_alive(conn.smtp):
+                    if conn.age() > self.ttl or not await self._is_alive(conn.smtp):
                         to_close.append(conn)
                     else:
                         valid.append(conn)

@@ -1,7 +1,7 @@
 """Tests for multi-tenant delivery report routing with HTTP mocking."""
 
 import types
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
 from aioresponses import aioresponses
@@ -14,7 +14,7 @@ class DummyPool:
     """Dummy SMTP pool for testing."""
 
     def __init__(self):
-        self.sent: List[Dict[str, Any]] = []
+        self.sent: list[dict[str, Any]] = []
 
     async def get_connection(self, host, port, user, password, use_tls):
         return self
@@ -73,7 +73,7 @@ async def make_core(tmp_path) -> AsyncMailCore:
         start_active=True,
         test_mode=True,
     )
-    await core.persistence.init_db()
+    await core.db.init_db()
     core.pool = DummyPool()
     core.rate_limiter = DummyRateLimiter()
     core.metrics = DummyMetrics()
@@ -211,14 +211,14 @@ async def test_process_client_cycle_routes_to_tenants(tmp_path):
     core = await make_core(tmp_path)
 
     # Create two tenants
-    await core.persistence.add_tenant({
+    await core.db.add_tenant({
         "id": "tenant1",
         "client_base_url": "https://api.tenant1.com",
         "client_sync_path": "/sync",
         "client_auth": {"method": "bearer", "token": "token1"},
         "active": True,
     })
-    await core.persistence.add_tenant({
+    await core.db.add_tenant({
         "id": "tenant2",
         "client_base_url": "https://api.tenant2.com",
         "client_sync_path": "/sync",
@@ -227,13 +227,13 @@ async def test_process_client_cycle_routes_to_tenants(tmp_path):
     })
 
     # Create accounts for each tenant
-    await core.persistence.add_account({
+    await core.db.add_account({
         "id": "acc1",
         "tenant_id": "tenant1",
         "host": "smtp1.com",
         "port": 587,
     })
-    await core.persistence.add_account({
+    await core.db.add_account({
         "id": "acc2",
         "tenant_id": "tenant2",
         "host": "smtp2.com",
@@ -241,7 +241,7 @@ async def test_process_client_cycle_routes_to_tenants(tmp_path):
     })
 
     # Insert messages for each tenant
-    await core.persistence.insert_messages([
+    await core.db.insert_messages([
         {
             "id": "msg1",
             "account_id": "acc1",
@@ -258,8 +258,8 @@ async def test_process_client_cycle_routes_to_tenants(tmp_path):
 
     # Mark messages as sent
     sent_ts = core._utc_now_epoch()
-    await core.persistence.mark_sent("msg1", sent_ts)
-    await core.persistence.mark_sent("msg2", sent_ts)
+    await core.db.mark_sent("msg1", sent_ts)
+    await core.db.mark_sent("msg2", sent_ts)
 
     with aioresponses() as m:
         # New protocol: response with sent/error/not_found lists
@@ -273,7 +273,7 @@ async def test_process_client_cycle_routes_to_tenants(tmp_path):
         assert ("POST", URL("https://api.tenant2.com/sync")) in m.requests
 
         # Verify messages are marked as reported
-        messages = await core.persistence.list_messages()
+        messages = await core.db.list_messages()
         assert all(msg["reported_ts"] is not None for msg in messages)
 
 
@@ -284,19 +284,19 @@ async def test_process_client_cycle_fallback_global(tmp_path):
     core._client_sync_url = "https://global.fallback.com/sync"
 
     # Create tenant without sync URL
-    await core.persistence.add_tenant({
+    await core.db.add_tenant({
         "id": "no-url-tenant",
         "client_base_url": None,
         "active": True,
     })
-    await core.persistence.add_account({
+    await core.db.add_account({
         "id": "acc-no-url",
         "tenant_id": "no-url-tenant",
         "host": "smtp.com",
         "port": 587,
     })
 
-    await core.persistence.insert_messages([{
+    await core.db.insert_messages([{
         "id": "msg-fallback",
         "account_id": "acc-no-url",
         "priority": 2,
@@ -304,7 +304,7 @@ async def test_process_client_cycle_fallback_global(tmp_path):
     }])
 
     sent_ts = core._utc_now_epoch()
-    await core.persistence.mark_sent("msg-fallback", sent_ts)
+    await core.db.mark_sent("msg-fallback", sent_ts)
 
     with aioresponses() as m:
         m.post("https://global.fallback.com/sync", status=200, payload={"ok": True})
@@ -322,13 +322,13 @@ async def test_process_client_cycle_mixed_tenants(tmp_path):
     core._client_sync_url = "https://global.com/sync"
 
     # Tenant with sync URL
-    await core.persistence.add_tenant({
+    await core.db.add_tenant({
         "id": "with-url",
         "client_base_url": "https://api.with-url.com",
         "client_sync_path": "/sync",
         "active": True,
     })
-    await core.persistence.add_account({
+    await core.db.add_account({
         "id": "acc-with",
         "tenant_id": "with-url",
         "host": "smtp.com",
@@ -336,13 +336,13 @@ async def test_process_client_cycle_mixed_tenants(tmp_path):
     })
 
     # Account without tenant (backward compatibility)
-    await core.persistence.add_account({
+    await core.db.add_account({
         "id": "acc-no-tenant",
         "host": "smtp2.com",
         "port": 587,
     })
 
-    await core.persistence.insert_messages([
+    await core.db.insert_messages([
         {
             "id": "msg-with-tenant",
             "account_id": "acc-with",
@@ -358,8 +358,8 @@ async def test_process_client_cycle_mixed_tenants(tmp_path):
     ])
 
     sent_ts = core._utc_now_epoch()
-    await core.persistence.mark_sent("msg-with-tenant", sent_ts)
-    await core.persistence.mark_sent("msg-no-tenant", sent_ts)
+    await core.db.mark_sent("msg-with-tenant", sent_ts)
+    await core.db.mark_sent("msg-no-tenant", sent_ts)
 
     with aioresponses() as m:
         m.post("https://api.with-url.com/sync", status=200, payload={"ok": True})
@@ -379,32 +379,32 @@ async def test_process_client_cycle_partial_failure(tmp_path):
     core = await make_core(tmp_path)
 
     # Two tenants
-    await core.persistence.add_tenant({
+    await core.db.add_tenant({
         "id": "success-tenant",
         "client_base_url": "https://api.success.com",
         "client_sync_path": "/sync",
         "active": True,
     })
-    await core.persistence.add_tenant({
+    await core.db.add_tenant({
         "id": "fail-tenant",
         "client_base_url": "https://api.fail.com",
         "client_sync_path": "/sync",
         "active": True,
     })
-    await core.persistence.add_account({
+    await core.db.add_account({
         "id": "acc-success",
         "tenant_id": "success-tenant",
         "host": "smtp.com",
         "port": 587,
     })
-    await core.persistence.add_account({
+    await core.db.add_account({
         "id": "acc-fail",
         "tenant_id": "fail-tenant",
         "host": "smtp.com",
         "port": 587,
     })
 
-    await core.persistence.insert_messages([
+    await core.db.insert_messages([
         {
             "id": "msg-success",
             "account_id": "acc-success",
@@ -420,8 +420,8 @@ async def test_process_client_cycle_partial_failure(tmp_path):
     ])
 
     sent_ts = core._utc_now_epoch()
-    await core.persistence.mark_sent("msg-success", sent_ts)
-    await core.persistence.mark_sent("msg-fail", sent_ts)
+    await core.db.mark_sent("msg-success", sent_ts)
+    await core.db.mark_sent("msg-fail", sent_ts)
 
     with aioresponses() as m:
         m.post("https://api.success.com/sync", status=200, payload={"ok": True})
@@ -430,7 +430,7 @@ async def test_process_client_cycle_partial_failure(tmp_path):
         await core._process_client_cycle()
 
         # Success tenant message should be marked as reported
-        messages = await core.persistence.list_messages()
+        messages = await core.db.list_messages()
         msg_success = next(m for m in messages if m["id"] == "msg-success")
         msg_fail = next(m for m in messages if m["id"] == "msg-fail")
 

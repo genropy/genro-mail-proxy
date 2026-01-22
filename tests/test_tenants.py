@@ -2,13 +2,13 @@
 
 import pytest
 
-from async_mail_service.persistence import Persistence
+from async_mail_service.mailproxy_db import MailProxyDb
 
 
 @pytest.mark.asyncio
 async def test_tenant_crud(tmp_path):
     """Test basic tenant CRUD operations."""
-    db = Persistence(str(tmp_path / "test.db"))
+    db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
     # Create
@@ -48,7 +48,7 @@ async def test_tenant_crud(tmp_path):
 @pytest.mark.asyncio
 async def test_tenant_list(tmp_path):
     """Test listing tenants with active_only filter."""
-    db = Persistence(str(tmp_path / "test.db"))
+    db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
     await db.add_tenant({"id": "tenant1", "name": "Tenant 1", "active": True})
@@ -68,7 +68,7 @@ async def test_tenant_list(tmp_path):
 @pytest.mark.asyncio
 async def test_tenant_not_found(tmp_path):
     """Test handling of non-existent tenant."""
-    db = Persistence(str(tmp_path / "test.db"))
+    db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
     tenant = await db.get_tenant("nonexistent")
@@ -84,7 +84,7 @@ async def test_tenant_not_found(tmp_path):
 @pytest.mark.asyncio
 async def test_account_with_tenant(tmp_path):
     """Test creating accounts with tenant association."""
-    db = Persistence(str(tmp_path / "test.db"))
+    db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
     # Create tenant first
@@ -115,7 +115,7 @@ async def test_account_with_tenant(tmp_path):
 @pytest.mark.asyncio
 async def test_get_tenant_for_account(tmp_path):
     """Test retrieving tenant configuration for an account."""
-    db = Persistence(str(tmp_path / "test.db"))
+    db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
     await db.add_tenant({
@@ -139,7 +139,7 @@ async def test_get_tenant_for_account(tmp_path):
 @pytest.mark.asyncio
 async def test_get_tenant_for_account_no_tenant(tmp_path):
     """Test account without tenant association."""
-    db = Persistence(str(tmp_path / "test.db"))
+    db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
     await db.add_account({
@@ -155,7 +155,7 @@ async def test_get_tenant_for_account_no_tenant(tmp_path):
 @pytest.mark.asyncio
 async def test_delete_tenant_cascades(tmp_path):
     """Test that deleting a tenant removes associated accounts and messages."""
-    db = Persistence(str(tmp_path / "test.db"))
+    db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
     # Create tenant with accounts and messages
@@ -189,7 +189,7 @@ async def test_delete_tenant_cascades(tmp_path):
 @pytest.mark.asyncio
 async def test_multiple_tenants_isolation(tmp_path):
     """Test that tenants are properly isolated."""
-    db = Persistence(str(tmp_path / "test.db"))
+    db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
     # Create two tenants
@@ -214,7 +214,7 @@ async def test_multiple_tenants_isolation(tmp_path):
 @pytest.mark.asyncio
 async def test_tenant_json_fields(tmp_path):
     """Test that JSON fields are properly serialized and deserialized."""
-    db = Persistence(str(tmp_path / "test.db"))
+    db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
     await db.add_tenant({
@@ -247,7 +247,7 @@ async def test_tenant_json_fields(tmp_path):
 @pytest.mark.asyncio
 async def test_tenant_update_partial(tmp_path):
     """Test partial updates to tenant."""
-    db = Persistence(str(tmp_path / "test.db"))
+    db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
     await db.add_tenant({
@@ -269,7 +269,7 @@ async def test_tenant_update_partial(tmp_path):
 @pytest.mark.asyncio
 async def test_tenant_update_json_fields(tmp_path):
     """Test updating JSON fields."""
-    db = Persistence(str(tmp_path / "test.db"))
+    db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
     await db.add_tenant({
@@ -289,7 +289,7 @@ async def test_tenant_update_json_fields(tmp_path):
 @pytest.mark.asyncio
 async def test_fetch_reports_includes_tenant_id(tmp_path):
     """Test that fetch_reports includes tenant_id from account."""
-    db = Persistence(str(tmp_path / "test.db"))
+    db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
     # Create tenant and account
@@ -328,7 +328,7 @@ async def test_fetch_reports_includes_tenant_id(tmp_path):
 @pytest.mark.asyncio
 async def test_fetch_reports_no_tenant(tmp_path):
     """Test fetch_reports for messages without tenant (backward compatibility)."""
-    db = Persistence(str(tmp_path / "test.db"))
+    db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
     # Create account without tenant
@@ -360,7 +360,7 @@ async def test_fetch_reports_no_tenant(tmp_path):
 @pytest.mark.asyncio
 async def test_fetch_reports_multiple_tenants(tmp_path):
     """Test fetch_reports groups correctly by tenant."""
-    db = Persistence(str(tmp_path / "test.db"))
+    db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
     # Create two tenants with accounts

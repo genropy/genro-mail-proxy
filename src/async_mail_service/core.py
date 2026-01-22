@@ -56,8 +56,8 @@ from .attachments import AttachmentManager
 from .attachments.cache import TieredCache
 from .config_loader import CacheConfig, load_cache_config
 from .logger import get_logger
+from .mailproxy_db import MailProxyDb
 from .models import get_tenant_attachment_url, get_tenant_sync_url
-from .persistence import Persistence
 from .prometheus import MailMetrics
 from .rate_limit import RateLimiter
 from .smtp_pool import SMTPPool
@@ -265,9 +265,9 @@ class AsyncMailCore:
 
         self.logger = logger or get_logger()
         self.pool = SMTPPool()
-        self.persistence = Persistence(db_path or ":memory:")
+        self.db = MailProxyDb(db_path or ":memory:")
         self._config_path = config_path
-        self.rate_limiter = RateLimiter(self.persistence)
+        self.rate_limiter = RateLimiter(self.db)
         self.metrics = metrics or MailMetrics()
         self._queue_put_timeout = queue_put_timeout
         self._max_enqueue_batch = max_enqueue_batch
@@ -339,7 +339,7 @@ class AsyncMailCore:
         3. Initialize attachment cache (memory and disk tiers)
         4. Create the AttachmentManager
         """
-        await self.persistence.init_db()
+        await self.db.init_db()
         await self._refresh_queue_gauge()
 
         # Load cache configuration from environment or config file
@@ -466,14 +466,14 @@ class AsyncMailCore:
                 self._active = True
                 return {"ok": True, "active": True}
             case "addAccount":
-                await self.persistence.add_account(payload)
+                await self.db.add_account(payload)
                 return {"ok": True}
             case "listAccounts":
-                accounts = await self.persistence.list_accounts()
+                accounts = await self.db.list_accounts()
                 return {"ok": True, "accounts": accounts}
             case "deleteAccount":
                 account_id = payload.get("id")
-                await self.persistence.delete_account(account_id)
+                await self.db.delete_account(account_id)
                 await self._refresh_queue_gauge()
                 return {"ok": True}
             case "deleteMessages":
@@ -483,7 +483,7 @@ class AsyncMailCore:
                 return {"ok": True, "removed": removed, "not_found": not_found}
             case "listMessages":
                 active_only = bool(payload.get("active_only", False)) if isinstance(payload, dict) else False
-                messages = await self.persistence.list_messages(active_only=active_only)
+                messages = await self.db.list_messages(active_only=active_only)
                 return {"ok": True, "messages": messages}
             case "addMessages":
                 return await self._handle_add_messages(payload)
@@ -492,29 +492,29 @@ class AsyncMailCore:
                 removed = await self._cleanup_reported_messages(older_than)
                 return {"ok": True, "removed": removed}
             case "addTenant":
-                await self.persistence.add_tenant(payload)
+                await self.db.add_tenant(payload)
                 return {"ok": True}
             case "getTenant":
                 tenant_id = payload.get("id")
-                tenant = await self.persistence.get_tenant(tenant_id)
+                tenant = await self.db.get_tenant(tenant_id)
                 if tenant:
                     return {"ok": True, **tenant}
                 return {"ok": False, "error": "tenant not found"}
             case "listTenants":
                 active_only = bool(payload.get("active_only", False)) if isinstance(payload, dict) else False
-                tenants = await self.persistence.list_tenants(active_only=active_only)
+                tenants = await self.db.list_tenants(active_only=active_only)
                 return {"ok": True, "tenants": tenants}
             case "updateTenant":
                 tenant_id = payload.pop("id", None)
                 if not tenant_id:
                     return {"ok": False, "error": "tenant id required"}
-                updated = await self.persistence.update_tenant(tenant_id, payload)
+                updated = await self.db.update_tenant(tenant_id, payload)
                 if updated:
                     return {"ok": True}
                 return {"ok": False, "error": "tenant not found"}
             case "deleteTenant":
                 tenant_id = payload.get("id")
-                deleted = await self.persistence.delete_tenant(tenant_id)
+                deleted = await self.db.delete_tenant(tenant_id)
                 if deleted:
                     return {"ok": True}
                 return {"ok": False, "error": "tenant not found"}
@@ -567,8 +567,8 @@ class AsyncMailCore:
                         "payload": item,
                         "deferred_ts": None,
                     }
-                    await self.persistence.insert_messages([entry])
-                    await self.persistence.mark_error(msg_id, now_ts, reason)
+                    await self.db.insert_messages([entry])
+                    await self.db.mark_error(msg_id, now_ts, reason)
                     rejected_for_sync.append({
                         "id": msg_id,
                         "status": "error",
@@ -598,7 +598,7 @@ class AsyncMailCore:
             }
             for msg in validated
             ]
-            inserted = await self.persistence.insert_messages(entries)
+            inserted = await self.db.insert_messages(entries)
             # Messages not inserted were already sent (sent_ts IS NOT NULL)
             for msg in validated:
                 if msg["id"] not in inserted:
@@ -638,7 +638,7 @@ class AsyncMailCore:
         removed = 0
         missing: list[str] = []
         for mid in sorted(ids):
-            if await self.persistence.delete_message(mid):
+            if await self.db.delete_message(mid):
                 removed += 1
             else:
                 missing.append(mid)
@@ -660,7 +660,7 @@ class AsyncMailCore:
             retention = max(0, int(older_than_seconds))
 
         threshold = self._utc_now_epoch() - retention
-        removed = await self.persistence.remove_reported_before(threshold)
+        removed = await self.db.remove_reported_before(threshold)
         if removed:
             await self._refresh_queue_gauge()
         return removed
@@ -699,7 +699,7 @@ class AsyncMailCore:
             *(task for task in [self._task_smtp, self._task_client, self._task_cleanup] if task),
             return_exceptions=True,
         )
-        await self.persistence.adapter.close()
+        await self.db.adapter.close()
 
     # --------------------------------------------------------------- SMTP logic
     async def _smtp_dispatch_loop(self) -> None:
@@ -755,7 +755,7 @@ class AsyncMailCore:
         processed_any = False
 
         # First, process immediate priority messages (priority=0)
-        immediate_batch = await self.persistence.fetch_ready_messages(
+        immediate_batch = await self.db.fetch_ready_messages(
             limit=self._smtp_batch_size, now_ts=now_ts, priority=0
         )
         if immediate_batch:
@@ -764,7 +764,7 @@ class AsyncMailCore:
             processed_any = True
 
         # Then, process regular priority messages (priority >= 1)
-        regular_batch = await self.persistence.fetch_ready_messages(
+        regular_batch = await self.db.fetch_ready_messages(
             limit=self._smtp_batch_size, now_ts=now_ts, min_priority=1
         )
         if regular_batch:
@@ -801,7 +801,7 @@ class AsyncMailCore:
             account_batch_size = self._batch_size_per_account
             if account_id and account_id != "default":
                 try:
-                    account_data = await self.persistence.get_account(account_id)
+                    account_data = await self.db.get_account(account_id)
                     if account_data and account_data.get("batch_size"):
                         account_batch_size = int(account_data["batch_size"])
                 except Exception:
@@ -829,10 +829,9 @@ class AsyncMailCore:
         async def dispatch_with_limits(entry: dict, account_id: str) -> None:
             """Dispatch a single message respecting concurrency limits."""
             account_semaphore = self._get_account_semaphore(account_id)
-            async with global_semaphore:
-                async with account_semaphore:
-                    self.logger.debug(f"Dispatching message {entry.get('id')} for account {account_id}")
-                    await self._dispatch_message(entry, now_ts)
+            async with global_semaphore, account_semaphore:
+                self.logger.debug(f"Dispatching message {entry.get('id')} for account {account_id}")
+                await self._dispatch_message(entry, now_ts)
 
         # Dispatch all messages in parallel with concurrency limits
         tasks = [dispatch_with_limits(entry, acc_id) for entry, acc_id in all_messages_to_send]
@@ -867,12 +866,12 @@ class AsyncMailCore:
                 message.get("account_id") or "default",
             )
         if msg_id:
-            await self.persistence.clear_deferred(msg_id)
+            await self.db.clear_deferred(msg_id)
         try:
             email_msg, envelope_from = await self._build_email(message)
         except KeyError as exc:
             reason = f"missing {exc}"
-            await self.persistence.mark_error(msg_id, now_ts, reason)
+            await self.db.mark_error(msg_id, now_ts, reason)
             await self._publish_result(
                 {
                     "id": msg_id,
@@ -886,7 +885,7 @@ class AsyncMailCore:
         except ValueError as exc:
             # Attachment fetch failure or other validation error
             reason = str(exc)
-            await self.persistence.mark_error(msg_id, now_ts, reason)
+            await self.db.mark_error(msg_id, now_ts, reason)
             await self._publish_result(
                 {
                     "id": msg_id,
@@ -930,7 +929,7 @@ class AsyncMailCore:
             host, port, user, password, acc = await self._resolve_account(account_id)
         except AccountConfigurationError as exc:
             error_ts = self._utc_now_epoch()
-            await self.persistence.mark_error(msg_id or "", error_ts, str(exc))
+            await self.db.mark_error(msg_id or "", error_ts, str(exc))
             return {
                 "id": msg_id,
                 "status": "error",
@@ -948,7 +947,7 @@ class AsyncMailCore:
         if deferred_until:
             # Rate limit hit - defer message for later retry (internal scheduling).
             # This is flow control, not an error, so it won't be reported to client.
-            await self.persistence.set_deferred(msg_id or "", deferred_until)
+            await self.db.set_deferred(msg_id or "", deferred_until)
             self.metrics.inc_deferred(resolved_account_id)
             self.metrics.inc_rate_limited(resolved_account_id)
             self.logger.debug(
@@ -984,8 +983,8 @@ class AsyncMailCore:
                 updated_payload["retry_count"] = retry_count + 1
 
                 # Store updated payload and defer the message
-                await self.persistence.update_message_payload(msg_id or "", updated_payload)
-                await self.persistence.set_deferred(msg_id or "", deferred_until)
+                await self.db.update_message_payload(msg_id or "", updated_payload)
+                await self.db.set_deferred(msg_id or "", deferred_until)
                 self.metrics.inc_deferred(resolved_account_id)
 
                 # Log the retry attempt
@@ -1028,7 +1027,7 @@ class AsyncMailCore:
                         error_info,
                     )
 
-                await self.persistence.mark_error(msg_id or "", error_ts, error_info)
+                await self.db.mark_error(msg_id or "", error_ts, error_info)
                 self.metrics.inc_error(resolved_account_id)
 
                 return {
@@ -1042,7 +1041,7 @@ class AsyncMailCore:
                 }
 
         sent_ts = self._utc_now_epoch()
-        await self.persistence.mark_sent(msg_id or "", sent_ts)
+        await self.db.mark_sent(msg_id or "", sent_ts)
         await self.rate_limiter.log_send(resolved_account_id)
         self.metrics.inc_sent(resolved_account_id)
         return {
@@ -1102,13 +1101,13 @@ class AsyncMailCore:
         # Track total queued messages from all clients
         total_queued = 0
 
-        reports = await self.persistence.fetch_reports(self._smtp_batch_size)
+        reports = await self.db.fetch_reports(self._smtp_batch_size)
         if not reports:
             # Trigger sync for tenants with sync URL (even without reports)
             # This allows the tenant server to send new messages to enqueue
             if target_tenant_id:
                 # Sync only the specified tenant
-                tenant = await self.persistence.get_tenant(target_tenant_id)
+                tenant = await self.db.get_tenant(target_tenant_id)
                 if tenant and tenant.get("active") and get_tenant_sync_url(tenant):
                     try:
                         _, queued = await self._send_reports_to_tenant(tenant, [])
@@ -1121,7 +1120,7 @@ class AsyncMailCore:
                         )
             else:
                 # Sync all active tenants
-                tenants = await self.persistence.list_tenants()
+                tenants = await self.db.list_tenants()
                 for tenant in tenants:
                     if tenant.get("active") and get_tenant_sync_url(tenant):
                         try:
@@ -1169,7 +1168,7 @@ class AsyncMailCore:
             try:
                 if tenant_id:
                     # Get tenant configuration and send to tenant-specific endpoint
-                    tenant = await self.persistence.get_tenant(tenant_id)
+                    tenant = await self.db.get_tenant(tenant_id)
                     if tenant and get_tenant_sync_url(tenant):
                         acked, queued = await self._send_reports_to_tenant(tenant, payloads)
                         acked_ids.extend(acked)
@@ -1207,7 +1206,7 @@ class AsyncMailCore:
         # Mark only acknowledged messages as reported
         if acked_ids:
             reported_ts = self._utc_now_epoch()
-            await self.persistence.mark_reported(acked_ids, reported_ts)
+            await self.db.mark_reported(acked_ids, reported_ts)
 
         await self._apply_retention()
         return total_queued
@@ -1221,7 +1220,7 @@ class AsyncMailCore:
         if self._report_retention_seconds <= 0:
             return
         threshold = self._utc_now_epoch() - self._report_retention_seconds
-        removed = await self.persistence.remove_reported_before(threshold)
+        removed = await self.db.remove_reported_before(threshold)
         if removed:
             await self._refresh_queue_gauge()
 
@@ -1243,7 +1242,7 @@ class AsyncMailCore:
         and updates the metrics collector.
         """
         try:
-            count = await self.persistence.count_active_messages()
+            count = await self.db.count_active_messages()
         except Exception:  # pragma: no cover - defensive
             self.logger.exception("Failed to refresh queue gauge")
             return
@@ -1400,7 +1399,7 @@ class AsyncMailCore:
             AccountConfigurationError: If no account found and no defaults configured.
         """
         if account_id:
-            acc = await self.persistence.get_account(account_id)
+            acc = await self.db.get_account(account_id)
             return acc["host"], int(acc["port"]), acc.get("user"), acc.get("password"), acc
         if self.default_host and self.default_port:
             return (
@@ -1512,7 +1511,7 @@ class AsyncMailCore:
             return self.attachments
 
         # Try to get tenant config for this account
-        tenant = await self.persistence.get_tenant_for_account(account_id)
+        tenant = await self.db.get_tenant_for_account(account_id)
         if not tenant:
             return self.attachments
 
@@ -1810,7 +1809,7 @@ class AsyncMailCore:
         account_id = payload.get("account_id")
         if account_id:
             try:
-                await self.persistence.get_account(account_id)
+                await self.db.get_account(account_id)
             except Exception:
                 return False, "account not found"
         elif not (self.default_host and self.default_port):

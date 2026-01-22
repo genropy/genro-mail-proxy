@@ -1,23 +1,21 @@
 """Tests for the MailProxyClient library."""
 
 import json
-import pytest
 from unittest.mock import MagicMock, patch
 
 from async_mail_service.client import (
-    Message,
     Account,
-    Tenant,
-    MessagesAPI,
     AccountsAPI,
-    TenantsAPI,
     MailProxyClient,
-    connect,
-    register_connection,
+    Message,
+    MessagesAPI,
+    Tenant,
+    TenantsAPI,
     _connections,
     _load_connections_from_file,
+    connect,
+    register_connection,
 )
-
 
 # --- Message dataclass tests ---
 

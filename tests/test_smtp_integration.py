@@ -1,14 +1,12 @@
 """Tests with real SMTP server using aiosmtpd."""
 
 import asyncio
-import random
 import socket
 import types
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
 from aiosmtpd.controller import Controller
-from aiosmtpd.smtp import SMTP
 
 from async_mail_service.core import AsyncMailCore
 
@@ -26,7 +24,7 @@ class CapturingHandler:
     """SMTP handler that captures received messages."""
 
     def __init__(self):
-        self.messages: List[Dict[str, Any]] = []
+        self.messages: list[dict[str, Any]] = []
         self.reject_next = False
         self.reject_code = 550
         self.reject_message = "Mailbox not found"
@@ -102,9 +100,9 @@ class DummyReporter:
     """Dummy delivery reporter for testing."""
 
     def __init__(self):
-        self.payloads: List[Dict[str, Any]] = []
+        self.payloads: list[dict[str, Any]] = []
 
-    async def __call__(self, payload: Dict[str, Any]):
+    async def __call__(self, payload: dict[str, Any]):
         self.payloads.append(payload)
 
 
@@ -134,7 +132,7 @@ async def make_core_with_smtp(tmp_path, smtp_port) -> AsyncMailCore:
         report_delivery_callable=reporter,
         test_mode=True,
     )
-    await core.persistence.init_db()
+    await core.db.init_db()
     core.rate_limiter = DummyRateLimiter()
     core.metrics = DummyMetrics()
     core.attachments = DummyAttachments()
@@ -185,7 +183,7 @@ async def test_send_email_via_real_smtp(tmp_path, smtp_server, smtp_handler):
     assert "Hello, this is a test email." in msg["data"]
 
     # Verify message is marked as sent
-    messages = await core.persistence.list_messages()
+    messages = await core.db.list_messages()
     assert messages[0]["sent_ts"] is not None
     assert core.metrics.sent_count == 1
 
@@ -267,7 +265,7 @@ async def test_smtp_rejection_marks_error(tmp_path, smtp_server, smtp_handler):
     await core._process_smtp_cycle()
 
     # Message should be marked with error (550 is permanent)
-    messages = await core.persistence.list_messages()
+    messages = await core.db.list_messages()
     assert messages[0]["error_ts"] is not None
     assert "550" in messages[0]["error"] or "User unknown" in messages[0]["error"]
     assert core.metrics.error_count == 1
@@ -298,7 +296,7 @@ async def test_smtp_temporary_error_defers(tmp_path, smtp_server, smtp_handler):
     await core._process_smtp_cycle()
 
     # Message should be deferred, not errored
-    messages = await core.persistence.list_messages()
+    messages = await core.db.list_messages()
     assert messages[0]["error_ts"] is None  # Not permanent error
     assert messages[0]["deferred_ts"] is not None  # Deferred for retry
 
@@ -328,7 +326,7 @@ async def test_send_multiple_messages_batch(tmp_path, smtp_server, smtp_handler)
     assert core.metrics.sent_count == 5
 
     # All messages should be marked as sent
-    db_messages = await core.persistence.list_messages()
+    db_messages = await core.db.list_messages()
     assert all(m["sent_ts"] is not None for m in db_messages)
 
 
@@ -355,7 +353,7 @@ async def test_multitenant_smtp_dispatch(tmp_path, smtp_handler):
             report_delivery_callable=reporter,
             test_mode=True,
         )
-        await core.persistence.init_db()
+        await core.db.init_db()
         core.rate_limiter = DummyRateLimiter()
         core.metrics = DummyMetrics()
         core.attachments = DummyAttachments()
@@ -368,13 +366,13 @@ async def test_multitenant_smtp_dispatch(tmp_path, smtp_handler):
         )
 
         # Create two tenants with different SMTP accounts
-        await core.persistence.add_tenant({
+        await core.db.add_tenant({
             "id": "tenant1",
             "client_base_url": "https://tenant1.com",
             "client_sync_path": "/sync",
             "active": True,
         })
-        await core.persistence.add_tenant({
+        await core.db.add_tenant({
             "id": "tenant2",
             "client_base_url": "https://tenant2.com",
             "client_sync_path": "/sync",

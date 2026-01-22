@@ -2,13 +2,13 @@ import time
 
 import pytest
 
-from async_mail_service.persistence import Persistence
+from async_mail_service.mailproxy_db import MailProxyDb
 
 
 @pytest.mark.asyncio
 async def test_account_crud(tmp_path):
     db = tmp_path / "test.db"
-    p = Persistence(str(db))
+    p = MailProxyDb(str(db))
     await p.init_db()
     await p.add_account(
         {
@@ -34,7 +34,7 @@ async def test_account_crud(tmp_path):
 @pytest.mark.asyncio
 async def test_messages_lifecycle(tmp_path):
     db = tmp_path / "messages.db"
-    p = Persistence(str(db))
+    p = MailProxyDb(str(db))
     await p.init_db()
     now = int(time.time())
     inserted = await p.insert_messages(
@@ -72,7 +72,7 @@ async def test_messages_lifecycle(tmp_path):
 @pytest.mark.asyncio
 async def test_existing_ids(tmp_path):
     db = tmp_path / "existing.db"
-    p = Persistence(str(db))
+    p = MailProxyDb(str(db))
     await p.init_db()
     await p.insert_messages(
         [
@@ -91,7 +91,7 @@ async def test_existing_ids(tmp_path):
 @pytest.mark.asyncio
 async def test_send_log_and_counts(tmp_path):
     db = tmp_path / "log.db"
-    p = Persistence(str(db))
+    p = MailProxyDb(str(db))
     await p.init_db()
     await p.log_send("acc", 10)
     await p.log_send("acc", 20)
@@ -104,7 +104,7 @@ async def test_send_log_and_counts(tmp_path):
 @pytest.mark.asyncio
 async def test_get_account_missing_raises(tmp_path):
     db = tmp_path / "missing.db"
-    p = Persistence(str(db))
+    p = MailProxyDb(str(db))
     await p.init_db()
     with pytest.raises(ValueError):
         await p.get_account("unknown")
@@ -114,7 +114,7 @@ async def test_get_account_missing_raises(tmp_path):
 async def test_fetch_ready_messages_priority_filter(tmp_path):
     """Test fetch_ready_messages with priority and min_priority filters."""
     db = tmp_path / "priority.db"
-    p = Persistence(str(db))
+    p = MailProxyDb(str(db))
     await p.init_db()
     now = int(time.time())
 

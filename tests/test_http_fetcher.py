@@ -1,7 +1,6 @@
 """Tests for the HTTP fetcher module."""
 
 import base64
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

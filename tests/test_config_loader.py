@@ -1,8 +1,5 @@
 """Tests for config_loader module."""
 
-import os
-import pytest
-from pathlib import Path
 
 from async_mail_service.config_loader import CacheConfig, load_cache_config
 

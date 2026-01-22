@@ -3,11 +3,13 @@
 
 import asyncio
 import sqlite3
-from async_mail_service.persistence import Persistence
+
+from async_mail_service.mailproxy_db import MailProxyDb
+
 
 async def main():
     db_path = "/tmp/mail_service.db"
-    persistence = Persistence(db_path)
+    persistence = MailProxyDb(db_path)
 
     now_ts = int(asyncio.get_event_loop().time())
 
