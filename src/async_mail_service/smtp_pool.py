@@ -1,239 +1,417 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
-"""Lightweight asyncio-friendly SMTP connection pool.
+"""Asyncio-friendly SMTP connection pool with acquire/release pattern.
 
-This module provides a connection pool for SMTP clients, enabling efficient
-reuse of SMTP connections across multiple send operations. Connections are
-keyed by asyncio task ID, allowing concurrent tasks to maintain separate
-connections while minimizing the overhead of repeated connection establishment.
+This module provides a connection pool for SMTP clients using a true resource
+pool pattern with acquire/release semantics. Connections are pooled by account
+key (host:port:user) and can be shared between concurrent coroutines.
 
-The pool automatically handles connection lifecycle management including:
+Features:
+- Connection pooling per SMTP account
+- Configurable max connections per account
 - TTL-based connection expiration
 - Health checking via SMTP NOOP commands
-- Automatic reconnection when connections become stale or broken
-- Graceful cleanup of expired connections
+- Automatic reconnection when connections become stale
+- Context manager support for automatic release
 
 Example:
-    Using the SMTP pool for email sending::
+    Using the SMTP pool with context manager::
 
-        pool = SMTPPool(ttl=300)
+        pool = SMTPPool(ttl=300, max_per_account=5)
 
-        # Get a connection (creates new or reuses existing)
-        smtp = await pool.get_connection(
+        async with pool.connection(
             host="smtp.example.com",
             port=465,
             user="sender@example.com",
             password="secret",
             use_tls=True
-        )
+        ) as smtp:
+            await smtp.send_message(message)
+        # Connection automatically released back to pool
 
-        # Send message using the connection
-        await smtp.send_message(message)
+    Manual acquire/release::
 
-        # Periodically clean up stale connections
-        await pool.cleanup()
+        smtp = await pool.acquire(host, port, user, password, use_tls=True)
+        try:
+            await smtp.send_message(message)
+        finally:
+            await pool.release(smtp)
 """
 
 import asyncio
 import time
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 
 import aiosmtplib
 
 
+@dataclass
+class PooledConnection:
+    """Wrapper for a pooled SMTP connection with metadata."""
+
+    smtp: aiosmtplib.SMTP
+    account_key: str
+    created_at: float = field(default_factory=time.time)
+    last_used: float = field(default_factory=time.time)
+
+    def touch(self) -> None:
+        """Update last_used timestamp."""
+        self.last_used = time.time()
+
+    def age(self) -> float:
+        """Return connection age in seconds."""
+        return time.time() - self.created_at
+
+    def idle_time(self) -> float:
+        """Return time since last use in seconds."""
+        return time.time() - self.last_used
+
+
 class SMTPPool:
-    """Asyncio-compatible SMTP connection pool with per-task connection reuse.
+    """SMTP connection pool with acquire/release semantics.
 
-    Maintains a pool of SMTP connections indexed by asyncio task ID, enabling
-    each concurrent task to efficiently reuse its own connection across
-    multiple send operations. Connections are validated before reuse and
-    automatically replaced when they expire or fail health checks.
+    Maintains pools of SMTP connections indexed by account key (host:port:user).
+    Connections can be acquired by any coroutine and must be released after use.
+    This enables efficient connection sharing across concurrent operations.
 
-    The pool uses a time-to-live (TTL) mechanism to prevent connections from
-    becoming stale, and performs SMTP NOOP checks to verify connection health
-    before returning pooled connections.
+    The pool uses TTL-based expiration and NOOP health checks to ensure
+    connections remain valid. Invalid connections are discarded and replaced.
 
     Attributes:
-        ttl: Maximum age in seconds for pooled connections before expiration.
-        pool: Internal dictionary mapping task IDs to connection entries.
-        lock: Asyncio lock for thread-safe pool access.
+        ttl: Maximum age in seconds for pooled connections.
+        max_per_account: Maximum connections per SMTP account.
     """
 
-    def __init__(self, ttl: int = 300):
+    def __init__(self, ttl: int = 300, max_per_account: int = 5):
         """Initialize the SMTP connection pool.
 
         Args:
-            ttl: Time-to-live in seconds for pooled connections. Connections
-                older than this value are considered expired and will be
-                replaced on the next access. Defaults to 300 seconds (5 minutes).
+            ttl: Time-to-live in seconds for connections. Defaults to 300.
+            max_per_account: Max concurrent connections per account. Defaults to 5.
         """
         self.ttl = ttl
-        self.pool: dict[int, tuple[aiosmtplib.SMTP, float, tuple[str, int, str | None, str | None, bool]]] = {}
-        self.lock = asyncio.Lock()
+        self.max_per_account = max_per_account
 
-    async def _connect(self, host: str, port: int, user: str | None, password: str | None, use_tls: bool) -> aiosmtplib.SMTP:
-        """Establish a new SMTP connection with optional authentication.
+        # Pool of idle connections: account_key -> list of PooledConnection
+        self._idle: dict[str, list[PooledConnection]] = {}
 
-        Creates a new aiosmtplib SMTP client, connects to the specified server,
-        and performs authentication if credentials are provided. The connection
-        process is wrapped in a timeout to prevent indefinite blocking.
+        # Count of active (acquired) connections per account
+        self._active_count: dict[str, int] = {}
 
-        TLS behavior based on port and use_tls flag:
-        - Port 465 with use_tls=True: Direct TLS (implicit TLS)
-        - Port 587 with use_tls=True: STARTTLS (upgrade plain to TLS)
-        - use_tls=False: Plain SMTP (no encryption)
+        # Condition for waiting when pool is full
+        self._conditions: dict[str, asyncio.Condition] = {}
+
+        # Global lock for pool operations
+        self._lock = asyncio.Lock()
+
+        # Track connection -> account_key for release
+        self._connection_keys: dict[int, str] = {}
+
+    def _make_key(self, host: str, port: int, user: str | None) -> str:
+        """Create account key from connection parameters."""
+        return f"{host}:{port}:{user or ''}"
+
+    async def _get_condition(self, key: str) -> asyncio.Condition:
+        """Get or create condition variable for an account."""
+        if key not in self._conditions:
+            self._conditions[key] = asyncio.Condition()
+        return self._conditions[key]
+
+    async def _connect(
+        self,
+        host: str,
+        port: int,
+        user: str | None,
+        password: str | None,
+        use_tls: bool,
+    ) -> aiosmtplib.SMTP:
+        """Establish a new SMTP connection.
+
+        TLS behavior:
+        - Port 465 with use_tls=True: Direct TLS (implicit)
+        - Port 587 with use_tls=True: STARTTLS
+        - use_tls=False: Plain SMTP
 
         Args:
-            host: SMTP server hostname or IP address.
-            port: SMTP server port number (typically 25, 465, or 587).
-            user: Username for SMTP authentication, or None for no auth.
-            password: Password for SMTP authentication, or None for no auth.
-            use_tls: Whether to use TLS (direct TLS on 465, STARTTLS on other ports).
+            host: SMTP server hostname.
+            port: SMTP server port.
+            user: Username for auth, or None.
+            password: Password for auth, or None.
+            use_tls: Whether to use TLS.
 
         Returns:
-            A connected and optionally authenticated aiosmtplib.SMTP instance.
+            Connected aiosmtplib.SMTP instance.
 
         Raises:
-            asyncio.TimeoutError: If connection takes longer than 15 seconds.
-            aiosmtplib.SMTPException: If connection or authentication fails.
+            asyncio.TimeoutError: If connection times out.
+            aiosmtplib.SMTPException: If connection fails.
         """
-        # Use explicit 10 second timeout to prevent hanging connections
-        # Port 465: Direct TLS (use_tls=True, start_tls=False)
-        # Port 587 or other with TLS: STARTTLS (use_tls=False, start_tls=True)
-        # No TLS: Plain connection (use_tls=False, start_tls=False)
         if use_tls and port == 465:
-            # Direct TLS (implicit TLS) for port 465
-            smtp = aiosmtplib.SMTP(hostname=host, port=port, start_tls=False, use_tls=True, timeout=10.0)
+            smtp = aiosmtplib.SMTP(
+                hostname=host, port=port, start_tls=False, use_tls=True, timeout=10.0
+            )
         elif use_tls:
-            # STARTTLS for other ports (typically 587)
-            smtp = aiosmtplib.SMTP(hostname=host, port=port, start_tls=True, use_tls=False, timeout=10.0)
+            smtp = aiosmtplib.SMTP(
+                hostname=host, port=port, start_tls=True, use_tls=False, timeout=10.0
+            )
         else:
-            # Plain SMTP (no encryption)
-            smtp = aiosmtplib.SMTP(hostname=host, port=port, start_tls=False, use_tls=False, timeout=10.0)
-        # Wrap in asyncio.wait_for to ensure we don't hang even if aiosmtplib timeout fails
+            smtp = aiosmtplib.SMTP(
+                hostname=host, port=port, start_tls=False, use_tls=False, timeout=10.0
+            )
+
         async def _do_connect():
             await smtp.connect()
             if user and password:
                 await smtp.login(user, password)
+
         await asyncio.wait_for(_do_connect(), timeout=15.0)
         return smtp
 
     async def _is_alive(self, smtp: aiosmtplib.SMTP) -> bool:
-        """Check if an SMTP connection is still alive and responsive.
-
-        Sends an SMTP NOOP command to verify the connection is functional.
-        This is a lightweight health check that validates both network
-        connectivity and server responsiveness without affecting state.
-
-        Args:
-            smtp: The SMTP connection to check.
-
-        Returns:
-            True if the connection responds with a 250 status code within
-            the timeout period, False otherwise.
-        """
+        """Check if connection is alive via NOOP command."""
         try:
-            # Use timeout to prevent hanging on dead connections
             code, _ = await asyncio.wait_for(smtp.noop(), timeout=5.0)
             return code == 250
         except Exception:
             return False
 
-    async def get_connection(self, host: str, port: int, user: str | None, password: str | None, *, use_tls: bool) -> aiosmtplib.SMTP:
-        """Retrieve or create an SMTP connection for the current asyncio task.
+    async def _close_connection(self, conn: PooledConnection) -> None:
+        """Close a pooled connection gracefully."""
+        try:
+            await asyncio.wait_for(conn.smtp.quit(), timeout=5.0)
+        except Exception:
+            pass
 
-        Returns a pooled connection if one exists for the current task with
-        matching parameters and is still valid (within TTL and passing health
-        check). Otherwise, creates a new connection, stores it in the pool,
-        and returns it.
+    async def acquire(
+        self,
+        host: str,
+        port: int,
+        user: str | None,
+        password: str | None,
+        *,
+        use_tls: bool,
+        timeout: float | None = 30.0,
+    ) -> aiosmtplib.SMTP:
+        """Acquire a connection from the pool.
 
-        Each asyncio task gets its own dedicated connection, identified by
-        task ID. This prevents connection conflicts between concurrent tasks
-        while enabling connection reuse across multiple sends within a task.
+        Returns an idle connection if available, otherwise creates a new one.
+        If max connections reached, waits until one becomes available.
 
         Args:
-            host: SMTP server hostname or IP address.
-            port: SMTP server port number.
-            user: Username for SMTP authentication, or None for no auth.
-            password: Password for SMTP authentication, or None for no auth.
-            use_tls: Whether to use direct TLS connection (keyword-only).
+            host: SMTP server hostname.
+            port: SMTP server port.
+            user: Username for auth, or None.
+            password: Password for auth, or None.
+            use_tls: Whether to use TLS.
+            timeout: Max seconds to wait for connection. None = wait forever.
 
         Returns:
-            A connected and authenticated aiosmtplib.SMTP instance ready
-            for sending messages.
+            SMTP connection ready for use.
 
         Raises:
-            asyncio.TimeoutError: If connection establishment times out.
-            aiosmtplib.SMTPException: If connection or authentication fails.
+            asyncio.TimeoutError: If timeout waiting for connection.
         """
-        task_id = id(asyncio.current_task())
+        key = self._make_key(host, port, user)
+        deadline = time.time() + timeout if timeout else None
 
-        async with self.lock:
-            entry = self.pool.get(task_id)
+        while True:
+            async with self._lock:
+                # Try to get an idle connection
+                if key in self._idle and self._idle[key]:
+                    conn = self._idle[key].pop()
 
-        if entry:
-            smtp, last_used, params = entry
-            params_match = params == (host, port, user, password, use_tls)
-            fresh_enough = (time.time() - last_used) < self.ttl
+                    # Check TTL
+                    if conn.age() > self.ttl:
+                        await self._close_connection(conn)
+                        continue
 
-            if params_match and fresh_enough:
-                is_alive = await self._is_alive(smtp)
-                if is_alive:
-                    async with self.lock:
-                        self.pool[task_id] = (smtp, time.time(), params)
-                    return smtp
-            async with self.lock:
-                self.pool.pop(task_id, None)
-            try:
-                await smtp.quit()
-            except Exception:
-                pass
+                    # Check health
+                    if not await self._is_alive(conn.smtp):
+                        await self._close_connection(conn)
+                        continue
 
-        smtp = await self._connect(host, port, user, password, use_tls)
-        async with self.lock:
-            self.pool[task_id] = (smtp, time.time(), (host, port, user, password, use_tls))
-        return smtp
+                    # Valid connection found
+                    conn.touch()
+                    self._active_count[key] = self._active_count.get(key, 0) + 1
+                    self._connection_keys[id(conn.smtp)] = key
+                    return conn.smtp
 
-    async def cleanup(self) -> None:
-        """Remove and close expired or unhealthy connections from the pool.
+                # No idle connection - can we create new?
+                active = self._active_count.get(key, 0)
+                if active < self.max_per_account:
+                    # Create new connection
+                    self._active_count[key] = active + 1
 
-        Iterates through all pooled connections and closes those that have
-        exceeded the TTL or fail the health check. This method should be
-        called periodically (e.g., by a background task) to prevent resource
-        leaks from abandoned connections.
-
-        The cleanup process:
-        1. Identifies connections that have exceeded TTL
-        2. Performs health checks on remaining connections
-        3. Gracefully closes all invalid connections
-        4. Removes entries from the pool
-
-        Connection closure is best-effort; exceptions during quit are ignored
-        to ensure complete pool cleanup even with partially failed connections.
-        """
-        now = time.time()
-        async with self.lock:
-            items = list(self.pool.items())
-
-        expired: list[tuple[int, aiosmtplib.SMTP]] = []
-        candidates: list[tuple[int, aiosmtplib.SMTP]] = []
-        for task_id, (smtp, last_used, _params) in items:
-            if (now - last_used) > self.ttl:
-                expired.append((task_id, smtp))
-            else:
-                candidates.append((task_id, smtp))
-
-        for task_id, smtp in candidates:
-            try:
-                alive = await self._is_alive(smtp)
-            except Exception:
-                alive = False
-            if not alive:
-                expired.append((task_id, smtp))
-
-        for task_id, _smtp in expired:
-            async with self.lock:
-                entry = self.pool.pop(task_id, None)
-            if entry:
+            # Create connection outside lock
+            if active < self.max_per_account:
                 try:
-                    await entry[0].quit()
+                    smtp = await self._connect(host, port, user, password, use_tls)
+                    async with self._lock:
+                        self._connection_keys[id(smtp)] = key
+                    return smtp
+                except Exception:
+                    async with self._lock:
+                        self._active_count[key] = self._active_count.get(key, 1) - 1
+                    raise
+
+            # Pool is full - wait for release
+            condition = await self._get_condition(key)
+            async with condition:
+                remaining = deadline - time.time() if deadline else None
+                if remaining is not None and remaining <= 0:
+                    raise asyncio.TimeoutError("Timeout waiting for SMTP connection")
+
+                try:
+                    await asyncio.wait_for(condition.wait(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    raise asyncio.TimeoutError("Timeout waiting for SMTP connection")
+
+    async def release(self, smtp: aiosmtplib.SMTP) -> None:
+        """Release a connection back to the pool.
+
+        The connection is returned to the idle pool for reuse by other
+        coroutines. If the connection is unhealthy, it is closed instead.
+
+        Args:
+            smtp: The SMTP connection to release.
+        """
+        smtp_id = id(smtp)
+
+        async with self._lock:
+            key = self._connection_keys.pop(smtp_id, None)
+            if key is None:
+                # Connection not tracked - just close it
+                try:
+                    await smtp.quit()
                 except Exception:
                     pass
+                return
+
+            self._active_count[key] = max(0, self._active_count.get(key, 1) - 1)
+
+            # Check if connection is still healthy before returning to pool
+            if await self._is_alive(smtp):
+                conn = PooledConnection(smtp=smtp, account_key=key)
+                if key not in self._idle:
+                    self._idle[key] = []
+                self._idle[key].append(conn)
+            else:
+                try:
+                    await smtp.quit()
+                except Exception:
+                    pass
+
+        # Notify waiters that a connection is available
+        condition = await self._get_condition(key)
+        async with condition:
+            condition.notify()
+
+    @asynccontextmanager
+    async def connection(
+        self,
+        host: str,
+        port: int,
+        user: str | None,
+        password: str | None,
+        *,
+        use_tls: bool,
+        timeout: float | None = 30.0,
+    ):
+        """Context manager for automatic acquire/release.
+
+        Example:
+            async with pool.connection(host, port, user, pwd, use_tls=True) as smtp:
+                await smtp.send_message(msg)
+        """
+        smtp = await self.acquire(host, port, user, password, use_tls=use_tls, timeout=timeout)
+        try:
+            yield smtp
+        finally:
+            await self.release(smtp)
+
+    async def get_connection(
+        self,
+        host: str,
+        port: int,
+        user: str | None,
+        password: str | None,
+        *,
+        use_tls: bool,
+    ) -> aiosmtplib.SMTP:
+        """Legacy API: Get a connection (acquire without explicit release).
+
+        DEPRECATED: Use acquire()/release() or connection() context manager.
+
+        This method exists for backward compatibility. Connections obtained
+        this way should be released manually, or they will be cleaned up
+        when the pool is cleaned.
+
+        Args:
+            host: SMTP server hostname.
+            port: SMTP server port.
+            user: Username for auth, or None.
+            password: Password for auth, or None.
+            use_tls: Whether to use TLS.
+
+        Returns:
+            Connected SMTP instance.
+        """
+        return await self.acquire(host, port, user, password, use_tls=use_tls)
+
+    async def cleanup(self) -> None:
+        """Remove expired and unhealthy connections from idle pools.
+
+        Should be called periodically to prevent resource leaks.
+        """
+        now = time.time()
+        to_close: list[PooledConnection] = []
+
+        async with self._lock:
+            for key in list(self._idle.keys()):
+                valid: list[PooledConnection] = []
+                for conn in self._idle[key]:
+                    if conn.age() > self.ttl:
+                        to_close.append(conn)
+                    elif not await self._is_alive(conn.smtp):
+                        to_close.append(conn)
+                    else:
+                        valid.append(conn)
+                self._idle[key] = valid
+
+                # Clean up empty entries
+                if not self._idle[key]:
+                    del self._idle[key]
+
+        # Close connections outside lock
+        for conn in to_close:
+            await self._close_connection(conn)
+
+    async def close_all(self) -> None:
+        """Close all connections in the pool.
+
+        Use when shutting down the application.
+        """
+        to_close: list[PooledConnection] = []
+
+        async with self._lock:
+            for key in list(self._idle.keys()):
+                to_close.extend(self._idle[key])
+            self._idle.clear()
+            self._active_count.clear()
+            self._connection_keys.clear()
+
+        for conn in to_close:
+            await self._close_connection(conn)
+
+    def stats(self) -> dict:
+        """Return pool statistics.
+
+        Returns:
+            Dict with idle counts, active counts per account.
+        """
+        return {
+            "idle": {k: len(v) for k, v in self._idle.items()},
+            "active": dict(self._active_count),
+            "max_per_account": self.max_per_account,
+            "ttl": self.ttl,
+        }

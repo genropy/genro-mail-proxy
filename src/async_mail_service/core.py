@@ -892,10 +892,10 @@ class AsyncMailCore:
             return None  # No result to report, message will be retried later
 
         try:
-            smtp = await self.pool.get_connection(host, port, user, password, use_tls=use_tls)
-            envelope_sender = envelope_from or msg.get("From")
-            # Wrap send_message in timeout to prevent hanging (max 30s for large attachments)
-            await asyncio.wait_for(smtp.send_message(msg, sender=envelope_sender), timeout=30.0)
+            async with self.pool.connection(host, port, user, password, use_tls=use_tls) as smtp:
+                envelope_sender = envelope_from or msg.get("From")
+                # Wrap send_message in timeout to prevent hanging (max 30s for large attachments)
+                await asyncio.wait_for(smtp.send_message(msg, sender=envelope_sender), timeout=30.0)
         except Exception as exc:
             # Classify the error as temporary or permanent
             is_temporary, smtp_code = _classify_smtp_error(exc)

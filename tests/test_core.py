@@ -32,8 +32,42 @@ class DummyPool:
         self.requests.append((host, port, user, password, use_tls))
         return self.smtp
 
+    async def acquire(self, host, port, user, password, *, use_tls, timeout=None):
+        self.requests.append((host, port, user, password, use_tls))
+        return self.smtp
+
+    async def release(self, smtp):
+        pass
+
+    def connection(self, host, port, user, password, *, use_tls, timeout=None):
+        """Context manager for connection acquire/release."""
+        return _DummyConnectionContext(self, host, port, user, password, use_tls)
+
     async def cleanup(self):
         return None
+
+
+class _DummyConnectionContext:
+    """Async context manager for DummyPool.connection()."""
+
+    def __init__(self, pool, host, port, user, password, use_tls):
+        self.pool = pool
+        self.host = host
+        self.port = port
+        self.user = user
+        self.password = password
+        self.use_tls = use_tls
+        self.smtp = None
+
+    async def __aenter__(self):
+        self.smtp = await self.pool.acquire(
+            self.host, self.port, self.user, self.password, use_tls=self.use_tls
+        )
+        return self.smtp
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.pool.release(self.smtp)
+        return False
 
 
 class DummyRateLimiter:
