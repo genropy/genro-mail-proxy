@@ -1,6 +1,6 @@
 # genro-mail-proxy
 
-[![PyPI version](https://img.shields.io/pypi/v/genro-mail-proxy)](https://pypi.org/project/genro-mail-proxy/)
+[![PyPI version](https://img.shields.io/pypi/v/genro-mail-proxy?style=flat)](https://pypi.org/project/genro-mail-proxy/)
 [![Tests](https://github.com/genropy/genro-mail-proxy/actions/workflows/tests.yml/badge.svg)](https://github.com/genropy/genro-mail-proxy/actions/workflows/tests.yml)
 [![codecov](https://codecov.io/gh/genropy/genro-mail-proxy/branch/main/graph/badge.svg)](https://codecov.io/gh/genropy/genro-mail-proxy)
 [![Documentation](https://readthedocs.org/projects/genro-mail-proxy/badge/?version=latest)](https://genro-mail-proxy.readthedocs.io/)
