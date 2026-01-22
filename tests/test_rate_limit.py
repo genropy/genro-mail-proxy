@@ -1,7 +1,7 @@
 import pytest
 
-from async_mail_service.mailproxy_db import MailProxyDb
-from async_mail_service.rate_limit import RateLimiter
+from mail_proxy.mailproxy_db import MailProxyDb
+from mail_proxy.rate_limit import RateLimiter
 
 
 @pytest.mark.asyncio
@@ -35,7 +35,7 @@ async def test_rate_limiter_hour_and_day(tmp_path, monkeypatch):
     limiter = RateLimiter(p)
 
     current_time = 3600 * 10 + 30  # hour boundary plus 30 seconds
-    monkeypatch.setattr("async_mail_service.rate_limit.time.time", lambda: current_time)
+    monkeypatch.setattr("mail_proxy.rate_limit.time.time", lambda: current_time)
 
     await limiter.log_send("acc2")
     await p.log_send("acc2", current_time - 10)

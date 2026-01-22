@@ -1,6 +1,6 @@
 import pytest
 
-from async_mail_service.fetcher import Fetcher
+from mail_proxy.fetcher import Fetcher
 
 
 @pytest.mark.asyncio
@@ -53,7 +53,7 @@ async def test_fetcher_fetches_from_http(monkeypatch):
             return DummyResponse()
 
     session = DummySession()
-    monkeypatch.setattr("async_mail_service.fetcher.aiohttp.ClientSession", lambda: session)
+    monkeypatch.setattr("mail_proxy.fetcher.aiohttp.ClientSession", lambda: session)
 
     fetcher = Fetcher(fetch_url="https://example.com/mail-service-endpoint")
     messages = await fetcher.fetch_messages()

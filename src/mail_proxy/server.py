@@ -2,11 +2,11 @@
 """ASGI application entry point for uvicorn.
 
 This module provides a pre-configured FastAPI application that reads
-configuration from the database and initializes the AsyncMailCore
+configuration from the database and initializes the MailProxy
 service automatically.
 
 Usage:
-    uvicorn async_mail_service.server:app --host 0.0.0.0 --port 8000
+    uvicorn mail_proxy.server:app --host 0.0.0.0 --port 8000
 
 Environment variables:
     GMP_DB_PATH: Path to SQLite database (default: /data/mail_service.db)
@@ -22,7 +22,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from .api import create_app
-from .core import AsyncMailCore
+from .core import MailProxy
 
 
 def _get_config_from_db(db_path: str) -> dict[str, str]:
@@ -51,7 +51,7 @@ _api_token = _config.get("api_token")
 _instance_name = _config.get("name", "mail-proxy")
 
 # Create the core service
-_core = AsyncMailCore(
+_core = MailProxy(
     db_path=_db_path,
     start_active=True,
 )

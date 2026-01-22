@@ -5,7 +5,7 @@ This module provides a Pythonic interface for connecting to running
 mail-proxy servers and managing messages, accounts, and tenants.
 
 Usage in REPL:
-    >>> from async_mail_service.client import MailProxyClient
+    >>> from mail_proxy.client import MailProxyClient
     >>> proxy = MailProxyClient("http://localhost:8000", token="secret")
     >>> proxy.status()
     {'ok': True, 'active': True}

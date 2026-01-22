@@ -13,10 +13,10 @@ This package provides a complete email dispatch solution with features including
 Example:
     Basic usage with the FastAPI application::
 
-        from async_mail_service.core import AsyncMailCore
-        from async_mail_service.api import create_app
+        from mail_proxy.core import MailProxy
+        from mail_proxy.api import create_app
 
-        core = AsyncMailCore(db_path="/data/mail.db")
+        core = MailProxy(db_path="/data/mail.db")
         app = create_app(core, api_token="secret")
 
 Authors:

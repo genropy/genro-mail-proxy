@@ -1,7 +1,7 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Core orchestration logic for the asynchronous mail dispatcher.
 
-This module provides the AsyncMailCore class, the central coordinator for
+This module provides the MailProxy class, the central coordinator for
 the email dispatch service. It orchestrates all major subsystems including:
 
 - Message queue management and priority-based scheduling
@@ -18,9 +18,9 @@ control and integrates with Prometheus for metrics collection.
 Example:
     Running the mail dispatcher::
 
-        from async_mail_service.core import AsyncMailCore
+        from mail_proxy.core import MailProxy
 
-        core = AsyncMailCore(
+        core = MailProxy(
             db_path="/data/mail.db",
             start_active=True,
             client_sync_url="https://api.example.com/delivery-report"
@@ -172,7 +172,7 @@ def _calculate_retry_delay(retry_count: int, delays: list[int] = None) -> int:
     return delays[retry_count]
 
 
-class AsyncMailCore:
+class MailProxy:
     """Central orchestrator for the asynchronous mail dispatch service.
 
     Coordinates all aspects of email delivery including message queue
@@ -674,7 +674,7 @@ class AsyncMailCore:
         - Client report loop: sends delivery reports to upstream services
         - Cleanup loop: maintains SMTP connection pool health (production only)
         """
-        self.logger.debug("Starting AsyncMailCore...")
+        self.logger.debug("Starting MailProxy...")
         await self.init()
         self._stop.clear()
         self.logger.debug("Creating SMTP dispatch loop task...")

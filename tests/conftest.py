@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for async_mail_service tests."""
+"""Shared pytest fixtures for mail_proxy tests."""
 
 import asyncio
 import types

@@ -19,7 +19,7 @@ from aioresponses import aioresponses
 from aiosmtpd.controller import Controller
 from yarl import URL
 
-from async_mail_service.core import AsyncMailCore
+from mail_proxy.core import MailProxy
 
 
 def get_free_port() -> int:
@@ -105,10 +105,10 @@ def make_dummy_logger():
     )
 
 
-async def make_roundtrip_core(tmp_path, smtp_port: int) -> AsyncMailCore:
+async def make_roundtrip_core(tmp_path, smtp_port: int) -> MailProxy:
     """Create a test core instance configured for round-trip testing."""
     db_path = tmp_path / "roundtrip.db"
-    core = AsyncMailCore(
+    core = MailProxy(
         db_path=str(db_path),
         start_active=True,
         test_mode=True,

@@ -7,8 +7,8 @@ import tempfile
 
 import pytest
 
-from async_mail_service.attachments import AttachmentManager
-from async_mail_service.attachments.cache import TieredCache
+from mail_proxy.attachments import AttachmentManager
+from mail_proxy.attachments.cache import TieredCache
 
 
 class TestParseFilename:

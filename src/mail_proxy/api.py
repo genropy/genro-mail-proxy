@@ -18,10 +18,10 @@ The API supports operations including:
 Example:
     Creating and running the API application::
 
-        from async_mail_service.core import AsyncMailCore
-        from async_mail_service.api import create_app
+        from mail_proxy.core import MailProxy
+        from mail_proxy.api import create_app
 
-        core = AsyncMailCore(db_path="/data/mail.db")
+        core = MailProxy(db_path="/data/mail.db")
         app = create_app(core, api_token="secret-token")
 
         # Run with uvicorn
@@ -39,13 +39,13 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, ConfigDict, Field
 
-from .core import AsyncMailCore
+from .core import MailProxy
 from .entities.message.schema import AttachmentPayload
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Async Mail Service")
-service: AsyncMailCore | None = None
+service: MailProxy | None = None
 API_TOKEN_HEADER_NAME = "X-API-Token"
 api_key_scheme = APIKeyHeader(name=API_TOKEN_HEADER_NAME, auto_error=False)
 app.state.api_token = None
@@ -239,7 +239,7 @@ class TenantsResponse(CommandStatus):
 
 
 def create_app(
-    svc: AsyncMailCore,
+    svc: MailProxy,
     api_token: str | None = None,
     lifespan: Callable[[FastAPI], AbstractAsyncContextManager] | None = None
 ) -> FastAPI:
@@ -248,7 +248,7 @@ def create_app(
     Parameters
     ----------
     svc:
-        Instance of :class:`async_mail_service.core.AsyncMailCore` that
+        Instance of :class:`mail_proxy.core.MailProxy` that
         implements the business logic for each command.
     api_token:
         Optional secret used to protect every endpoint. When provided, the

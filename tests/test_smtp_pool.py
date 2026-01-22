@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from async_mail_service.smtp_pool import PooledConnection, SMTPPool
+from mail_proxy.smtp_pool import PooledConnection, SMTPPool
 
 
 class DummySMTP:
@@ -46,7 +46,7 @@ def patch_aiosmtplib(monkeypatch):
         created.append(smtp)
         return smtp
 
-    monkeypatch.setattr("async_mail_service.smtp_pool.aiosmtplib.SMTP", factory)
+    monkeypatch.setattr("mail_proxy.smtp_pool.aiosmtplib.SMTP", factory)
     return created
 
 

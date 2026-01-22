@@ -4,7 +4,7 @@
 import asyncio
 import sys
 
-from async_mail_service.core import AsyncMailCore
+from mail_proxy.core import MailProxy
 
 DB_PATH = "/tmp/mail_service_test.db"
 
@@ -13,7 +13,7 @@ async def main():
     print()
 
     # Initialize core with test mode (no background loops)
-    core = AsyncMailCore(
+    core = MailProxy(
         db_path=DB_PATH,
         test_mode=True
     )

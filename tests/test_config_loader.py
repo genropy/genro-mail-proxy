@@ -1,7 +1,7 @@
 """Tests for config_loader module."""
 
 
-from async_mail_service.config_loader import CacheConfig, load_cache_config
+from mail_proxy.config_loader import CacheConfig, load_cache_config
 
 
 class TestCacheConfig:

@@ -1,6 +1,6 @@
 from prometheus_client import CollectorRegistry
 
-from async_mail_service.prometheus import MailMetrics
+from mail_proxy.prometheus import MailMetrics
 
 
 def test_mail_metrics_counters_and_gauge():

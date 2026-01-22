@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from async_mail_service.cli import (
+from mail_proxy.cli import (
     _ensure_instance,
     _generate_api_token,
     _get_instance_config,
@@ -32,7 +32,7 @@ class TestHelperFunctions:
         db_path = str(tmp_path / "test.db")
         persistence = get_persistence(db_path)
 
-        from async_mail_service.mailproxy_db import MailProxyDb
+        from mail_proxy.mailproxy_db import MailProxyDb
         assert isinstance(persistence, MailProxyDb)
 
     def test_run_async(self):
@@ -57,7 +57,7 @@ class TestHelperFunctions:
 
     def test_get_instance_dir(self, tmp_path):
         """Test _get_instance_dir returns correct path."""
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             instance_dir = _get_instance_dir("myserver")
 
         expected = tmp_path / ".mail-proxy" / "myserver"
@@ -65,7 +65,7 @@ class TestHelperFunctions:
 
     def test_get_pid_file(self, tmp_path):
         """Test _get_pid_file returns correct path."""
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             pid_file = _get_pid_file("myserver")
 
         expected = tmp_path / ".mail-proxy" / "myserver" / "server.pid"
@@ -77,7 +77,7 @@ class TestPidFileManagement:
 
     def test_write_and_read_pid_file(self, tmp_path):
         """Test writing and reading PID file."""
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             # Create instance directory
             instance_dir = tmp_path / ".mail-proxy" / "testserver"
             instance_dir.mkdir(parents=True)
@@ -97,7 +97,7 @@ class TestPidFileManagement:
 
     def test_remove_pid_file(self, tmp_path):
         """Test removing PID file."""
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             # Create instance directory and PID file
             instance_dir = tmp_path / ".mail-proxy" / "testserver"
             instance_dir.mkdir(parents=True)
@@ -113,13 +113,13 @@ class TestPidFileManagement:
 
     def test_remove_pid_file_nonexistent(self, tmp_path):
         """Test removing nonexistent PID file doesn't raise error."""
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             # Should not raise
             _remove_pid_file("nonexistent")
 
     def test_is_instance_running_no_pid_file(self, tmp_path):
         """Test _is_instance_running when no PID file exists."""
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             is_running, pid, port = _is_instance_running("nonexistent")
 
         assert is_running is False
@@ -128,7 +128,7 @@ class TestPidFileManagement:
 
     def test_is_instance_running_corrupt_pid_file(self, tmp_path):
         """Test _is_instance_running with corrupt PID file."""
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             # Create corrupt PID file
             instance_dir = tmp_path / ".mail-proxy" / "testserver"
             instance_dir.mkdir(parents=True)
@@ -142,7 +142,7 @@ class TestPidFileManagement:
 
     def test_is_instance_running_dead_process(self, tmp_path):
         """Test _is_instance_running when process is not running."""
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             # Create PID file with non-existent PID
             instance_dir = tmp_path / ".mail-proxy" / "testserver"
             instance_dir.mkdir(parents=True)
@@ -157,7 +157,7 @@ class TestPidFileManagement:
         """Test _is_instance_running when process is running."""
         current_pid = os.getpid()
 
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             # Create PID file with current process PID (guaranteed to be running)
             instance_dir = tmp_path / ".mail-proxy" / "testserver"
             instance_dir.mkdir(parents=True)
@@ -176,7 +176,7 @@ class TestInstanceConfig:
 
     def test_ensure_instance_creates_new(self, tmp_path):
         """Test _ensure_instance creates new instance with config in DB."""
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             config = _ensure_instance("newserver", port=9000, host="127.0.0.1")
 
         # Check DB file was created
@@ -192,7 +192,7 @@ class TestInstanceConfig:
 
     def test_ensure_instance_existing(self, tmp_path):
         """Test _ensure_instance doesn't overwrite existing token."""
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             # Create first instance
             config1 = _ensure_instance("existingserver", port=9000, host="127.0.0.1")
             original_token = config1["api_token"]
@@ -205,7 +205,7 @@ class TestInstanceConfig:
 
     def test_get_instance_config_existing(self, tmp_path):
         """Test _get_instance_config reads config from DB."""
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             # Create instance first
             _ensure_instance("testserver", port=8080, host="0.0.0.0")
 
@@ -219,7 +219,7 @@ class TestInstanceConfig:
 
     def test_get_instance_config_not_found(self, tmp_path):
         """Test _get_instance_config returns None when not found."""
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             config = _get_instance_config("nonexistent")
 
         assert config is None
@@ -230,7 +230,7 @@ class TestStopInstance:
 
     def test_stop_instance_not_running(self, tmp_path):
         """Test stopping an instance that's not running."""
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             result = _stop_instance("nonexistent")
 
         assert result is False
@@ -240,7 +240,7 @@ class TestStopInstance:
         """Test stopping instance with permission error."""
         mock_kill.side_effect = PermissionError("No permission")
 
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             # Create PID file
             instance_dir = tmp_path / ".mail-proxy" / "testserver"
             instance_dir.mkdir(parents=True)
@@ -248,7 +248,7 @@ class TestStopInstance:
             pid_file.write_text(json.dumps({"pid": 12345, "port": 8000}))
 
             # Mock _is_instance_running to return running
-            with patch("async_mail_service.cli._is_instance_running", return_value=(True, 12345, 8000)):
+            with patch("mail_proxy.cli._is_instance_running", return_value=(True, 12345, 8000)):
                 result = _stop_instance("testserver")
 
         assert result is False
@@ -263,7 +263,7 @@ class TestListCommand:
         """Test listing instances when none exist."""
         runner = CliRunner()
 
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             result = runner.invoke(main, ["list"])
 
         assert result.exit_code == 0
@@ -274,7 +274,7 @@ class TestListCommand:
         runner = CliRunner()
 
         # Create instance with config in database
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             _ensure_instance("testserver", port=8000, host="0.0.0.0")
             result = runner.invoke(main, ["list"])
 
@@ -289,7 +289,7 @@ class TestInstanceCommands:
         """Test instance help shows available commands."""
         runner = CliRunner()
 
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             result = runner.invoke(main, ["testserver", "--help"])
 
         assert result.exit_code == 0
@@ -300,7 +300,7 @@ class TestInstanceCommands:
         """Test instance without subcommand shows help."""
         runner = CliRunner()
 
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             result = runner.invoke(main, ["nonexistent"])
 
         # Now shows help with available commands
@@ -316,7 +316,7 @@ class TestTenantsCommands:
         runner = CliRunner()
 
         # Create instance with database
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             _ensure_instance("testserver", port=8080, host="0.0.0.0")
             result = runner.invoke(main, ["testserver", "tenants", "list"])
 
@@ -327,7 +327,7 @@ class TestTenantsCommands:
         """Test adding and listing tenants."""
         runner = CliRunner()
 
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             # Create instance with database
             _ensure_instance("testserver", port=8080, host="0.0.0.0")
 
@@ -350,7 +350,7 @@ class TestTenantsCommands:
         """Test showing tenant details."""
         runner = CliRunner()
 
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             # Create instance with database
             _ensure_instance("testserver", port=8080, host="0.0.0.0")
 
@@ -377,7 +377,7 @@ class TestTenantsCommands:
         """Test deleting tenant."""
         runner = CliRunner()
 
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             # Create instance with database
             _ensure_instance("testserver", port=8080, host="0.0.0.0")
 
@@ -409,7 +409,7 @@ class TestTenantLevelCommands:
         """Test accounts help."""
         runner = CliRunner()
 
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             # Create instance with database and tenant
             _ensure_instance("testserver", port=8080, host="0.0.0.0")
 
@@ -436,7 +436,7 @@ class TestTenantLevelCommands:
         """Test accounts list when empty."""
         runner = CliRunner()
 
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             # Create instance with database and tenant
             _ensure_instance("testserver", port=8080, host="0.0.0.0")
 
@@ -462,7 +462,7 @@ class TestTenantLevelCommands:
         """Test adding and listing accounts."""
         runner = CliRunner()
 
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             # Create instance with database
             _ensure_instance("testserver", port=8080, host="0.0.0.0")
 
@@ -503,7 +503,7 @@ class TestTenantLevelCommands:
         """Test messages list when empty."""
         runner = CliRunner()
 
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             # Create instance with database and tenant
             _ensure_instance("testserver", port=8080, host="0.0.0.0")
 
@@ -533,7 +533,7 @@ class TestStatsCommand:
         """Test stats with empty database."""
         runner = CliRunner()
 
-        with patch("async_mail_service.cli.Path.home", return_value=tmp_path):
+        with patch("mail_proxy.cli.Path.home", return_value=tmp_path):
             # Create instance with database
             _ensure_instance("testserver", port=8080, host="0.0.0.0")
 

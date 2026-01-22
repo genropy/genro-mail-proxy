@@ -43,9 +43,9 @@ from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table
 
-from async_mail_service.mailproxy_db import MailProxyDb
-from async_mail_service.entities.account.schema import AccountCreate
-from async_mail_service.entities.tenant.schema import (
+from mail_proxy.mailproxy_db import MailProxyDb
+from mail_proxy.entities.account.schema import AccountCreate
+from mail_proxy.entities.tenant.schema import (
     DEFAULT_ATTACHMENT_PATH,
     DEFAULT_SYNC_PATH,
     TenantAuth,
@@ -702,7 +702,7 @@ def _do_start_instance(instance_name: str, host: str | None, port: int | None,
 
     try:
         uvicorn.run(
-            "async_mail_service.server:app",
+            "mail_proxy.server:app",
             host=host,
             port=port,
             reload=reload,
@@ -1262,9 +1262,9 @@ def _add_connect_command(group: click.Group, instance_name: str) -> None:
         import readline  # noqa: F401
         import rlcompleter  # noqa: F401
 
-        from async_mail_service.client import MailProxyClient
-        from async_mail_service.client import connect as client_connect
-        from async_mail_service.forms import (
+        from mail_proxy.client import MailProxyClient
+        from mail_proxy.client import connect as client_connect
+        from mail_proxy.forms import (
             AccountForm,
             MessageForm,
             TenantForm,

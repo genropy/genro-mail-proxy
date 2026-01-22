@@ -28,7 +28,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from async_mail_service.logger import get_logger
+from mail_proxy.logger import get_logger
 
 
 @dataclass

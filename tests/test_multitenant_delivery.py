@@ -7,7 +7,7 @@ import pytest
 from aioresponses import aioresponses
 from yarl import URL
 
-from async_mail_service.core import AsyncMailCore
+from mail_proxy.core import MailProxy
 
 
 class DummyPool:
@@ -65,10 +65,10 @@ class DummyAttachments:
         return "text", "plain"
 
 
-async def make_core(tmp_path) -> AsyncMailCore:
+async def make_core(tmp_path) -> MailProxy:
     """Create a test core instance with mocked dependencies."""
     db_path = tmp_path / "test.db"
-    core = AsyncMailCore(
+    core = MailProxy(
         db_path=str(db_path),
         start_active=True,
         test_mode=True,

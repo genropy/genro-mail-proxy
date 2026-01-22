@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from aiosmtpd.controller import Controller
 
-from async_mail_service.core import AsyncMailCore
+from mail_proxy.core import MailProxy
 
 
 def get_free_port() -> int:
@@ -122,11 +122,11 @@ def smtp_server(smtp_handler):
     controller.stop()
 
 
-async def make_core_with_smtp(tmp_path, smtp_port) -> AsyncMailCore:
+async def make_core_with_smtp(tmp_path, smtp_port) -> MailProxy:
     """Create a test core instance connected to the fake SMTP server."""
     db_path = tmp_path / "smtp_test.db"
     reporter = DummyReporter()
-    core = AsyncMailCore(
+    core = MailProxy(
         db_path=str(db_path),
         start_active=True,
         report_delivery_callable=reporter,
@@ -347,7 +347,7 @@ async def test_multitenant_smtp_dispatch(tmp_path, smtp_handler):
 
         db_path = tmp_path / "multitenant_smtp.db"
         reporter = DummyReporter()
-        core = AsyncMailCore(
+        core = MailProxy(
             db_path=str(db_path),
             start_active=True,
             report_delivery_callable=reporter,

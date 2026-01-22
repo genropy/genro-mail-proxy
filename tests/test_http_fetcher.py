@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from async_mail_service.attachments.http_fetcher import HttpFetcher
+from mail_proxy.attachments.http_fetcher import HttpFetcher
 
 
 class TestParsePath:

@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from async_mail_service.core import AsyncMailCore
+from mail_proxy.core import MailProxy
 
 
 class DummySMTP:
@@ -122,10 +122,10 @@ class DummyReporter:
         self.payloads.append(payload)
 
 
-async def make_core(tmp_path, max_retries=5) -> AsyncMailCore:
+async def make_core(tmp_path, max_retries=5) -> MailProxy:
     db_path = tmp_path / "core.db"
     reporter = DummyReporter()
-    core = AsyncMailCore(
+    core = MailProxy(
         db_path=str(db_path),
         start_active=True,
         report_delivery_callable=reporter,
@@ -152,7 +152,7 @@ async def make_core(tmp_path, max_retries=5) -> AsyncMailCore:
 @pytest.mark.asyncio
 async def test_run_now_triggers_wakeup(tmp_path):
     db_path = tmp_path / "core-prod.db"
-    core = AsyncMailCore(db_path=str(db_path), start_active=True)
+    core = MailProxy(db_path=str(db_path), start_active=True)
     await core.db.init_db()
     result = await core.handle_command("run now", {})
     assert result["ok"] is True
@@ -166,7 +166,7 @@ async def test_run_now_triggers_wakeup(tmp_path):
 @pytest.mark.asyncio
 async def test_test_mode_start_waits_for_run_now(tmp_path):
     db_path = tmp_path / "core-test.db"
-    core = AsyncMailCore(db_path=str(db_path), start_active=True, test_mode=True)
+    core = MailProxy(db_path=str(db_path), start_active=True, test_mode=True)
     await core.start()
     try:
         assert math.isinf(core._send_loop_interval)
@@ -822,7 +822,7 @@ async def test_tenant_attachment_config_fallback_to_global(tmp_path):
 @pytest.mark.asyncio
 async def test_account_configuration_error():
     """Test AccountConfigurationError exception."""
-    from async_mail_service.core import AccountConfigurationError
+    from mail_proxy.core import AccountConfigurationError
 
     # Default message
     exc = AccountConfigurationError()
@@ -838,7 +838,7 @@ async def test_account_configuration_error():
 @pytest.mark.asyncio
 async def test_classify_smtp_error_timeout():
     """Test SMTP error classification for timeout errors."""
-    from async_mail_service.core import _classify_smtp_error
+    from mail_proxy.core import _classify_smtp_error
 
     # Timeout errors are temporary
     is_temp, code = _classify_smtp_error(asyncio.TimeoutError())
@@ -855,7 +855,7 @@ async def test_classify_smtp_error_timeout():
 @pytest.mark.asyncio
 async def test_classify_smtp_error_permanent():
     """Test SMTP error classification for permanent errors."""
-    from async_mail_service.core import _classify_smtp_error
+    from mail_proxy.core import _classify_smtp_error
 
     # SSL errors are permanent
     is_temp, code = _classify_smtp_error(Exception("wrong_version_number"))
@@ -871,7 +871,7 @@ async def test_classify_smtp_error_permanent():
 @pytest.mark.asyncio
 async def test_calculate_retry_delay():
     """Test retry delay calculation."""
-    from async_mail_service.core import DEFAULT_RETRY_DELAYS, _calculate_retry_delay
+    from mail_proxy.core import DEFAULT_RETRY_DELAYS, _calculate_retry_delay
 
     # Use default delays
     assert _calculate_retry_delay(0) == DEFAULT_RETRY_DELAYS[0]
@@ -941,7 +941,7 @@ async def test_init_with_cache_config(tmp_path, monkeypatch):
     monkeypatch.setenv("GMP_CACHE_MEMORY_MAX_MB", "25")
 
     db_path = tmp_path / "core-cache.db"
-    core = AsyncMailCore(db_path=str(db_path), start_active=False, test_mode=True)
+    core = MailProxy(db_path=str(db_path), start_active=False, test_mode=True)
     await core.init()
 
     # Verify cache was initialized
@@ -955,18 +955,18 @@ async def test_init_with_cache_config(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_summarise_addresses():
     """Test address summarization helper."""
-    from async_mail_service.core import AsyncMailCore
+    from mail_proxy.core import MailProxy
 
     # Empty returns "-"
-    assert AsyncMailCore._summarise_addresses(None) == "-"
-    assert AsyncMailCore._summarise_addresses("") == "-"
-    assert AsyncMailCore._summarise_addresses([]) == "-"
+    assert MailProxy._summarise_addresses(None) == "-"
+    assert MailProxy._summarise_addresses("") == "-"
+    assert MailProxy._summarise_addresses([]) == "-"
 
     # Single address
-    assert AsyncMailCore._summarise_addresses("test@example.com") == "test@example.com"
+    assert MailProxy._summarise_addresses("test@example.com") == "test@example.com"
 
     # List of addresses
-    result = AsyncMailCore._summarise_addresses(["a@b.com", "c@d.com"])
+    result = MailProxy._summarise_addresses(["a@b.com", "c@d.com"])
     assert "a@b.com" in result
     assert "c@d.com" in result
 
@@ -1060,7 +1060,7 @@ async def test_parallel_dispatch_per_account_semaphore(tmp_path):
 async def test_parallel_dispatch_custom_concurrency(tmp_path):
     """Test that custom concurrency settings are applied."""
     db_path = tmp_path / "custom-concurrent.db"
-    core = AsyncMailCore(
+    core = MailProxy(
         db_path=str(db_path),
         start_active=False,
         test_mode=True,

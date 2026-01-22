@@ -8,7 +8,7 @@ logging setup (level, handlers, format) should be configured via
 Example:
     Typical usage in a module::
 
-        from async_mail_service.logger import get_logger
+        from mail_proxy.logger import get_logger
 
         logger = get_logger("MyModule")
         logger.info("Operation completed")

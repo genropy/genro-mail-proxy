@@ -3,8 +3,8 @@ import types
 import pytest
 from fastapi.testclient import TestClient
 
-from async_mail_service import api
-from async_mail_service.api import API_TOKEN_HEADER_NAME, create_app
+from mail_proxy import api
+from mail_proxy.api import API_TOKEN_HEADER_NAME, create_app
 
 API_TOKEN = "secret-token"
 
