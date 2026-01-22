@@ -56,6 +56,7 @@ class DbAdapter(ABC):
         table: str,
         data: dict[str, Any],
         conflict_columns: Sequence[str],
+        update_extras: Sequence[str] | None = None,
     ) -> int:
         """Insert or update row on conflict.
 
@@ -63,6 +64,7 @@ class DbAdapter(ABC):
             table: Table name.
             data: Column-value pairs to insert/update.
             conflict_columns: Columns that define uniqueness (typically PK).
+            update_extras: Extra SQL expressions for UPDATE (e.g., "updated_at = CURRENT_TIMESTAMP").
 
         Returns:
             Affected row count.

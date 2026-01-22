@@ -172,6 +172,7 @@ class Persistence:
                 "active": 1 if tenant.get("active", True) else 0,
             },
             conflict_columns=["id"],
+            update_extras=["updated_at = CURRENT_TIMESTAMP"],
         )
 
     async def get_tenant(self, tenant_id: str) -> dict[str, Any] | None:
@@ -297,6 +298,7 @@ class Persistence:
                 "batch_size": acc.get("batch_size"),
             },
             conflict_columns=["id"],
+            update_extras=["updated_at = CURRENT_TIMESTAMP"],
         )
 
     async def list_accounts(self, tenant_id: str | None = None) -> list[dict[str, Any]]:
@@ -633,6 +635,7 @@ class Persistence:
             "instance_config",
             {"key": key, "value": value},
             conflict_columns=["key"],
+            update_extras=["updated_at = CURRENT_TIMESTAMP"],
         )
 
     async def get_all_config(self) -> dict[str, str]:

@@ -108,13 +108,17 @@ class PostgresAdapter(DbAdapter):
         table: str,
         data: dict[str, Any],
         conflict_columns: Sequence[str],
+        update_extras: Sequence[str] | None = None,
     ) -> int:
         """Insert or update using PostgreSQL ON CONFLICT DO UPDATE."""
         columns = list(data.keys())
         placeholders = ", ".join(f"%({c})s" for c in columns)
         col_list = ", ".join(columns)
         conflict_cols = ", ".join(conflict_columns)
-        update_cols = ", ".join(f"{c} = EXCLUDED.{c}" for c in columns if c not in conflict_columns)
+        update_parts = [f"{c} = EXCLUDED.{c}" for c in columns if c not in conflict_columns]
+        if update_extras:
+            update_parts.extend(update_extras)
+        update_cols = ", ".join(update_parts)
 
         query = f"""
             INSERT INTO {table} ({col_list}) VALUES ({placeholders})
