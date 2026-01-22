@@ -39,6 +39,15 @@ class SqliteAdapter(DbAdapter):
             await db.commit()
             return cursor.rowcount
 
+    async def execute_many(
+        self, query: str, params_list: Sequence[dict[str, Any]]
+    ) -> int:
+        """Execute query multiple times with different params (batch insert)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.executemany(query, params_list)
+            await db.commit()
+            return len(params_list)
+
     async def fetch_one(
         self, query: str, params: dict[str, Any] | None = None
     ) -> dict[str, Any] | None:

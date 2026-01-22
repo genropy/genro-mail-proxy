@@ -32,6 +32,13 @@ class DbAdapter(ABC):
         ...
 
     @abstractmethod
+    async def execute_many(
+        self, query: str, params_list: Sequence[dict[str, Any]]
+    ) -> int:
+        """Execute query multiple times with different params (batch insert)."""
+        ...
+
+    @abstractmethod
     async def fetch_one(
         self, query: str, params: dict[str, Any] | None = None
     ) -> dict[str, Any] | None:
