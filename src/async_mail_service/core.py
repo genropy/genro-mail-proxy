@@ -1008,8 +1008,9 @@ class AsyncMailCore:
         """
         Background coroutine that pushes delivery reports.
 
-        Optimization: When SMTP loop sends messages, it triggers this loop immediately
-        via _wake_client_event to reduce delivery report latency. Otherwise, uses a
+        Optimization: When client returns queued > 0, loops immediately to fetch
+        more messages. When SMTP loop sends messages, it triggers this loop via
+        _wake_client_event to reduce delivery report latency. Otherwise, uses a
         5-minute fallback timeout.
         """
         first_iteration = True
@@ -1018,22 +1019,39 @@ class AsyncMailCore:
             if first_iteration and self._test_mode:
                 await self._wait_for_client_wakeup(math.inf)
             first_iteration = False
-            interval = math.inf if self._test_mode else fallback_interval
+
             try:
-                await self._process_client_cycle()
+                queued = await self._process_client_cycle()
+
+                # If client has queued messages, sync again immediately
+                if queued and queued > 0:
+                    self.logger.debug(
+                        "Client has %d queued messages, syncing immediately", queued
+                    )
+                    continue  # Loop immediately without waiting
+
             except Exception as exc:  # pragma: no cover - defensive
                 self.logger.exception("Unhandled error in client report loop: %s", exc)
-            # Wait for wake event (triggered by SMTP loop) or interval timeout
+
+            # No queued messages - wait for wake event or fallback interval
+            interval = math.inf if self._test_mode else fallback_interval
             await self._wait_for_client_wakeup(interval)
 
-    async def _process_client_cycle(self) -> None:
-        """Perform one delivery report cycle, routing to per-tenant endpoints."""
+    async def _process_client_cycle(self) -> int:
+        """Perform one delivery report cycle, routing to per-tenant endpoints.
+
+        Returns:
+            Total number of messages queued by all clients (for intelligent polling).
+        """
         if not self._active:
-            return
+            return 0
 
         # Check if run-now was triggered for a specific tenant
         target_tenant_id = self._run_now_tenant_id
         self._run_now_tenant_id = None  # Reset for next cycle
+
+        # Track total queued messages from all clients
+        total_queued = 0
 
         reports = await self.persistence.fetch_reports(self._smtp_batch_size)
         if not reports:
@@ -1044,7 +1062,8 @@ class AsyncMailCore:
                 tenant = await self.persistence.get_tenant(target_tenant_id)
                 if tenant and tenant.get("active") and get_tenant_sync_url(tenant):
                     try:
-                        await self._send_reports_to_tenant(tenant, [])
+                        _, queued = await self._send_reports_to_tenant(tenant, [])
+                        total_queued += queued
                     except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                         self.logger.warning(
                             "Client sync for tenant %s not reachable: %s",
@@ -1057,7 +1076,8 @@ class AsyncMailCore:
                 for tenant in tenants:
                     if tenant.get("active") and get_tenant_sync_url(tenant):
                         try:
-                            await self._send_reports_to_tenant(tenant, [])
+                            _, queued = await self._send_reports_to_tenant(tenant, [])
+                            total_queued += queued
                         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                             self.logger.warning(
                                 "Client sync for tenant %s not reachable: %s",
@@ -1067,7 +1087,8 @@ class AsyncMailCore:
                 # Also call global URL if configured (backward compatibility)
                 if self._client_sync_url and self._report_delivery_callable is None:
                     try:
-                        await self._send_delivery_reports([])
+                        _, queued = await self._send_delivery_reports([])
+                        total_queued += queued
                     except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                         self.logger.warning(
                             "Client sync endpoint %s not reachable: %s",
@@ -1075,7 +1096,7 @@ class AsyncMailCore:
                             exc,
                         )
             await self._apply_retention()
-            return
+            return total_queued
 
         # Group reports by tenant_id for per-tenant delivery
         # Payload minimale: solo id, sent_ts, error_ts, error
@@ -1101,12 +1122,14 @@ class AsyncMailCore:
                     # Get tenant configuration and send to tenant-specific endpoint
                     tenant = await self.persistence.get_tenant(tenant_id)
                     if tenant and get_tenant_sync_url(tenant):
-                        acked = await self._send_reports_to_tenant(tenant, payloads)
+                        acked, queued = await self._send_reports_to_tenant(tenant, payloads)
                         acked_ids.extend(acked)
+                        total_queued += queued
                     elif self._client_sync_url:
                         # Fallback to global URL if tenant has no sync URL
-                        acked = await self._send_delivery_reports(payloads)
+                        acked, queued = await self._send_delivery_reports(payloads)
                         acked_ids.extend(acked)
+                        total_queued += queued
                     else:
                         self.logger.warning(
                             "No sync URL for tenant %s and no global fallback, skipping %d reports",
@@ -1116,8 +1139,9 @@ class AsyncMailCore:
                 else:
                     # No tenant - use global URL
                     if self._client_sync_url or self._report_delivery_callable:
-                        acked = await self._send_delivery_reports(payloads)
+                        acked, queued = await self._send_delivery_reports(payloads)
                         acked_ids.extend(acked)
+                        total_queued += queued
                     else:
                         self.logger.warning(
                             "No tenant and no global sync URL configured, skipping %d reports",
@@ -1137,6 +1161,7 @@ class AsyncMailCore:
             await self.persistence.mark_reported(acked_ids, reported_ts)
 
         await self._apply_retention()
+        return total_queued
 
     async def _apply_retention(self) -> None:
         """Delete reported messages older than the configured retention."""
@@ -1430,11 +1455,11 @@ class AsyncMailCore:
         return result
 
     # ------------------------------------------------------------ client bridge
-    async def _send_delivery_reports(self, payloads: List[Dict[str, Any]]) -> List[str]:
+    async def _send_delivery_reports(self, payloads: List[Dict[str, Any]]) -> Tuple[List[str], int]:
         """Send delivery report payloads to the configured proxy or callback.
 
         Returns:
-            List of message IDs that were processed.
+            Tuple of (message IDs that were processed, queued message count from client).
         """
         if self._report_delivery_callable is not None:
             if self._log_delivery_activity:
@@ -1451,12 +1476,12 @@ class AsyncMailCore:
                 )
             for payload in payloads:
                 await self._report_delivery_callable(payload)
-            # When using callable, assume all IDs are processed
-            return [p["id"] for p in payloads if p.get("id")]
+            # When using callable, assume all IDs are processed, no queued info available
+            return [p["id"] for p in payloads if p.get("id")], 0
         if not self._client_sync_url:
             if payloads:
                 raise RuntimeError("Client sync URL is not configured")
-            return []
+            return [], 0
         headers: Dict[str, str] = {}
         auth = None
         if self._client_sync_token:
@@ -1489,16 +1514,18 @@ class AsyncMailCore:
             ) as resp:
                 resp.raise_for_status()
                 # All IDs are marked as reported on valid JSON response
-                # Response format: {"ok": true} or {"error": [...], "not_found": [...]}
+                # Response format: {"ok": true, "queued": N} or {"error": [...], "not_found": [...], "queued": N}
                 processed_ids: List[str] = [p["id"] for p in payloads]
                 error_ids: List[str] = []
                 not_found_ids: List[str] = []
                 is_ok = False
+                queued_count = 0
                 try:
                     response_data = await resp.json()
                     is_ok = response_data.get("ok", False)
                     error_ids = response_data.get("error", [])
                     not_found_ids = response_data.get("not_found", [])
+                    queued_count = response_data.get("queued", 0)
                 except Exception:
                     # No valid JSON response - still mark all as reported to avoid infinite loops
                     self.logger.warning(
@@ -1508,27 +1535,30 @@ class AsyncMailCore:
         if self._log_delivery_activity:
             if is_ok:
                 self.logger.info(
-                    "Client sync: all %d reports processed OK",
+                    "Client sync: all %d reports processed OK, client queued %d messages",
                     batch_size,
+                    queued_count,
                 )
             else:
                 sent_count = batch_size - len(error_ids) - len(not_found_ids)
                 self.logger.info(
-                    "Client sync: sent=%d, error=%d, not_found=%d",
+                    "Client sync: sent=%d, error=%d, not_found=%d, client queued=%d",
                     sent_count,
                     len(error_ids),
                     len(not_found_ids),
+                    queued_count,
                 )
         else:
             self.logger.debug(
-                "Delivery report batch delivered (%d reports)",
+                "Delivery report batch delivered (%d reports, client queued %d)",
                 batch_size,
+                queued_count,
             )
-        return processed_ids
+        return processed_ids, queued_count
 
     async def _send_reports_to_tenant(
         self, tenant: Dict[str, Any], payloads: List[Dict[str, Any]]
-    ) -> List[str]:
+    ) -> Tuple[List[str], int]:
         """Send delivery report payloads to a tenant-specific endpoint.
 
         Args:
@@ -1536,7 +1566,7 @@ class AsyncMailCore:
             payloads: List of delivery report payloads to send.
 
         Returns:
-            List of message IDs that were acknowledged by the client.
+            Tuple of (message IDs acknowledged by client, queued message count from client).
 
         Raises:
             aiohttp.ClientError: If the HTTP request fails.
@@ -1592,16 +1622,18 @@ class AsyncMailCore:
             ) as resp:
                 resp.raise_for_status()
                 # All IDs are marked as reported on valid JSON response
-                # Response format: {"ok": true} or {"error": [...], "not_found": [...]}
+                # Response format: {"ok": true, "queued": N} or {"error": [...], "not_found": [...], "queued": N}
                 processed_ids: List[str] = [p["id"] for p in payloads]
                 error_ids: List[str] = []
                 not_found_ids: List[str] = []
                 is_ok = False
+                queued_count = 0
                 try:
                     response_data = await resp.json()
                     is_ok = response_data.get("ok", False)
                     error_ids = response_data.get("error", [])
                     not_found_ids = response_data.get("not_found", [])
+                    queued_count = response_data.get("queued", 0)
                 except Exception as e:
                     # No valid JSON response - still mark all as reported to avoid infinite loops
                     response_text = await resp.text()
@@ -1616,26 +1648,29 @@ class AsyncMailCore:
         if self._log_delivery_activity:
             if is_ok:
                 self.logger.info(
-                    "Tenant %s: all %d reports processed OK",
+                    "Tenant %s: all %d reports processed OK, client queued %d messages",
                     tenant_id,
                     batch_size,
+                    queued_count,
                 )
             else:
                 sent_count = batch_size - len(error_ids) - len(not_found_ids)
                 self.logger.info(
-                    "Tenant %s: sent=%d, error=%d, not_found=%d",
+                    "Tenant %s: sent=%d, error=%d, not_found=%d, client queued=%d",
                     tenant_id,
                     sent_count,
                     len(error_ids),
                     len(not_found_ids),
+                    queued_count,
                 )
         else:
             self.logger.debug(
-                "Delivery report batch to tenant %s (%d reports)",
+                "Delivery report batch to tenant %s (%d reports, client queued %d)",
                 tenant_id,
                 batch_size,
+                queued_count,
             )
-        return processed_ids
+        return processed_ids, queued_count
 
     # ------------------------------------------------------------- validations
     async def _validate_enqueue_payload(self, payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
