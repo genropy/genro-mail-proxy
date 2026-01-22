@@ -36,11 +36,15 @@ class AttachmentPayload(BaseModel):
         storage_path: Content location. Format depends on fetch_mode:
             - endpoint: query params (e.g., ``doc_id=123``)
             - http_url: full URL (e.g., ``https://files.myserver.local/file.pdf``)
-            - base64: base64-encoded content
+            - base64: base64-encoded content (or ``base64:`` prefixed)
             - filesystem: absolute path (e.g., ``/var/attachments/file.pdf``)
         mime_type: Optional MIME type override.
         fetch_mode: Explicit fetch mode (endpoint, http_url, base64, filesystem).
-            Required for determining how to retrieve the content.
+            If not provided, inferred from storage_path format:
+            - ``base64:`` prefix → base64
+            - ``http://`` or ``https://`` → http_url
+            - ``/`` (absolute path) → filesystem
+            - otherwise → endpoint (default)
         content_md5: MD5 hash for cache lookup. Alternative to embedding
             ``{MD5:hash}`` marker in filename.
         auth: Optional authentication override for HTTP requests.
@@ -55,7 +59,7 @@ class AttachmentPayload(BaseModel):
     ]
     storage_path: Annotated[
         str,
-        Field(min_length=1, description="Storage path (base64:, @http, /path)")
+        Field(min_length=1, description="Storage path (base64:, http://, /path, or endpoint params)")
     ]
     mime_type: Annotated[
         str | None,
@@ -63,7 +67,7 @@ class AttachmentPayload(BaseModel):
     ]
     fetch_mode: Annotated[
         FetchMode | None,
-        Field(default=None, description="Explicit fetch mode (endpoint, storage, http_url, base64)")
+        Field(default=None, description="Fetch mode (inferred from storage_path if not provided)")
     ]
     content_md5: Annotated[
         str | None,
@@ -78,9 +82,15 @@ class AttachmentPayload(BaseModel):
 class MessageCreate(BaseModel):
     """Payload for creating a new email message.
 
+    Note:
+        This is the internal schema used after API validation. The public
+        API (MessagePayload) allows optional account_id which defaults to
+        the instance's SMTP settings. Here account_id is required because
+        the account has already been resolved.
+
     Attributes:
         id: Unique message identifier.
-        account_id: SMTP account to use for sending.
+        account_id: SMTP account to use for sending (resolved, required).
         from_addr: Sender email address.
         to: List of recipient addresses.
         cc: List of CC addresses.
