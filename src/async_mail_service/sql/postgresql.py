@@ -43,7 +43,7 @@ class PostgresAdapter(DbAdapter):
     def _convert_placeholders(self, query: str) -> str:
         """Convert :name placeholders to %(name)s for psycopg."""
         import re
-        return re.sub(r":(\w+)", r"%(\1)s", query)
+        return re.sub(r":([a-zA-Z_][a-zA-Z0-9_]*)", r"%(\1)s", query)
 
     async def connect(self) -> None:
         """Establish connection pool."""
