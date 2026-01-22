@@ -22,5 +22,6 @@ Prometheus metrics, and a FastAPI control plane.
    multi_tenancy
    protocol
    api_reference
+   faq
    modules
    contributing
