@@ -56,9 +56,6 @@ dependencies = [
 mail-proxy = "async_mail_service.cli:main"
 
 [project.optional-dependencies]
-storage = [
-    "genro-storage>=0.1.0",
-]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=4.0",
@@ -66,7 +63,6 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.0",
     "httpx>=0.27.0",
-    "genro-storage>=0.1.0",
     "aioresponses>=0.7.0",
     "aiosmtpd>=1.4.0",
     "pytest-docker>=3.0.0",
@@ -79,7 +75,7 @@ docs = [
     "sphinxcontrib-mermaid>=1.0.0",
 ]
 all = [
-    "genro-mail-proxy[dev,docs,storage]",
+    "genro-mail-proxy[dev,docs]",
 ]
 
 [project.urls]

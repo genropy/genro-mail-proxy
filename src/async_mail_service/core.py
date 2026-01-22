@@ -47,31 +47,20 @@ import math
 from collections.abc import Awaitable, Callable, Iterable
 from datetime import datetime, timezone
 from email.message import EmailMessage
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import aiohttp
 import aiosmtplib
 
-# Optional genro-storage import
-try:
-    from genro_storage import AsyncStorageManager
-    GENRO_STORAGE_AVAILABLE = True
-except ImportError:
-    AsyncStorageManager = None  # type: ignore[misc, assignment]
-    GENRO_STORAGE_AVAILABLE = False
-
 from .attachments import AttachmentManager
 from .attachments.cache import TieredCache
-from .config_loader import AttachmentConfig, load_attachment_config, load_volumes_from_config
+from .config_loader import AttachmentConfig, load_attachment_config
 from .logger import get_logger
 from .models import get_tenant_attachment_url, get_tenant_sync_url
 from .persistence import Persistence
 from .prometheus import MailMetrics
 from .rate_limit import RateLimiter
 from .smtp_pool import SMTPPool
-
-if TYPE_CHECKING:
-    from genro_storage import AsyncStorageManager as AsyncStorageManagerType
 
 PRIORITY_LABELS = {
     0: "immediate",
@@ -241,7 +230,7 @@ class AsyncMailCore:
         Args:
             db_path: SQLite database path for persistence. Use ":memory:" for
                 in-memory database. Defaults to "/data/mail_service.db".
-            config_path: Optional path to INI config file for volume definitions.
+            config_path: Optional path to INI config file for attachment settings.
             logger: Custom logger instance. If None, uses default logger.
             metrics: Prometheus metrics collector. If None, creates new instance.
             start_active: Whether to start processing messages immediately.
@@ -304,8 +293,7 @@ class AsyncMailCore:
         self._client_sync_token = client_sync_token
         self._report_delivery_callable = report_delivery_callable
 
-        # Storage, attachments, and cache will be initialized in init()
-        self._storage_manager: AsyncStorageManagerType | None = None
+        # Attachments and cache will be initialized in init()
         self._attachment_cache: TieredCache | None = None
         self._attachment_config: AttachmentConfig | None = None
         self.attachments: AttachmentManager | None = None
@@ -336,33 +324,16 @@ class AsyncMailCore:
         return int(datetime.now(timezone.utc).timestamp())
 
     async def init(self) -> None:
-        """Initialize persistence layer, storage volumes, and attachment manager.
+        """Initialize persistence layer and attachment manager.
 
         Performs the following initialization steps:
         1. Initialize SQLite database schema
-        2. Load volume configurations from config file (if provided)
-        3. Load attachment configuration (cache settings, paths)
-        4. Initialize attachment cache (memory and disk tiers)
-        5. Configure storage manager with volumes from database
-        6. Create the AttachmentManager with all backends
+        2. Load attachment configuration (cache settings, paths)
+        3. Initialize attachment cache (memory and disk tiers)
+        4. Create the AttachmentManager with all backends
         """
         await self.persistence.init_db()
         await self._refresh_queue_gauge()
-
-        # Load volumes from config.ini if config_path is provided
-        if self._config_path:
-            try:
-                count = await load_volumes_from_config(
-                    self._config_path,
-                    self.persistence,
-                    overwrite=False  # Don't replace existing volumes
-                )
-                if count > 0:
-                    self.logger.info(f"Loaded {count} volumes from config file")
-            except FileNotFoundError:
-                self.logger.warning(f"Config file not found: {self._config_path}")
-            except Exception as e:
-                self.logger.error(f"Failed to load volumes from config: {e}")
 
         # Load attachment configuration from config.ini
         if self._config_path:
@@ -392,68 +363,13 @@ class AsyncMailCore:
                 f"disk={self._attachment_config.cache_disk_dir})"
             )
 
-        # Initialize storage manager with volumes from database (if genro-storage is available)
-        if GENRO_STORAGE_AVAILABLE:
-            self._storage_manager = AsyncStorageManager()
-            volumes = await self.persistence.list_volumes()
-            if volumes:
-                # Convert database volume format to genro-storage mount configuration
-                mount_configs = []
-                for vol in volumes:
-                    backend = vol['backend']
-                    vol_config = vol['config']
-
-                    # Build config with protocol at top level (genro-storage standard field)
-                    config = {
-                        'name': vol['name'],
-                        'protocol': backend,
-                    }
-                    # Merge storage-specific config at top level (genro-storage needs credentials at top level, not nested)
-                    config.update(vol_config)
-                    mount_configs.append(config)
-
-                self._storage_manager.configure(mount_configs)
-        else:
-            self._storage_manager = None
-            self.logger.info("genro-storage not installed, volume-based attachment fetching disabled")
-
         # Initialize attachment manager with all configured backends
         self.attachments = AttachmentManager(
-            storage_manager=self._storage_manager,
             base_dir=self._attachment_config.base_dir,
             http_endpoint=self._attachment_config.http_endpoint,
             http_auth_config=self._attachment_config.http_auth_config,
             cache=self._attachment_cache,
         )
-
-    async def reload_volumes(self) -> None:
-        """Reload volume configuration from database into storage manager.
-
-        This method has no effect if genro-storage is not installed.
-        """
-        if not GENRO_STORAGE_AVAILABLE or self._storage_manager is None:
-            self.logger.debug("genro-storage not available, skipping volume reload")
-            return
-
-        volumes = await self.persistence.list_volumes()
-        mount_configs = []
-        if volumes:
-            for vol in volumes:
-                backend = vol['backend']
-                vol_config = vol['config']
-
-                # Build config with protocol at top level (genro-storage standard field)
-                config = {
-                    'name': vol['name'],
-                    'protocol': backend,
-                }
-                # Merge storage-specific config at top level (genro-storage needs credentials at top level, not nested)
-                config.update(vol_config)
-                mount_configs.append(config)
-
-        # Reconfigure storage manager with updated volumes
-        self._storage_manager.configure(mount_configs)
-        self.logger.info(f"Reloaded {len(mount_configs)} volume(s) from database")
 
     def _normalise_priority(self, value: Any, default: Any = DEFAULT_PRIORITY) -> tuple[int, str]:
         """Convert a priority value to internal numeric representation.
@@ -668,44 +584,6 @@ class AsyncMailCore:
                         "account": item.get("account_id"),
                     })
                 continue
-
-            # Validate storage paths for attachments (only for storage fetch_mode)
-            attachments = item.get("attachments")
-            if attachments:
-                # Only validate paths that use storage fetch_mode (genro-storage volumes)
-                storage_paths = [
-                    att.get("storage_path")
-                    for att in attachments
-                    if att.get("storage_path") and att.get("fetch_mode") == "storage"
-                ]
-                if storage_paths:
-                    account_id = item.get("account_id")
-                    validation = await self.persistence.validate_storage_paths(storage_paths, account_id)
-                    invalid_paths = [path for path, valid in validation.items() if not valid]
-                    if invalid_paths:
-                        msg_id = item.get("id")
-                        reason = f"Invalid/unauthorized storage volumes: {', '.join(invalid_paths)}"
-                        rejected.append({"id": msg_id, "reason": reason})
-                        if msg_id:
-                            # Insert rejected message into DB with error for proxy_sync notification
-                            priority, _ = self._normalise_priority(item.get("priority"), default_priority_value)
-                            entry = {
-                                "id": msg_id,
-                                "account_id": account_id,
-                                "priority": priority,
-                                "payload": item,
-                                "deferred_ts": None,
-                            }
-                            await self.persistence.insert_messages([entry])
-                            await self.persistence.mark_error(msg_id, now_ts, reason)
-                            rejected_for_sync.append({
-                                "id": msg_id,
-                                "status": "error",
-                                "error": reason,
-                                "timestamp": self._utc_now_iso(),
-                                "account": account_id,
-                            })
-                        continue
 
             priority, _ = self._normalise_priority(item.get("priority"), default_priority_value)
             item["priority"] = priority
@@ -1604,7 +1482,6 @@ class AsyncMailCore:
 
         # Create tenant-specific manager with fallback to global config
         return AttachmentManager(
-            storage_manager=self._storage_manager,
             base_dir=self._attachment_config.base_dir,
             http_endpoint=tenant_attachment_url or self._attachment_config.http_endpoint,
             http_auth_config=http_auth_config or self._attachment_config.http_auth_config,

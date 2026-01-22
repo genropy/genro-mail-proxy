@@ -1,24 +1,16 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Tests for the attachments module."""
 
 import base64
 import pytest
 
-from async_mail_service.attachments import AttachmentManager, is_storage_available
-
-
-@pytest.mark.asyncio
-async def test_attachment_manager_without_storage():
-    """Test AttachmentManager raises error for volume paths without storage_manager."""
-    mgr = AttachmentManager(storage_manager=None)
-    # Without storage, fetch for volume path should raise RuntimeError
-    with pytest.raises(RuntimeError, match="genro-storage not available"):
-        await mgr.fetch({"filename": "a.txt", "storage_path": "vol:path/to/file", "fetch_mode": "storage"})
+from async_mail_service.attachments import AttachmentManager
 
 
 @pytest.mark.asyncio
 async def test_fetch_returns_none_for_missing_path():
     """Test that fetch returns None when storage_path is missing."""
-    mgr = AttachmentManager(storage_manager=None)
+    mgr = AttachmentManager()
     data = await mgr.fetch({"filename": "file.bin"})
     assert data is None
 
@@ -49,39 +41,3 @@ def test_guess_mime_unknown():
     maintype, subtype = AttachmentManager.guess_mime("file.unknownext")
     assert maintype == "application"
     assert subtype == "octet-stream"
-
-
-def test_is_storage_available():
-    """Test the is_storage_available function."""
-    # This test just verifies the function exists and returns a boolean
-    result = is_storage_available()
-    assert isinstance(result, bool)
-
-
-@pytest.mark.asyncio
-async def test_attachment_manager_with_mock_storage(monkeypatch):
-    """Test AttachmentManager with a mock storage manager."""
-    if not is_storage_available():
-        pytest.skip("genro-storage not installed")
-
-    expected_content = b"test file content"
-
-    class MockNode:
-        async def read(self, mode='r'):
-            return expected_content
-
-    class MockStorageManager:
-        def configure(self, configs):
-            pass
-
-        def node(self, path):
-            return MockNode()
-
-    mock_storage = MockStorageManager()
-    mgr = AttachmentManager(storage_manager=mock_storage)
-
-    result = await mgr.fetch({"filename": "test.txt", "storage_path": "vol:test.txt", "fetch_mode": "storage"})
-    assert result is not None
-    content, filename = result
-    assert content == expected_content
-    assert filename == "test.txt"

@@ -7,7 +7,6 @@ optional MD5-based caching.
 
 Supported fetch_mode values:
 - endpoint - HTTP POST to tenant's attachment URL (base_url + attachment_path)
-- storage - genro-storage volume (storage_path format: volume:path)
 - http_url - Direct HTTP fetch from URL in storage_path
 - base64 - Inline base64-encoded content in storage_path
 
@@ -39,23 +38,12 @@ from __future__ import annotations
 
 import mimetypes
 import re
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from .base64_fetcher import Base64Fetcher
 from .cache import TieredCache
 from .filesystem_fetcher import FilesystemFetcher
 from .http_fetcher import HttpFetcher
-
-# Optional genro-storage import
-try:
-    from genro_storage import AsyncStorageManager
-    GENRO_STORAGE_AVAILABLE = True
-except ImportError:
-    AsyncStorageManager = None  # type: ignore[misc, assignment]
-    GENRO_STORAGE_AVAILABLE = False
-
-if TYPE_CHECKING:
-    from genro_storage import AsyncStorageManager as AsyncStorageManagerType
 
 # Regex pattern for MD5 marker in filename: {MD5:hexstring}
 MD5_MARKER_PATTERN = re.compile(r'\{MD5:([a-fA-F0-9]+)\}')
@@ -69,12 +57,10 @@ class AttachmentManager:
 
     Supported fetch_mode values:
     - endpoint - HTTP POST to tenant's attachment URL
-    - storage - genro-storage volume (requires genro-storage installed)
     - http_url - Direct HTTP fetch from URL
     - base64 - Inline base64-encoded content
 
     Attributes:
-        _storage_fetcher: Fetcher for genro-storage volumes (optional).
         _base64_fetcher: Fetcher for base64-encoded inline content.
         _filesystem_fetcher: Fetcher for local filesystem paths.
         _http_fetcher: Fetcher for HTTP endpoints.
@@ -83,7 +69,6 @@ class AttachmentManager:
 
     def __init__(
         self,
-        storage_manager: AsyncStorageManagerType | None = None,
         base_dir: str | None = None,
         http_endpoint: str | None = None,
         http_auth_config: dict[str, str] | None = None,
@@ -92,21 +77,12 @@ class AttachmentManager:
         """Initialize the attachment manager with configured fetchers.
 
         Args:
-            storage_manager: Optional AsyncStorageManager instance for
-                storage fetch_mode. If None and genro-storage is
-                not installed, storage paths will raise an error.
             base_dir: Base directory for relative filesystem paths.
             http_endpoint: Default HTTP endpoint for endpoint fetch_mode.
             http_auth_config: HTTP authentication config with keys:
                 method ("none", "bearer", "basic"), token, user, password.
             cache: Optional TieredCache for MD5-based content caching.
         """
-        # Initialize fetchers
-        self._storage_fetcher = None
-        if storage_manager is not None and GENRO_STORAGE_AVAILABLE:
-            from .storage_fetcher import StorageFetcher
-            self._storage_fetcher = StorageFetcher(storage_manager)
-
         self._base64_fetcher = Base64Fetcher()
         self._filesystem_fetcher = FilesystemFetcher(base_dir=base_dir)
         self._http_fetcher = HttpFetcher(
@@ -151,11 +127,11 @@ class AttachmentManager:
         Args:
             path: The storage_path value from attachment dict.
             fetch_mode: Explicit fetch mode (required). Valid values:
-                "endpoint", "storage", "http_url", "base64".
+                "endpoint", "http_url", "base64".
 
         Returns:
             Tuple of (path_type, parsed_path) where path_type is one of:
-            "storage", "base64", "http".
+            "base64", "http".
 
         Raises:
             ValueError: If fetch_mode is missing or invalid.
@@ -168,8 +144,6 @@ class AttachmentManager:
 
         if fetch_mode == "endpoint":
             return ("http", path)
-        if fetch_mode == "storage":
-            return ("storage", path)
         if fetch_mode == "http_url":
             # Wrap URL in brackets for HttpFetcher
             return ("http", f"[{path}]")
@@ -198,7 +172,6 @@ class AttachmentManager:
 
         Raises:
             ValueError: If storage_path format is invalid.
-            RuntimeError: If required backend is not available.
             FileNotFoundError: If file doesn't exist (filesystem).
             aiohttp.ClientError: If HTTP request fails.
         """
@@ -255,13 +228,6 @@ class AttachmentManager:
         """
         path_type, parsed_path = self._parse_storage_path(storage_path, fetch_mode)
 
-        if path_type == "storage":
-            if not self._storage_fetcher:
-                raise RuntimeError(
-                    f"genro-storage not available for path: {storage_path}"
-                )
-            return await self._storage_fetcher.fetch({"storage_path": storage_path})
-
         if path_type == "base64":
             return await self._base64_fetcher.fetch(parsed_path)
 
@@ -291,7 +257,6 @@ class AttachmentManager:
         """
         results: dict[str, tuple[bytes, str]] = {}
         to_fetch: dict[str, list[dict[str, Any]]] = {
-            "storage": [],
             "base64": [],
             "filesystem": [],
             "http": [],
@@ -341,7 +306,7 @@ class AttachmentManager:
                         await self._cache.set(md5, content)
 
         # Fetch other types individually
-        for path_type in ["storage", "base64", "filesystem"]:
+        for path_type in ["base64", "filesystem"]:
             for att in to_fetch[path_type]:
                 try:
                     result = await self.fetch(att)
@@ -361,8 +326,6 @@ class AttachmentManager:
         for email attachment encoding. Falls back to application/octet-stream
         for unrecognized extensions.
 
-        This method works independently of any backend availability.
-
         Args:
             filename: Name of the file including extension.
 
@@ -374,12 +337,3 @@ class AttachmentManager:
         if not mt:
             return ("application", "octet-stream")
         return tuple(mt.split("/", 1))  # type: ignore[return-value]
-
-
-def is_storage_available() -> bool:
-    """Check if genro-storage is installed and available.
-
-    Returns:
-        True if genro-storage can be imported, False otherwise.
-    """
-    return GENRO_STORAGE_AVAILABLE

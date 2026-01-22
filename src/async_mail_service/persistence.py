@@ -7,7 +7,6 @@ operations for the async mail service, including:
 - SMTP account management (create, read, update, delete)
 - Message queue operations (insert, fetch, update status)
 - Send log for rate limiting calculations
-- Storage volume configuration
 
 The persistence layer uses aiosqlite for async SQLite operations,
 supporting both file-based databases and in-memory databases for testing.
@@ -32,9 +31,6 @@ Example:
             {"id": "msg1", "account_id": "primary", "priority": 2, "payload": {...}}
         ])
 
-Attributes:
-    SPECIAL_VOLUMES: Set of volume names that are always available without
-        database configuration (e.g., "base64" for inline attachments).
 """
 
 from __future__ import annotations
@@ -45,36 +41,13 @@ from typing import Any
 
 import aiosqlite
 
-# Special volumes that are always available without DB configuration
-SPECIAL_VOLUMES = {"base64"}
-
-
-def is_non_volume_path(path: str) -> bool:
-    """Check if a storage path doesn't require volume validation.
-
-    Returns True for paths that are handled by non-volume fetchers:
-    - HTTP paths starting with @
-    - Absolute filesystem paths starting with /
-    - Relative paths without : (filesystem relative to base_dir)
-    """
-    if not path:
-        return False
-    # HTTP paths
-    if path.startswith("@"):
-        return True
-    # Absolute filesystem paths
-    if path.startswith("/"):
-        return True
-    # If no colon, it's a relative filesystem path
-    return ":" not in path
-
 
 class Persistence:
     """Async SQLite persistence layer for mail service state management.
 
     Provides all database operations needed by the mail dispatcher including
-    account management, message queue operations, send logging for rate
-    limiting, and storage volume configuration.
+    account management, message queue operations, and send logging for rate
+    limiting.
 
     The class uses async context managers for database connections to ensure
     proper resource cleanup. Each operation opens and closes its own
@@ -102,7 +75,6 @@ class Persistence:
         - accounts: SMTP server configurations
         - messages: Email queue with status tracking
         - send_log: Send history for rate limiting
-        - volumes: Storage backend configurations
 
         This method is idempotent and safely handles schema migrations
         by adding new columns to existing tables when needed.
@@ -195,28 +167,6 @@ class Persistence:
                     reported_ts INTEGER
                 )
                 """
-            )
-
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS volumes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT UNIQUE NOT NULL,
-                    backend TEXT NOT NULL,
-                    config TEXT NOT NULL,
-                    account_id TEXT,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
-                )
-                """
-            )
-
-            await db.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_volumes_name ON volumes(name)"
-            )
-            await db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_volumes_account ON volumes(account_id)"
             )
 
             # Instance configuration table (replaces config.ini)
@@ -369,9 +319,6 @@ class Persistence:
                 await db.execute("DELETE FROM messages WHERE account_id = ?", (account_id,))
                 await db.execute("DELETE FROM send_log WHERE account_id = ?", (account_id,))
                 await db.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
-
-            # Delete volumes associated with this tenant
-            await db.execute("DELETE FROM volumes WHERE account_id = ?", (tenant_id,))
 
             # Delete the tenant
             cursor = await db.execute("DELETE FROM tenants WHERE id = ?", (tenant_id,))
@@ -776,180 +723,6 @@ class Persistence:
         ) as cur:
             row = await cur.fetchone()
         return int(row[0] if row else 0)
-
-    # Volumes ------------------------------------------------------------------
-    async def add_volumes(self, volumes: list[dict[str, Any]]) -> None:
-        """Insert or replace storage volumes. account_id can be None for global volumes."""
-        if not volumes:
-            return
-        async with aiosqlite.connect(self.db_path) as db:
-            for vol in volumes:
-                account_id = vol.get("account_id")  # Can be None for global volumes
-                await db.execute(
-                    """
-                    INSERT OR REPLACE INTO volumes (name, backend, config, account_id, updated_at)
-                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                    """,
-                    (vol["name"], vol["backend"], json.dumps(vol["config"]), account_id)
-                )
-            await db.commit()
-
-    async def list_volumes(self, account_id: str | None = None) -> list[dict[str, Any]]:
-        """Return volumes accessible by account_id.
-
-        If account_id is None, returns ALL volumes.
-        If account_id is provided, returns volumes specific to that account plus global volumes.
-        """
-        async with aiosqlite.connect(self.db_path) as db:
-            if account_id is None:
-                # List all volumes (admin view)
-                query = "SELECT id, name, backend, config, account_id, created_at, updated_at FROM volumes"
-                params = ()
-            else:
-                # List volumes accessible by this account (specific + global)
-                query = """
-                    SELECT id, name, backend, config, account_id, created_at, updated_at
-                    FROM volumes
-                    WHERE account_id = ? OR account_id IS NULL
-                """
-                params = (account_id,)
-
-            async with db.execute(query, params) as cur:
-                rows = await cur.fetchall()
-                cols = [c[0] for c in cur.description]
-
-        result = []
-        for row in rows:
-            vol = dict(zip(cols, row, strict=True))
-            vol["config"] = json.loads(vol["config"])
-            result.append(vol)
-        return result
-
-    async def get_volume(self, volume_name: str, account_id: str | None = None) -> dict[str, Any] | None:
-        """Get volume configuration accessible by account_id.
-
-        Lookup order:
-        1. Volume specific to account_id (if provided)
-        2. Global volume (account_id IS NULL)
-
-        Returns None if no volume found.
-        """
-        # Special volumes are always available
-        if volume_name in SPECIAL_VOLUMES:
-            return {
-                "name": volume_name,
-                "backend": "memory",
-                "config": {"type": volume_name},
-                "account_id": None
-            }
-
-        async with aiosqlite.connect(self.db_path) as db:
-            # Try account-specific volume first
-            if account_id:
-                async with db.execute(
-                    "SELECT id, name, backend, config, account_id FROM volumes WHERE name=? AND account_id=?",
-                    (volume_name, account_id)
-                ) as cur:
-                    row = await cur.fetchone()
-                    if row:
-                        cols = [c[0] for c in cur.description]
-                        vol = dict(zip(cols, row, strict=True))
-                        vol["config"] = json.loads(vol["config"])
-                        return vol
-
-            # Try global volume
-            async with db.execute(
-                "SELECT id, name, backend, config, account_id FROM volumes WHERE name=? AND account_id IS NULL",
-                (volume_name,)
-            ) as cur:
-                row = await cur.fetchone()
-                if not row:
-                    return None
-                cols = [c[0] for c in cur.description]
-                vol = dict(zip(cols, row, strict=True))
-                vol["config"] = json.loads(vol["config"])
-                return vol
-
-    async def delete_volume(self, volume_name: str, account_id: str | None = None) -> bool:
-        """Delete a volume by name. Returns True if deleted.
-
-        If account_id is None, deletes any volume with this name (typically global).
-        If account_id is provided, only deletes if the volume belongs to that account.
-        """
-        async with aiosqlite.connect(self.db_path) as db:
-            if account_id is None:
-                # Delete volume by name (any account)
-                cursor = await db.execute(
-                    "DELETE FROM volumes WHERE name=?",
-                    (volume_name,)
-                )
-            else:
-                # Delete only if belongs to this account
-                cursor = await db.execute(
-                    "DELETE FROM volumes WHERE name=? AND account_id=?",
-                    (volume_name, account_id)
-                )
-            await db.commit()
-            return cursor.rowcount > 0
-
-    async def validate_storage_paths(self, storage_paths: list[str], account_id: str | None) -> dict[str, bool]:
-        """Validate that all storage paths have configured volumes.
-
-        Returns dict mapping storage_path -> is_valid.
-
-        The following paths are always valid:
-        - Special volumes (like 'base64:')
-        - HTTP paths starting with @
-        - Absolute filesystem paths starting with /
-        - Relative filesystem paths without :
-
-        Regular volume paths (volume:path) require the volume to be
-        configured in the database.
-        """
-        if not storage_paths:
-            return {}
-
-        # Separate non-volume paths (always valid) from volume paths (need DB check)
-        non_volume_results = {}
-        volume_names = set()
-
-        for path in storage_paths:
-            if not path:
-                # Empty path is always invalid
-                non_volume_results[path] = False
-            elif is_non_volume_path(path):
-                # HTTP, absolute filesystem, relative filesystem - always valid
-                non_volume_results[path] = True
-            elif ":" in path:
-                volume_name = path.split(":", 1)[0]
-                if volume_name in SPECIAL_VOLUMES:
-                    # Special volumes like base64 are always valid
-                    non_volume_results[path] = True
-                else:
-                    volume_names.add(volume_name)
-            else:
-                # Path without : that wasn't caught by is_non_volume_path
-                # This shouldn't happen, but mark as valid (filesystem)
-                non_volume_results[path] = True
-
-        # No volume paths to check - return early
-        if not volume_names:
-            return non_volume_results
-
-        # Check which volumes exist in DB
-        volume_results = {}
-        for volume_name in volume_names:
-            vol = await self.get_volume(volume_name, account_id)
-            volume_results[volume_name] = vol is not None
-
-        # Map back to storage paths
-        result = dict(non_volume_results)
-        for path in storage_paths:
-            if path not in result and ":" in path:
-                volume_name = path.split(":", 1)[0]
-                result[path] = volume_results.get(volume_name, False)
-
-        return result
 
     # Instance config ------------------------------------------------------
     async def get_config(self, key: str, default: str | None = None) -> str | None:

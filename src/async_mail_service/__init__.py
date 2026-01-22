@@ -5,7 +5,7 @@ This package provides a complete email dispatch solution with features including
 
 - Priority-based message queuing with automatic retry
 - Per-account rate limiting (per minute, hour, day)
-- Attachment handling via genro-storage integration
+- Attachment handling via HTTP/base64
 - Prometheus metrics for monitoring
 - FastAPI REST API for control and message submission
 - SQLite persistence for reliability

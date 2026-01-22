@@ -79,14 +79,13 @@ The example shows:
 
 ## Attachment Handling
 
-genro-mail-proxy supports multiple attachment storage backends with flexible routing. The optional [genro-storage](https://github.com/genropy/genro-storage) dependency enables S3, WebDAV and other cloud backends.
+genro-mail-proxy supports multiple attachment sources with flexible routing.
 
 ### Storage Path Formats
 
 | Format | Example | Description |
 |--------|---------|-------------|
-| `base64:content` | `base64:SGVsbG8=` | Inline base64-encoded content (always available) |
-| `volume:path` | `s3-uploads:docs/report.pdf` | genro-storage volume (requires genro-storage) |
+| `base64:content` | `base64:SGVsbG8=` | Inline base64-encoded content |
 | `/absolute/path` | `/tmp/attachments/file.pdf` | Local filesystem absolute path |
 | `relative/path` | `uploads/doc.pdf` | Filesystem relative to configured base_dir |
 | `@params` | `@doc_id=123&version=2` | HTTP POST to default endpoint |
@@ -108,16 +107,6 @@ http_auth_token = your-secret-token
 # http_auth_password = password
 ```
 
-### Volume Configuration (genro-storage)
-
-Volumes can be configured via config.ini or REST API. **See [VOLUMES.md](VOLUMES.md) for comprehensive documentation.**
-
-```ini
-[volumes]
-volume.shared-s3.backend = s3
-volume.shared-s3.config = {"bucket": "common-uploads", "region": "us-east-1"}
-```
-
 ## Attachment Cache
 
 A two-tiered cache (memory + disk) reduces redundant fetches for frequently used attachments.
@@ -130,7 +119,7 @@ Filenames can include an MD5 hash marker for cache lookup:
 report_{MD5:a1b2c3d4e5f6}.pdf
 ```
 
-The marker is extracted for cache lookup and removed from the final filename. This is compatible with genro-storage and Genropy which use MD5 from S3 ETag.
+The marker is extracted for cache lookup and removed from the final filename.
 
 ### Cache Configuration
 

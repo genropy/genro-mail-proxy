@@ -1,13 +1,13 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Tests for the AttachmentManager class."""
 
 import base64
 import hashlib
 import tempfile
-from pathlib import Path
 
 import pytest
 
-from async_mail_service.attachments import AttachmentManager, is_storage_available
+from async_mail_service.attachments import AttachmentManager
 from async_mail_service.attachments.cache import TieredCache
 
 
@@ -95,15 +95,6 @@ class TestParseStoragePath:
 
         assert path_type == "http"
         assert parsed == "[https://api.example.com/files/123]"
-
-    def test_storage_fetch_mode(self):
-        """Test fetch_mode=storage returns storage path type."""
-        # Note: This requires a storage manager, otherwise will be checked in fetch
-        manager = AttachmentManager()
-        path_type, parsed = manager._parse_storage_path("documents:reports/q1.pdf", fetch_mode="storage")
-
-        assert path_type == "storage"
-        assert parsed == "documents:reports/q1.pdf"
 
     def test_missing_fetch_mode_raises(self):
         """Test that missing fetch_mode raises ValueError."""
@@ -303,12 +294,3 @@ class TestGuessMime:
         maintype, subtype = AttachmentManager.guess_mime("file.unknownext")
         assert maintype == "application"
         assert subtype == "octet-stream"
-
-
-class TestIsStorageAvailable:
-    """Tests for the is_storage_available function."""
-
-    def test_returns_boolean(self):
-        """Test the function returns a boolean."""
-        result = is_storage_available()
-        assert isinstance(result, bool)

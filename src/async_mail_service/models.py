@@ -376,12 +376,11 @@ class FetchMode(str, Enum):
 
     Attributes:
         ENDPOINT: Fetch from configured HTTP endpoint with path parameter.
-        STORAGE: Fetch from genro-storage volume using storage_path.
         HTTP_URL: Fetch directly from a full HTTP/HTTPS URL.
+        BASE64: Inline base64-encoded content.
     """
 
     ENDPOINT = "endpoint"
-    STORAGE = "storage"
     HTTP_URL = "http_url"
     BASE64 = "base64"
 
@@ -391,9 +390,9 @@ class AttachmentPayload(BaseModel):
 
     Attributes:
         filename: Attachment filename (may contain MD5 marker).
-        storage_path: Path to fetch content (base64:, volume:, @http, /absolute, relative).
+        storage_path: Path to fetch content (base64:, @http, /absolute, relative).
         mime_type: Optional MIME type override.
-        fetch_mode: Explicit fetch mode (endpoint, storage, http_url, base64).
+        fetch_mode: Explicit fetch mode (endpoint, http_url, base64).
             If not specified, mode is determined from storage_path prefix.
         content_md5: MD5 hash for cache lookup. Alternative to embedding
             {MD5:hash} marker in filename.
@@ -409,7 +408,7 @@ class AttachmentPayload(BaseModel):
     ]
     storage_path: Annotated[
         str,
-        Field(min_length=1, description="Storage path (base64:, volume:, @http, /path)")
+        Field(min_length=1, description="Storage path (base64:, @http, /path)")
     ]
     mime_type: Annotated[
         str | None,

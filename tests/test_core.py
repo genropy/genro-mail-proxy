@@ -676,7 +676,6 @@ async def test_tenant_attachment_config_applied(tmp_path):
         http_endpoint="https://global.example.com",
         http_auth_config=None,
     )
-    core._storage_manager = None
     core._attachment_cache = None
 
     # Create tenant with custom attachment config
