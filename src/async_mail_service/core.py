@@ -224,6 +224,8 @@ class AsyncMailCore:
         log_delivery_activity: bool = False,
         max_retries: int = DEFAULT_MAX_RETRIES,
         retry_delays: list[int] | None = None,
+        max_concurrent_sends: int = 10,
+        max_concurrent_per_account: int = 3,
     ):
         """Initialize the mail dispatcher core with configuration options.
 
@@ -252,6 +254,8 @@ class AsyncMailCore:
             log_delivery_activity: Enable verbose delivery activity logging.
             max_retries: Maximum retry attempts for temporary SMTP failures.
             retry_delays: Custom list of retry delay intervals in seconds.
+            max_concurrent_sends: Maximum concurrent SMTP sends globally.
+            max_concurrent_per_account: Maximum concurrent sends per SMTP account.
         """
         self.default_host = None
         self.default_port = None
@@ -303,6 +307,9 @@ class AsyncMailCore:
         self._max_retries = max(0, int(max_retries))
         self._retry_delays = retry_delays or DEFAULT_RETRY_DELAYS
         self._batch_size_per_account = max(1, int(batch_size_per_account))
+        self._max_concurrent_sends = max(1, int(max_concurrent_sends))
+        self._max_concurrent_per_account = max(1, int(max_concurrent_per_account))
+        self._account_semaphores: dict[str, asyncio.Semaphore] = {}
 
     # --------------------------------------------------------------------- utils
     @staticmethod
@@ -723,11 +730,22 @@ class AsyncMailCore:
                 self.logger.debug(f"No messages processed, waiting {self._send_loop_interval}s")
                 await self._wait_for_wakeup(self._send_loop_interval)
 
+    def _get_account_semaphore(self, account_id: str) -> asyncio.Semaphore:
+        """Get or create a semaphore for per-account concurrency limiting."""
+        if account_id not in self._account_semaphores:
+            self._account_semaphores[account_id] = asyncio.Semaphore(self._max_concurrent_per_account)
+        return self._account_semaphores[account_id]
+
     async def _process_smtp_cycle(self) -> bool:
-        """Execute one SMTP dispatch cycle.
+        """Execute one SMTP dispatch cycle with parallel message dispatch.
 
         Fetches ready messages from the database, groups them by account,
-        and processes each account's batch respecting configured limits.
+        and processes messages in parallel respecting global and per-account
+        concurrency limits.
+
+        Concurrency is controlled by:
+        - Global semaphore: max_concurrent_sends (default 10)
+        - Per-account semaphore: max_concurrent_per_account (default 3)
 
         Returns:
             True if any messages were processed, False otherwise.
@@ -747,8 +765,9 @@ class AsyncMailCore:
             account_id = entry.get("message", {}).get("account_id") or "default"
             messages_by_account[account_id].append(entry)
 
-        # Process messages respecting per-account batch size
-        processed_any = False
+        # Collect all messages to send, respecting per-account batch limits
+        all_messages_to_send: list[tuple[dict, str]] = []  # (entry, account_id)
+
         for account_id, account_messages in messages_by_account.items():
             # Get account-specific batch_size if available, otherwise use global default
             account_batch_size = self._batch_size_per_account
@@ -771,12 +790,37 @@ class AsyncMailCore:
                 )
 
             for entry in messages_to_send:
-                self.logger.debug(f"Dispatching message {entry.get('id')} for account {account_id}")
-                await self._dispatch_message(entry, now_ts)
-                processed_any = True
+                all_messages_to_send.append((entry, account_id))
+
+        if not all_messages_to_send:
+            await self._refresh_queue_gauge()
+            return False
+
+        # Global semaphore to limit overall concurrency
+        global_semaphore = asyncio.Semaphore(self._max_concurrent_sends)
+
+        async def dispatch_with_limits(entry: dict, account_id: str) -> None:
+            """Dispatch a single message respecting concurrency limits."""
+            account_semaphore = self._get_account_semaphore(account_id)
+            async with global_semaphore:
+                async with account_semaphore:
+                    self.logger.debug(f"Dispatching message {entry.get('id')} for account {account_id}")
+                    await self._dispatch_message(entry, now_ts)
+
+        # Dispatch all messages in parallel with concurrency limits
+        tasks = [dispatch_with_limits(entry, acc_id) for entry, acc_id in all_messages_to_send]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Log any exceptions that occurred
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                entry, account_id = all_messages_to_send[i]
+                self.logger.exception(
+                    f"Unexpected error dispatching message {entry.get('id')} for account {account_id}: {result}"
+                )
 
         await self._refresh_queue_gauge()
-        return processed_any
+        return len(all_messages_to_send) > 0
 
     async def _dispatch_message(self, entry: dict[str, Any], now_ts: int) -> None:
         """Attempt to deliver a single message via SMTP.

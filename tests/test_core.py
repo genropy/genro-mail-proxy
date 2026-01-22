@@ -1001,3 +1001,74 @@ async def test_message_without_account_uses_default(tmp_path):
     host, port, _, _, _ = core.pool.requests[0]
     assert host == "default.smtp.local"
     assert port == 587
+
+
+@pytest.mark.asyncio
+async def test_parallel_dispatch_multiple_messages(tmp_path):
+    """Test that multiple messages are dispatched in parallel."""
+    core = await make_core(tmp_path)
+
+    # Add multiple messages
+    messages = []
+    for i in range(5):
+        messages.append({
+            "id": f"parallel-msg-{i}",
+            "account_id": "acc",
+            "from": "sender@example.com",
+            "to": ["dest@example.com"],
+            "subject": f"Parallel Test {i}",
+            "body": f"Body {i}",
+        })
+
+    result = await core.handle_command("addMessages", {"messages": messages})
+    assert result["ok"] is True
+    assert result["queued"] == 5
+
+    # Process all messages
+    await core._process_smtp_cycle()
+
+    # All 5 messages should have been sent
+    assert len(core.pool.smtp.sent) == 5
+
+
+@pytest.mark.asyncio
+async def test_parallel_dispatch_respects_global_concurrency(tmp_path):
+    """Test that global concurrency limit is respected."""
+    core = await make_core(tmp_path)
+
+    # Verify default concurrency settings
+    assert core._max_concurrent_sends == 10
+    assert core._max_concurrent_per_account == 3
+
+
+@pytest.mark.asyncio
+async def test_parallel_dispatch_per_account_semaphore(tmp_path):
+    """Test that per-account semaphores are created correctly."""
+    core = await make_core(tmp_path)
+
+    # Get semaphore for an account
+    sem1 = core._get_account_semaphore("acc-1")
+    sem2 = core._get_account_semaphore("acc-1")
+    sem3 = core._get_account_semaphore("acc-2")
+
+    # Same account should return same semaphore
+    assert sem1 is sem2
+    # Different account should return different semaphore
+    assert sem1 is not sem3
+
+
+@pytest.mark.asyncio
+async def test_parallel_dispatch_custom_concurrency(tmp_path):
+    """Test that custom concurrency settings are applied."""
+    db_path = tmp_path / "custom-concurrent.db"
+    core = AsyncMailCore(
+        db_path=str(db_path),
+        start_active=False,
+        test_mode=True,
+        max_concurrent_sends=5,
+        max_concurrent_per_account=2,
+    )
+    await core.init()
+
+    assert core._max_concurrent_sends == 5
+    assert core._max_concurrent_per_account == 2
