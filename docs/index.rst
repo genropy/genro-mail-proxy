@@ -134,10 +134,9 @@ with separate databases.
    installation
    network_requirements
    usage
+   attachments
    example_client
-   django_integration
-   flask_integration
-   express_integration
+   integrations
    multi_tenancy
    protocol
    api_reference
