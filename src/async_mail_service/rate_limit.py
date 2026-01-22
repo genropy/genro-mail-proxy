@@ -1,3 +1,4 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Sliding-window rate limiter using persisted send logs.
 
 This module implements per-account rate limiting with configurable limits
@@ -23,7 +24,7 @@ Example:
 """
 
 import time
-from typing import Any, Dict, Optional
+from typing import Any
 
 from .persistence import Persistence
 
@@ -52,7 +53,7 @@ class RateLimiter:
         """
         self.persistence = persistence
 
-    async def check_and_plan(self, account: Dict[str, Any]) -> Optional[int]:
+    async def check_and_plan(self, account: dict[str, Any]) -> int | None:
         """Check rate limits and calculate deferral timestamp if exceeded.
 
         Evaluates the account's configured rate limits against recent send
@@ -76,7 +77,7 @@ class RateLimiter:
         account_id = account["id"]
         now = int(time.time())
 
-        def lim(key: str) -> Optional[int]:
+        def lim(key: str) -> int | None:
             """Extract a positive integer limit or None."""
             v = account.get(key)
             if v is None:

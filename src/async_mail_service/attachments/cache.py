@@ -1,3 +1,4 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Two-tiered cache for attachment content.
 
 This module provides a TieredCache class that stores attachment content
@@ -34,11 +35,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import os
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Optional
 
 
 class MemoryCache:
@@ -66,7 +65,7 @@ class MemoryCache:
         self._cache: OrderedDict[str, tuple[bytes, float]] = OrderedDict()
         self._current_bytes = 0
 
-    def get(self, md5_hash: str) -> Optional[bytes]:
+    def get(self, md5_hash: str) -> bytes | None:
         """Retrieve content by MD5 hash.
 
         Args:
@@ -193,7 +192,7 @@ class DiskCache:
         subdir = md5_hash[:2]
         return self._cache_dir / subdir / md5_hash
 
-    async def get(self, md5_hash: str) -> Optional[bytes]:
+    async def get(self, md5_hash: str) -> bytes | None:
         """Retrieve content by MD5 hash.
 
         Args:
@@ -216,7 +215,7 @@ class DiskCache:
 
             # Read content
             return await asyncio.to_thread(file_path.read_bytes)
-        except (OSError, IOError):
+        except OSError:
             return None
 
     async def set(self, md5_hash: str, content: bytes) -> None:
@@ -250,7 +249,7 @@ class DiskCache:
             # Try to remove empty parent directory
             if file_path.parent.exists() and not any(file_path.parent.iterdir()):
                 await asyncio.to_thread(file_path.parent.rmdir)
-        except (OSError, IOError):
+        except OSError:
             pass
 
     async def _ensure_space(self, needed_bytes: int) -> None:
@@ -269,7 +268,7 @@ class DiskCache:
             try:
                 await asyncio.to_thread(file_path.unlink)
                 current_size -= file_size
-            except (OSError, IOError):
+            except OSError:
                 pass
 
     async def _get_total_size(self) -> int:
@@ -321,13 +320,13 @@ class DiskCache:
                     if now - mtime > self._ttl_seconds:
                         await asyncio.to_thread(file_path.unlink)
                         removed += 1
-                except (OSError, IOError):
+                except OSError:
                     pass
             # Remove empty subdirectory
             try:
                 if not any(subdir.iterdir()):
                     await asyncio.to_thread(subdir.rmdir)
-            except (OSError, IOError):
+            except OSError:
                 pass
 
         return removed
@@ -341,11 +340,11 @@ class DiskCache:
                 for file_path in subdir.iterdir():
                     try:
                         await asyncio.to_thread(file_path.unlink)
-                    except (OSError, IOError):
+                    except OSError:
                         pass
                 try:
                     await asyncio.to_thread(subdir.rmdir)
-                except (OSError, IOError):
+                except OSError:
                     pass
 
 
@@ -365,7 +364,7 @@ class TieredCache:
         self,
         memory_max_mb: float = 50,
         memory_ttl_seconds: int = 300,
-        disk_dir: Optional[str] = None,
+        disk_dir: str | None = None,
         disk_max_mb: float = 500,
         disk_ttl_seconds: int = 3600,
         disk_threshold_kb: float = 100,
@@ -381,7 +380,7 @@ class TieredCache:
             disk_threshold_kb: Files larger than this go to disk.
         """
         self._memory = MemoryCache(max_mb=memory_max_mb, ttl_seconds=memory_ttl_seconds)
-        self._disk: Optional[DiskCache] = None
+        self._disk: DiskCache | None = None
         if disk_dir:
             self._disk = DiskCache(
                 cache_dir=disk_dir,
@@ -395,7 +394,7 @@ class TieredCache:
         if self._disk:
             await self._disk.init()
 
-    async def get(self, md5_hash: str) -> Optional[bytes]:
+    async def get(self, md5_hash: str) -> bytes | None:
         """Retrieve content by MD5 hash.
 
         Checks memory first, then disk. If found on disk and small enough,

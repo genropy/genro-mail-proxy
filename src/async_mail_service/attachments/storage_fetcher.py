@@ -1,3 +1,4 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Fetch attachments from genro-storage volumes.
 
 This module provides the StorageFetcher class, a concrete implementation
@@ -28,14 +29,14 @@ Example:
         })
 """
 
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any
 
 from genro_storage import AsyncStorageManager
 
 from .base import AttachmentFetcherBase
 
 if TYPE_CHECKING:
-    from genro_storage import AsyncStorageManager as AsyncStorageManagerType
+    pass
 
 
 class StorageFetcher(AttachmentFetcherBase):
@@ -59,7 +60,7 @@ class StorageFetcher(AttachmentFetcherBase):
         """
         self._storage = storage_manager
 
-    async def fetch(self, att: Dict[str, Any]) -> Optional[bytes]:
+    async def fetch(self, att: dict[str, Any]) -> bytes | None:
         """Retrieve file content from a genro-storage volume.
 
         Uses the storage_path from the attachment dictionary to locate and

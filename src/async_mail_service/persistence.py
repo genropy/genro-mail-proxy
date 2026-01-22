@@ -1,3 +1,4 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """SQLite-backed persistence layer for the mail dispatcher.
 
 This module provides the Persistence class that handles all database
@@ -39,7 +40,8 @@ Attributes:
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from collections.abc import Iterable, Sequence
+from typing import Any
 
 import aiosqlite
 
@@ -64,9 +66,7 @@ def is_non_volume_path(path: str) -> bool:
     if path.startswith("/"):
         return True
     # If no colon, it's a relative filesystem path
-    if ":" not in path:
-        return True
-    return False
+    return ":" not in path
 
 
 class Persistence:
@@ -233,7 +233,7 @@ class Persistence:
             await db.commit()
 
     # Tenants ------------------------------------------------------------------
-    async def add_tenant(self, tenant: Dict[str, Any]) -> None:
+    async def add_tenant(self, tenant: dict[str, Any]) -> None:
         """Insert or replace a tenant configuration.
 
         Args:
@@ -260,21 +260,23 @@ class Persistence:
             )
             await db.commit()
 
-    async def get_tenant(self, tenant_id: str) -> Optional[Dict[str, Any]]:
-        """Fetch a tenant by ID.
+    async def get_tenant(self, tenant_id: str) -> dict[str, Any] | None:
+        """Fetch a tenant configuration by ID.
+
+        Args:
+            tenant_id: Unique tenant identifier.
 
         Returns:
-            Tenant dict or None if not found.
+            Tenant dict with decoded JSON fields, or None if not found.
         """
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute(
-                "SELECT * FROM tenants WHERE id=?", (tenant_id,)
-            ) as cur:
-                row = await cur.fetchone()
-                if not row:
-                    return None
-                cols = [c[0] for c in cur.description]
-                tenant = dict(zip(cols, row))
+        async with aiosqlite.connect(self.db_path) as db, db.execute(
+            "SELECT * FROM tenants WHERE id=?", (tenant_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            if not row:
+                return None
+            cols = [c[0] for c in cur.description]
+            tenant = dict(zip(cols, row, strict=True))
 
         # Decode JSON fields
         for field in ("client_auth", "rate_limits"):
@@ -283,7 +285,7 @@ class Persistence:
         tenant["active"] = bool(tenant.get("active", 1))
         return tenant
 
-    async def list_tenants(self, active_only: bool = False) -> List[Dict[str, Any]]:
+    async def list_tenants(self, active_only: bool = False) -> list[dict[str, Any]]:
         """Return all tenants.
 
         Args:
@@ -300,7 +302,7 @@ class Persistence:
 
         result = []
         for row in rows:
-            tenant = dict(zip(cols, row))
+            tenant = dict(zip(cols, row, strict=True))
             for field in ("client_auth", "rate_limits"):
                 if tenant.get(field):
                     tenant[field] = json.loads(tenant[field])
@@ -308,7 +310,7 @@ class Persistence:
             result.append(tenant)
         return result
 
-    async def update_tenant(self, tenant_id: str, updates: Dict[str, Any]) -> bool:
+    async def update_tenant(self, tenant_id: str, updates: dict[str, Any]) -> bool:
         """Update a tenant's fields.
 
         Args:
@@ -376,7 +378,7 @@ class Persistence:
             await db.commit()
             return cursor.rowcount > 0
 
-    async def get_tenant_for_account(self, account_id: str) -> Optional[Dict[str, Any]]:
+    async def get_tenant_for_account(self, account_id: str) -> dict[str, Any] | None:
         """Get the tenant configuration for a given account.
 
         Args:
@@ -385,20 +387,19 @@ class Persistence:
         Returns:
             Tenant dict or None if account has no tenant.
         """
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute(
-                """
+        async with aiosqlite.connect(self.db_path) as db, db.execute(
+            """
                 SELECT t.* FROM tenants t
                 JOIN accounts a ON a.tenant_id = t.id
                 WHERE a.id = ?
                 """,
-                (account_id,),
-            ) as cur:
-                row = await cur.fetchone()
-                if not row:
-                    return None
-                cols = [c[0] for c in cur.description]
-                tenant = dict(zip(cols, row))
+            (account_id,),
+        ) as cur:
+            row = await cur.fetchone()
+            if not row:
+                return None
+            cols = [c[0] for c in cur.description]
+            tenant = dict(zip(cols, row, strict=True))
 
         for field in ("client_auth", "rate_limits"):
             if tenant.get(field):
@@ -407,7 +408,7 @@ class Persistence:
         return tenant
 
     # Accounts -----------------------------------------------------------------
-    async def add_account(self, acc: Dict[str, Any]) -> None:
+    async def add_account(self, acc: dict[str, Any]) -> None:
         """Insert or overwrite an SMTP account definition."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
@@ -434,7 +435,7 @@ class Persistence:
             )
             await db.commit()
 
-    async def list_accounts(self, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def list_accounts(self, tenant_id: str | None = None) -> list[dict[str, Any]]:
         """Return SMTP accounts, optionally filtered by tenant.
 
         Args:
@@ -459,7 +460,7 @@ class Persistence:
             async with db.execute(query, params) as cur:
                 rows = await cur.fetchall()
                 cols = [c[0] for c in cur.description]
-        result = [dict(zip(cols, row)) for row in rows]
+        result = [dict(zip(cols, row, strict=True)) for row in rows]
         for acc in result:
             if "use_tls" in acc:
                 acc["use_tls"] = bool(acc["use_tls"]) if acc["use_tls"] is not None else None
@@ -473,7 +474,7 @@ class Persistence:
             await db.execute("DELETE FROM send_log WHERE account_id=?", (account_id,))
             await db.commit()
 
-    async def get_account(self, account_id: str) -> Dict[str, Any]:
+    async def get_account(self, account_id: str) -> dict[str, Any]:
         """Fetch a single SMTP account or raise if it does not exist."""
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("SELECT * FROM accounts WHERE id=?", (account_id,)) as cur:
@@ -481,15 +482,15 @@ class Persistence:
                 if not row:
                     raise ValueError(f"Account '{account_id}' not found")
                 cols = [c[0] for c in cur.description]
-                account = dict(zip(cols, row))
+                account = dict(zip(cols, row, strict=True))
         if "use_tls" in account:
             account["use_tls"] = bool(account["use_tls"]) if account["use_tls"] is not None else None
         return account
 
     # Messages -----------------------------------------------------------------
     @staticmethod
-    def _decode_message_row(row: Tuple[Any, ...], columns: Sequence[str]) -> Dict[str, Any]:
-        data = dict(zip(columns, row))
+    def _decode_message_row(row: tuple[Any, ...], columns: Sequence[str]) -> dict[str, Any]:
+        data = dict(zip(columns, row, strict=True))
         payload = data.pop("payload", None)
         if payload is not None:
             try:
@@ -500,16 +501,21 @@ class Persistence:
             data["message"] = None
         return data
 
-    async def insert_messages(self, entries: Sequence[Dict[str, Any]]) -> List[str]:
-        """Persist a batch of messages, returning the ids that were stored.
+    async def insert_messages(self, entries: Sequence[dict[str, Any]]) -> list[str]:
+        """Persist a batch of messages for delivery.
 
-        If a message with the same id already exists but has NOT been sent (sent_ts IS NULL),
-        it will be replaced with the new data. This allows clients to correct errors or
-        retry with different parameters. Messages that have been sent are never replaced.
+        If a message with the same ID already exists but has NOT been sent,
+        it will be updated with the new data. Sent messages are never replaced.
+
+        Args:
+            entries: List of message dicts with id, account_id, priority, payload.
+
+        Returns:
+            List of message IDs that were successfully inserted or updated.
         """
         if not entries:
             return []
-        inserted: List[str] = []
+        inserted: list[str] = []
         async with aiosqlite.connect(self.db_path) as db:
             for entry in entries:
                 msg_id = entry["id"]
@@ -542,11 +548,21 @@ class Persistence:
             await db.commit()
         return inserted
 
-    async def fetch_ready_messages(self, *, limit: int, now_ts: int) -> List[Dict[str, Any]]:
-        """Return messages eligible for SMTP dispatch."""
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute(
-                """
+    async def fetch_ready_messages(self, *, limit: int, now_ts: int) -> list[dict[str, Any]]:
+        """Fetch messages ready for SMTP delivery.
+
+        Returns messages that are not sent, not deferred past now_ts,
+        and not currently being reported, ordered by priority.
+
+        Args:
+            limit: Maximum number of messages to return.
+            now_ts: Current Unix timestamp for deferred_ts comparison.
+
+        Returns:
+            List of message dicts with id, account_id, priority, payload, message.
+        """
+        async with aiosqlite.connect(self.db_path) as db, db.execute(
+            """
                 SELECT id, account_id, priority, payload, deferred_ts
                 FROM messages
                 WHERE sent_ts IS NULL
@@ -555,10 +571,10 @@ class Persistence:
                 ORDER BY priority ASC, created_at ASC, id ASC
                 LIMIT ?
                 """,
-                (now_ts, limit),
-            ) as cur:
-                rows = await cur.fetchall()
-                cols = [c[0] for c in cur.description]
+            (now_ts, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+            cols = [c[0] for c in cur.description]
         return [self._decode_message_row(row, cols) for row in rows]
 
     async def set_deferred(self, msg_id: str, deferred_ts: int) -> None:
@@ -619,7 +635,7 @@ class Persistence:
             )
             await db.commit()
 
-    async def update_message_payload(self, msg_id: str, payload: Dict[str, Any]) -> None:
+    async def update_message_payload(self, msg_id: str, payload: dict[str, Any]) -> None:
         """Update the payload field of a message (used for retry count tracking)."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
@@ -651,24 +667,22 @@ class Persistence:
         if not id_list:
             return set()
         placeholders = ",".join("?" for _ in id_list)
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute(
-                f"SELECT id FROM messages WHERE id IN ({placeholders})",
-                id_list,
-            ) as cur:
-                rows = await cur.fetchall()
+        async with aiosqlite.connect(self.db_path) as db, db.execute(
+            f"SELECT id FROM messages WHERE id IN ({placeholders})",
+            id_list,
+        ) as cur:
+            rows = await cur.fetchall()
         return {row[0] for row in rows}
 
-    async def fetch_reports(self, limit: int) -> List[Dict[str, Any]]:
+    async def fetch_reports(self, limit: int) -> list[dict[str, Any]]:
         """Return messages that need to be reported back to the client.
 
         Only returns messages in final states (sent or error).
         Messages with only deferred_ts are not reported (internal retry logic).
         Includes tenant_id from the associated account for per-tenant routing.
         """
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute(
-                """
+        async with aiosqlite.connect(self.db_path) as db, db.execute(
+            """
                 SELECT m.id, m.account_id, m.priority, m.payload, m.sent_ts, m.error_ts,
                        m.error, m.deferred_ts, a.tenant_id
                 FROM messages m
@@ -678,10 +692,10 @@ class Persistence:
                 ORDER BY m.updated_at ASC, m.id ASC
                 LIMIT ?
                 """,
-                (limit,),
-            ) as cur:
-                rows = await cur.fetchall()
-                cols = [c[0] for c in cur.description]
+            (limit,),
+        ) as cur:
+            rows = await cur.fetchall()
+            cols = [c[0] for c in cur.description]
         return [self._decode_message_row(row, cols) for row in rows]
 
     async def mark_reported(self, message_ids: Iterable[str], reported_ts: int) -> None:
@@ -720,33 +734,31 @@ class Persistence:
             await db.commit()
             return cursor.rowcount
 
-    async def list_messages(self, *, active_only: bool = False) -> List[Dict[str, Any]]:
+    async def list_messages(self, *, active_only: bool = False) -> list[dict[str, Any]]:
         """Return messages for inspection purposes."""
         query = """
             SELECT id, account_id, priority, payload, deferred_ts, sent_ts, error_ts,
                    error, reported_ts, created_at, updated_at
             FROM messages
         """
-        params: Tuple[Any, ...] = ()
+        params: tuple[Any, ...] = ()
         if active_only:
             query += " WHERE sent_ts IS NULL AND error_ts IS NULL"
         query += " ORDER BY priority ASC, created_at ASC, id ASC"
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute(query, params) as cur:
-                rows = await cur.fetchall()
-                cols = [c[0] for c in cur.description]
+        async with aiosqlite.connect(self.db_path) as db, db.execute(query, params) as cur:
+            rows = await cur.fetchall()
+            cols = [c[0] for c in cur.description]
         return [self._decode_message_row(row, cols) for row in rows]
 
     async def count_active_messages(self) -> int:
         """Return the number of messages still awaiting delivery."""
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute(
-                """
+        async with aiosqlite.connect(self.db_path) as db, db.execute(
+            """
                 SELECT COUNT(*) FROM messages
                 WHERE sent_ts IS NULL AND error_ts IS NULL
                 """
-            ) as cur:
-                row = await cur.fetchone()
+        ) as cur:
+            row = await cur.fetchone()
         return int(row[0] if row else 0)
 
     # Send log -----------------------------------------------------------------
@@ -758,16 +770,15 @@ class Persistence:
 
     async def count_sends_since(self, account_id: str, since_ts: int) -> int:
         """Count messages sent after ``since_ts`` for the given account."""
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute(
-                "SELECT COUNT(*) FROM send_log WHERE account_id=? AND timestamp > ?",
-                (account_id, since_ts),
-            ) as cur:
-                row = await cur.fetchone()
+        async with aiosqlite.connect(self.db_path) as db, db.execute(
+            "SELECT COUNT(*) FROM send_log WHERE account_id=? AND timestamp > ?",
+            (account_id, since_ts),
+        ) as cur:
+            row = await cur.fetchone()
         return int(row[0] if row else 0)
 
     # Volumes ------------------------------------------------------------------
-    async def add_volumes(self, volumes: List[Dict[str, Any]]) -> None:
+    async def add_volumes(self, volumes: list[dict[str, Any]]) -> None:
         """Insert or replace storage volumes. account_id can be None for global volumes."""
         if not volumes:
             return
@@ -783,7 +794,7 @@ class Persistence:
                 )
             await db.commit()
 
-    async def list_volumes(self, account_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def list_volumes(self, account_id: str | None = None) -> list[dict[str, Any]]:
         """Return volumes accessible by account_id.
 
         If account_id is None, returns ALL volumes.
@@ -809,12 +820,12 @@ class Persistence:
 
         result = []
         for row in rows:
-            vol = dict(zip(cols, row))
+            vol = dict(zip(cols, row, strict=True))
             vol["config"] = json.loads(vol["config"])
             result.append(vol)
         return result
 
-    async def get_volume(self, volume_name: str, account_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    async def get_volume(self, volume_name: str, account_id: str | None = None) -> dict[str, Any] | None:
         """Get volume configuration accessible by account_id.
 
         Lookup order:
@@ -842,7 +853,7 @@ class Persistence:
                     row = await cur.fetchone()
                     if row:
                         cols = [c[0] for c in cur.description]
-                        vol = dict(zip(cols, row))
+                        vol = dict(zip(cols, row, strict=True))
                         vol["config"] = json.loads(vol["config"])
                         return vol
 
@@ -855,11 +866,11 @@ class Persistence:
                 if not row:
                     return None
                 cols = [c[0] for c in cur.description]
-                vol = dict(zip(cols, row))
+                vol = dict(zip(cols, row, strict=True))
                 vol["config"] = json.loads(vol["config"])
                 return vol
 
-    async def delete_volume(self, volume_name: str, account_id: Optional[str] = None) -> bool:
+    async def delete_volume(self, volume_name: str, account_id: str | None = None) -> bool:
         """Delete a volume by name. Returns True if deleted.
 
         If account_id is None, deletes any volume with this name (typically global).
@@ -881,7 +892,7 @@ class Persistence:
             await db.commit()
             return cursor.rowcount > 0
 
-    async def validate_storage_paths(self, storage_paths: List[str], account_id: Optional[str]) -> Dict[str, bool]:
+    async def validate_storage_paths(self, storage_paths: list[str], account_id: str | None) -> dict[str, bool]:
         """Validate that all storage paths have configured volumes.
 
         Returns dict mapping storage_path -> is_valid.
@@ -941,7 +952,7 @@ class Persistence:
         return result
 
     # Instance config ------------------------------------------------------
-    async def get_config(self, key: str, default: Optional[str] = None) -> Optional[str]:
+    async def get_config(self, key: str, default: str | None = None) -> str | None:
         """Get a configuration value by key.
 
         Args:
@@ -951,12 +962,11 @@ class Persistence:
         Returns:
             The configuration value or default if not found.
         """
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute(
-                "SELECT value FROM instance_config WHERE key = ?", (key,)
-            ) as cur:
-                row = await cur.fetchone()
-                return row[0] if row else default
+        async with aiosqlite.connect(self.db_path) as db, db.execute(
+            "SELECT value FROM instance_config WHERE key = ?", (key,)
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else default
 
     async def set_config(self, key: str, value: str) -> None:
         """Set a configuration value.
@@ -975,7 +985,7 @@ class Persistence:
             )
             await db.commit()
 
-    async def get_all_config(self) -> Dict[str, str]:
+    async def get_all_config(self) -> dict[str, str]:
         """Get all configuration values.
 
         Returns:

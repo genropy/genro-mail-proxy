@@ -334,10 +334,14 @@ class TestTenantsCommands:
             # Create instance with database
             _ensure_instance("testserver", port=8080, host="0.0.0.0")
 
-            # Add tenant
+            # Add tenant with all required params to avoid interactive prompts
             result = runner.invoke(main, [
                 "testserver", "tenants", "add", "test-tenant",
-                "--name", "Test Tenant"
+                "--name", "Test Tenant",
+                "--base-url", "",
+                "--auth-method", "none",
+                "--rate-limit-hourly", "0",
+                "--rate-limit-daily", "0"
             ])
             assert result.exit_code == 0
 
@@ -353,10 +357,14 @@ class TestTenantsCommands:
             # Create instance with database
             _ensure_instance("testserver", port=8080, host="0.0.0.0")
 
-            # Add tenant
+            # Add tenant with all required params to avoid interactive prompts
             runner.invoke(main, [
                 "testserver", "tenants", "add", "show-tenant",
-                "--name", "Show Test"
+                "--name", "Show Test",
+                "--base-url", "",
+                "--auth-method", "none",
+                "--rate-limit-hourly", "0",
+                "--rate-limit-daily", "0"
             ])
 
             # Show tenant
@@ -376,9 +384,14 @@ class TestTenantsCommands:
             # Create instance with database
             _ensure_instance("testserver", port=8080, host="0.0.0.0")
 
-            # Add tenant
+            # Add tenant with all required params to avoid interactive prompts
             runner.invoke(main, [
-                "testserver", "tenants", "add", "delete-tenant"
+                "testserver", "tenants", "add", "delete-tenant",
+                "--name", "Delete Test",
+                "--base-url", "",
+                "--auth-method", "none",
+                "--rate-limit-hourly", "0",
+                "--rate-limit-daily", "0"
             ])
 
             # Delete tenant
@@ -403,9 +416,14 @@ class TestTenantLevelCommands:
             # Create instance with database and tenant
             _ensure_instance("testserver", port=8080, host="0.0.0.0")
 
-            # Add tenant first
+            # Add tenant first with all required params
             runner.invoke(main, [
-                "testserver", "tenants", "add", "test-tenant"
+                "testserver", "tenants", "add", "test-tenant",
+                "--name", "Test Tenant",
+                "--base-url", "",
+                "--auth-method", "none",
+                "--rate-limit-hourly", "0",
+                "--rate-limit-daily", "0"
             ])
 
             # Get accounts help
@@ -425,9 +443,14 @@ class TestTenantLevelCommands:
             # Create instance with database and tenant
             _ensure_instance("testserver", port=8080, host="0.0.0.0")
 
-            # Add tenant first
+            # Add tenant first with all required params
             runner.invoke(main, [
-                "testserver", "tenants", "add", "test-tenant"
+                "testserver", "tenants", "add", "test-tenant",
+                "--name", "Test Tenant",
+                "--base-url", "",
+                "--auth-method", "none",
+                "--rate-limit-hourly", "0",
+                "--rate-limit-daily", "0"
             ])
 
             # List accounts
@@ -446,16 +469,30 @@ class TestTenantLevelCommands:
             # Create instance with database
             _ensure_instance("testserver", port=8080, host="0.0.0.0")
 
-            # Add tenant first
+            # Add tenant first with all required params
             runner.invoke(main, [
-                "testserver", "tenants", "add", "test-tenant"
+                "testserver", "tenants", "add", "test-tenant",
+                "--name", "Test Tenant",
+                "--base-url", "",
+                "--auth-method", "none",
+                "--rate-limit-hourly", "0",
+                "--rate-limit-daily", "0"
             ])
 
-            # Add account
+            # Add account with all required params to avoid interactive prompts
             result = runner.invoke(main, [
                 "testserver", "test-tenant", "accounts", "add", "smtp-1",
                 "--host", "smtp.example.com",
-                "--port", "587"
+                "--port", "587",
+                "--user", "",
+                "--tls",
+                "--no-ssl",
+                "--batch-size", "10",
+                "--ttl", "300",
+                "--limit-minute", "0",
+                "--limit-hour", "0",
+                "--limit-day", "0",
+                "--limit-behavior", "defer"
             ])
             assert result.exit_code == 0
 
@@ -474,9 +511,14 @@ class TestTenantLevelCommands:
             # Create instance with database and tenant
             _ensure_instance("testserver", port=8080, host="0.0.0.0")
 
-            # Add tenant first
+            # Add tenant first with all required params
             runner.invoke(main, [
-                "testserver", "tenants", "add", "test-tenant"
+                "testserver", "tenants", "add", "test-tenant",
+                "--name", "Test Tenant",
+                "--base-url", "",
+                "--auth-method", "none",
+                "--rate-limit-hourly", "0",
+                "--rate-limit-daily", "0"
             ])
 
             # List messages

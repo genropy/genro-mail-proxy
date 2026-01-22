@@ -1,3 +1,4 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Filesystem attachment fetcher.
 
 This module provides a fetcher for attachments stored on the local
@@ -22,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Optional
 
 
 class FilesystemFetcher:
@@ -35,7 +35,7 @@ class FilesystemFetcher:
         _base_dir: Base directory for relative paths and security boundary.
     """
 
-    def __init__(self, base_dir: Optional[str] = None):
+    def __init__(self, base_dir: str | None = None):
         """Initialize the filesystem fetcher.
 
         Args:
@@ -44,11 +44,11 @@ class FilesystemFetcher:
                 this directory. If None, only absolute paths are allowed
                 and no security boundary is enforced.
         """
-        self._base_dir: Optional[Path] = None
+        self._base_dir: Path | None = None
         if base_dir:
             self._base_dir = Path(base_dir).resolve()
 
-    async def fetch(self, path: str) -> Optional[bytes]:
+    async def fetch(self, path: str) -> bytes | None:
         """Read file content from the filesystem.
 
         Args:
@@ -111,6 +111,6 @@ class FilesystemFetcher:
         return resolved
 
     @property
-    def base_dir(self) -> Optional[Path]:
+    def base_dir(self) -> Path | None:
         """The configured base directory."""
         return self._base_dir

@@ -1,3 +1,4 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Attachment management with flexible routing and caching.
 
 This module provides the AttachmentManager class for retrieving email
@@ -38,7 +39,7 @@ from __future__ import annotations
 
 import mimetypes
 import re
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any
 
 from .base64_fetcher import Base64Fetcher
 from .cache import TieredCache
@@ -82,11 +83,11 @@ class AttachmentManager:
 
     def __init__(
         self,
-        storage_manager: Optional["AsyncStorageManagerType"] = None,
-        base_dir: Optional[str] = None,
-        http_endpoint: Optional[str] = None,
-        http_auth_config: Optional[Dict[str, str]] = None,
-        cache: Optional[TieredCache] = None,
+        storage_manager: AsyncStorageManagerType | None = None,
+        base_dir: str | None = None,
+        http_endpoint: str | None = None,
+        http_auth_config: dict[str, str] | None = None,
+        cache: TieredCache | None = None,
     ):
         """Initialize the attachment manager with configured fetchers.
 
@@ -115,7 +116,7 @@ class AttachmentManager:
         self._cache = cache
 
     @staticmethod
-    def parse_filename(filename: str) -> Tuple[str, Optional[str]]:
+    def parse_filename(filename: str) -> tuple[str, str | None]:
         """Extract MD5 marker from filename if present.
 
         Parses filenames like "report_{MD5:a1b2c3d4}.pdf" to extract
@@ -143,8 +144,8 @@ class AttachmentManager:
         return clean_filename, md5_hash
 
     def _parse_storage_path(
-        self, path: str, fetch_mode: Optional[str] = None
-    ) -> Tuple[str, str]:
+        self, path: str, fetch_mode: str | None = None
+    ) -> tuple[str, str]:
         """Determine the type and parsed content of a storage path.
 
         Args:
@@ -177,7 +178,7 @@ class AttachmentManager:
 
         raise ValueError(f"Unknown fetch_mode: {fetch_mode}")
 
-    async def fetch(self, att: Dict[str, Any]) -> Optional[Tuple[bytes, str]]:
+    async def fetch(self, att: dict[str, Any]) -> tuple[bytes, str] | None:
         """Retrieve attachment content with caching and filename cleanup.
 
         Parses the filename for MD5 marker, checks cache if available,
@@ -239,9 +240,9 @@ class AttachmentManager:
     async def _fetch_from_backend(
         self,
         storage_path: str,
-        fetch_mode: Optional[str] = None,
-        auth_override: Optional[Dict[str, Any]] = None,
-    ) -> Optional[bytes]:
+        fetch_mode: str | None = None,
+        auth_override: dict[str, Any] | None = None,
+    ) -> bytes | None:
         """Fetch content from the appropriate backend.
 
         Args:
@@ -274,8 +275,8 @@ class AttachmentManager:
 
     async def fetch_batch(
         self,
-        attachments: List[Dict[str, Any]],
-    ) -> Dict[str, Tuple[bytes, str]]:
+        attachments: list[dict[str, Any]],
+    ) -> dict[str, tuple[bytes, str]]:
         """Fetch multiple attachments with batching optimization.
 
         Groups HTTP requests by server for batching. Other types are
@@ -288,8 +289,8 @@ class AttachmentManager:
         Returns:
             Dictionary mapping storage_path to (content, clean_filename).
         """
-        results: Dict[str, Tuple[bytes, str]] = {}
-        to_fetch: Dict[str, List[Dict[str, Any]]] = {
+        results: dict[str, tuple[bytes, str]] = {}
+        to_fetch: dict[str, list[dict[str, Any]]] = {
             "storage": [],
             "base64": [],
             "filesystem": [],
@@ -353,7 +354,7 @@ class AttachmentManager:
         return results
 
     @staticmethod
-    def guess_mime(filename: str) -> Tuple[str, str]:
+    def guess_mime(filename: str) -> tuple[str, str]:
         """Determine the MIME type for a filename based on its extension.
 
         Uses Python's mimetypes module to detect the appropriate MIME type

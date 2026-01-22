@@ -1,3 +1,4 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """FastAPI application factory and HTTP schemas for the async mail service.
 
 This module provides the REST API interface for the asynchronous mail dispatcher
@@ -28,14 +29,16 @@ Example:
         uvicorn.run(app, host="0.0.0.0", port=8000)
 """
 
-from typing import Optional, Dict, Any, List, Literal, Union, Callable, AsyncContextManager
 import logging
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
+from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, APIRouter, Depends, status, Request
-from fastapi.responses import Response, JSONResponse
-from fastapi.security import APIKeyHeader
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel, Field, ConfigDict
+from fastapi.responses import JSONResponse, Response
+from fastapi.security import APIKeyHeader
+from pydantic import BaseModel, ConfigDict, Field
 
 from .core import AsyncMailCore
 from .models import AttachmentPayload
@@ -69,25 +72,25 @@ auth_dependency = Depends(require_token)
 class AccountPayload(BaseModel):
     """SMTP account definition used when adding or updating accounts."""
     id: str
-    tenant_id: Optional[str] = None
+    tenant_id: str | None = None
     host: str
     port: int
-    user: Optional[str] = None
-    password: Optional[str] = None
-    ttl: Optional[int] = 300
-    limit_per_minute: Optional[int] = None
-    limit_per_hour: Optional[int] = None
-    limit_per_day: Optional[int] = None
-    limit_behavior: Optional[str] = "defer"
-    use_tls: Optional[bool] = None
-    use_ssl: Optional[bool] = None
-    batch_size: Optional[int] = None
+    user: str | None = None
+    password: str | None = None
+    ttl: int | None = 300
+    limit_per_minute: int | None = None
+    limit_per_hour: int | None = None
+    limit_per_day: int | None = None
+    limit_behavior: str | None = "defer"
+    use_tls: bool | None = None
+    use_ssl: bool | None = None
+    batch_size: int | None = None
 
 
 class CommandStatus(BaseModel):
     """Base schema shared by most responses produced by the service."""
     ok: bool
-    error: Optional[str] = None
+    error: str | None = None
 
 
 class BasicOkResponse(CommandStatus):
@@ -101,94 +104,94 @@ class MessagePayload(BaseModel):
     """Payload accepted by the ``addMessages`` command."""
     model_config = ConfigDict(populate_by_name=True)
     id: str
-    account_id: Optional[str] = None
+    account_id: str | None = None
     from_addr: str = Field(alias="from")
-    to: Union[List[str], str]
-    cc: Optional[Union[List[str], str]] = None
-    bcc: Optional[Union[List[str], str]] = None
-    reply_to: Optional[str] = None
-    return_path: Optional[str] = None
+    to: list[str] | str
+    cc: list[str] | str | None = None
+    bcc: list[str] | str | None = None
+    reply_to: str | None = None
+    return_path: str | None = None
     subject: str
     body: str
-    content_type: Optional[str] = Field(default="plain")
-    headers: Optional[Dict[str, Any]] = None
-    message_id: Optional[str] = None
-    attachments: Optional[List[AttachmentPayload]] = None
-    priority: Optional[Union[int, Literal["immediate", "high", "medium", "low"]]] = None
-    deferred_ts: Optional[int] = None
+    content_type: str | None = Field(default="plain")
+    headers: dict[str, Any] | None = None
+    message_id: str | None = None
+    attachments: list[AttachmentPayload] | None = None
+    priority: int | Literal["immediate", "high", "medium", "low"] | None = None
+    deferred_ts: int | None = None
 
 
 class AccountInfo(BaseModel):
     """Stored SMTP account as returned by ``listAccounts``."""
     id: str
-    tenant_id: Optional[str] = None
+    tenant_id: str | None = None
     host: str
     port: int
-    user: Optional[str] = None
+    user: str | None = None
     ttl: int
-    limit_per_minute: Optional[int] = None
-    limit_per_hour: Optional[int] = None
-    limit_per_day: Optional[int] = None
-    limit_behavior: Optional[str] = None
-    use_tls: Optional[bool] = None
-    use_ssl: Optional[bool] = None
-    batch_size: Optional[int] = None
-    created_at: Optional[str] = None
+    limit_per_minute: int | None = None
+    limit_per_hour: int | None = None
+    limit_per_day: int | None = None
+    limit_behavior: str | None = None
+    use_tls: bool | None = None
+    use_ssl: bool | None = None
+    batch_size: int | None = None
+    created_at: str | None = None
 
 
 class AccountsResponse(CommandStatus):
-    accounts: List[AccountInfo]
+    accounts: list[AccountInfo]
 
 
 class EnqueueMessagesPayload(BaseModel):
     """Queue of messages used by ``addMessages``."""
-    messages: List[MessagePayload]
-    default_priority: Optional[Union[int, Literal["immediate", "high", "medium", "low"]]] = None
+    messages: list[MessagePayload]
+    default_priority: int | Literal["immediate", "high", "medium", "low"] | None = None
 
 
 class RejectedMessage(BaseModel):
     """Rejected message entry."""
-    id: Optional[str] = None
+    id: str | None = None
     reason: str
 
 
 class AddMessagesResponse(CommandStatus):
     """Response returned by the ``addMessages`` command."""
     queued: int = 0
-    rejected: List[RejectedMessage] = Field(default_factory=list)
+    rejected: list[RejectedMessage] = Field(default_factory=list)
 
 
 class MessageRecord(BaseModel):
     """Full representation of a message tracked by the dispatcher."""
     id: str
     priority: int
-    account_id: Optional[str] = None
-    deferred_ts: Optional[int] = None
-    sent_ts: Optional[int] = None
-    error_ts: Optional[int] = None
-    error: Optional[str] = None
-    reported_ts: Optional[int] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-    message: Dict[str, Any]
+    account_id: str | None = None
+    deferred_ts: int | None = None
+    sent_ts: int | None = None
+    error_ts: int | None = None
+    error: str | None = None
+    reported_ts: int | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    message: dict[str, Any]
 
 
 class MessagesResponse(CommandStatus):
-    messages: List[MessageRecord]
+    messages: list[MessageRecord]
 
 
 class DeleteMessagesPayload(BaseModel):
-    ids: List[str] = Field(default_factory=list)
+    ids: list[str] = Field(default_factory=list)
 
 
 class DeleteMessagesResponse(CommandStatus):
     removed: int
-    not_found: Optional[List[str]] = None
+    not_found: list[str] | None = None
 
 
 class CleanupMessagesPayload(BaseModel):
     """Request payload for manual cleanup of reported messages."""
-    older_than_seconds: Optional[int] = None
+    older_than_seconds: int | None = None
 
 
 class CleanupMessagesResponse(CommandStatus):
@@ -200,13 +203,13 @@ class VolumePayload(BaseModel):
     """Storage volume configuration."""
     name: str
     backend: Literal["s3", "gcs", "azure", "local", "http", "webdav", "memory"]
-    config: Dict[str, Any]
-    account_id: Optional[str] = None  # None = global volume
+    config: dict[str, Any]
+    account_id: str | None = None  # None = global volume
 
 
 class AddVolumesPayload(BaseModel):
     """Payload for adding/updating storage volumes."""
-    volumes: List[VolumePayload]
+    volumes: list[VolumePayload]
 
 
 class VolumeInfo(BaseModel):
@@ -214,63 +217,63 @@ class VolumeInfo(BaseModel):
     id: int
     name: str
     backend: str
-    config: Dict[str, Any]
-    account_id: Optional[str] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
+    config: dict[str, Any]
+    account_id: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 class VolumesResponse(CommandStatus):
     """Response with list of volumes."""
-    volumes: List[VolumeInfo]
+    volumes: list[VolumeInfo]
 
 
 class TenantPayload(BaseModel):
     """Tenant configuration payload."""
     id: str
-    name: Optional[str] = None
-    client_auth: Optional[Dict[str, Any]] = None
-    client_base_url: Optional[str] = None
-    client_sync_path: Optional[str] = None
-    client_attachment_path: Optional[str] = None
-    rate_limits: Optional[Dict[str, Any]] = None
+    name: str | None = None
+    client_auth: dict[str, Any] | None = None
+    client_base_url: str | None = None
+    client_sync_path: str | None = None
+    client_attachment_path: str | None = None
+    rate_limits: dict[str, Any] | None = None
     active: bool = True
 
 
 class TenantUpdatePayload(BaseModel):
     """Tenant update payload - all fields optional."""
-    name: Optional[str] = None
-    client_auth: Optional[Dict[str, Any]] = None
-    client_base_url: Optional[str] = None
-    client_sync_path: Optional[str] = None
-    client_attachment_path: Optional[str] = None
-    rate_limits: Optional[Dict[str, Any]] = None
-    active: Optional[bool] = None
+    name: str | None = None
+    client_auth: dict[str, Any] | None = None
+    client_base_url: str | None = None
+    client_sync_path: str | None = None
+    client_attachment_path: str | None = None
+    rate_limits: dict[str, Any] | None = None
+    active: bool | None = None
 
 
 class TenantInfo(BaseModel):
     """Stored tenant as returned by listTenants."""
     id: str
-    name: Optional[str] = None
-    client_auth: Optional[Dict[str, Any]] = None
-    client_base_url: Optional[str] = None
-    client_sync_path: Optional[str] = None
-    client_attachment_path: Optional[str] = None
-    rate_limits: Optional[Dict[str, Any]] = None
+    name: str | None = None
+    client_auth: dict[str, Any] | None = None
+    client_base_url: str | None = None
+    client_sync_path: str | None = None
+    client_attachment_path: str | None = None
+    rate_limits: dict[str, Any] | None = None
     active: bool = True
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 class TenantsResponse(CommandStatus):
     """Response with list of tenants."""
-    tenants: List[TenantInfo]
+    tenants: list[TenantInfo]
 
 
 def create_app(
     svc: AsyncMailCore,
     api_token: str | None = None,
-    lifespan: Callable[[FastAPI], AsyncContextManager] | None = None
+    lifespan: Callable[[FastAPI], AbstractAsyncContextManager] | None = None
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
@@ -295,17 +298,22 @@ def create_app(
     service = svc
 
     # Use custom lifespan if provided, otherwise use the global app
-    if lifespan is not None:
-        api = FastAPI(title="Async Mail Service", lifespan=lifespan)
-    else:
-        api = app
+    api = FastAPI(title="Async Mail Service", lifespan=lifespan) if lifespan is not None else app
 
     api.state.api_token = api_token
     router = APIRouter(prefix="/commands", tags=["commands"], dependencies=[auth_dependency])
 
     @api.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
-        """Log validation errors with full details."""
+        """Handle FastAPI request validation errors with detailed logging.
+
+        Args:
+            request: The incoming HTTP request that failed validation.
+            exc: The validation exception containing error details.
+
+        Returns:
+            JSONResponse with status 422 and validation error details.
+        """
         body = await request.body()
         logger.error(f"Validation error on {request.method} {request.url.path}")
         logger.error(f"Request body: {body.decode('utf-8', errors='replace')}")
@@ -317,16 +325,42 @@ def create_app(
 
     @api.get("/health")
     async def health():
-        """Health check endpoint for container monitoring (no authentication required)."""
+        """Health check endpoint for container orchestration and load balancers.
+
+        This endpoint does not require authentication and is intended for
+        Kubernetes liveness/readiness probes or similar monitoring tools.
+
+        Returns:
+            dict: Simple status object with ``{"status": "ok"}``.
+        """
         return {"status": "ok"}
 
     @api.get("/status", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
     async def status():
-        """Return a simple health status payload."""
+        """Return authenticated service status.
+
+        Unlike ``/health``, this endpoint requires authentication and confirms
+        that the API token is valid.
+
+        Returns:
+            BasicOkResponse: Status response with ``ok=True``.
+        """
         return BasicOkResponse(ok=True)
 
     @router.post("/run-now", response_model=BasicOkResponse, response_model_exclude_none=True)
-    async def run_now(tenant_id: Optional[str] = None):
+    async def run_now(tenant_id: str | None = None):
+        """Trigger an immediate dispatch cycle without waiting for the scheduler.
+
+        Args:
+            tenant_id: Optional tenant ID to limit the sync to a specific tenant.
+                If None, processes messages for all tenants.
+
+        Returns:
+            BasicOkResponse: Confirmation with ``ok=True`` after the cycle completes.
+
+        Raises:
+            HTTPException: 500 if the service is not initialized.
+        """
         if not service:
             raise HTTPException(500, "Service not initialized")
         payload = {"tenant_id": tenant_id} if tenant_id else {}
@@ -335,7 +369,17 @@ def create_app(
 
     @router.post("/suspend", response_model=BasicOkResponse, response_model_exclude_none=True)
     async def suspend():
-        """Suspend the scheduler component of the mail service."""
+        """Pause the automatic dispatch scheduler.
+
+        Messages remain in the queue but are not processed until the scheduler
+        is reactivated via ``/activate``. Useful for maintenance or debugging.
+
+        Returns:
+            BasicOkResponse: Confirmation with ``ok=True``.
+
+        Raises:
+            HTTPException: 500 if the service is not initialized.
+        """
         if not service:
             raise HTTPException(500, "Service not initialized")
         result = await service.handle_command("suspend", {})
@@ -343,7 +387,17 @@ def create_app(
 
     @router.post("/activate", response_model=BasicOkResponse, response_model_exclude_none=True)
     async def activate():
-        """Activate the scheduler component of the mail service."""
+        """Resume the automatic dispatch scheduler after suspension.
+
+        Restarts processing of queued messages according to the configured
+        interval and rate limits.
+
+        Returns:
+            BasicOkResponse: Confirmation with ``ok=True``.
+
+        Raises:
+            HTTPException: 500 if the service is not initialized.
+        """
         if not service:
             raise HTTPException(500, "Service not initialized")
         result = await service.handle_command("activate", {})
@@ -351,10 +405,26 @@ def create_app(
 
     @router.post("/add-messages", response_model=AddMessagesResponse, response_model_exclude_none=True)
     async def add_messages(payload: EnqueueMessagesPayload):
-        """Push a batch of messages into the scheduler queue."""
+        """Enqueue one or more email messages for delivery.
+
+        Messages are validated and added to the dispatch queue. Invalid messages
+        are rejected with detailed error information while valid ones proceed.
+
+        Args:
+            payload: Request body containing the list of messages and optional
+                default priority.
+
+        Returns:
+            AddMessagesResponse: Result with count of queued messages and list
+                of rejected messages with reasons.
+
+        Raises:
+            HTTPException: 400 if all messages are rejected or validation fails.
+            HTTPException: 500 if the service is not initialized.
+        """
         if not service:
             raise HTTPException(500, "Service not initialized")
-        serialized: List[Dict[str, Any]] = []
+        serialized: list[dict[str, Any]] = []
         for msg in payload.messages:
             data = msg.model_dump(by_alias=True, exclude_none=True)
             if msg.attachments is not None:
@@ -373,7 +443,21 @@ def create_app(
 
     @router.post("/delete-messages", response_model=DeleteMessagesResponse, response_model_exclude_none=True)
     async def delete_messages(payload: DeleteMessagesPayload):
-        """Remove messages from the scheduler queue and related tracking tables."""
+        """Remove messages from the queue by their IDs.
+
+        Deletes specified messages from both the queue and tracking tables.
+        Messages already sent or in transit may not be cancellable.
+
+        Args:
+            payload: Request body containing list of message IDs to remove.
+
+        Returns:
+            DeleteMessagesResponse: Count of removed messages and list of
+                IDs that were not found.
+
+        Raises:
+            HTTPException: 500 if the service is not initialized.
+        """
         if not service:
             raise HTTPException(500, "Service not initialized")
         result = await service.handle_command("deleteMessages", payload.model_dump())
@@ -393,7 +477,20 @@ def create_app(
 
     @api.post("/account", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
     async def add_account(acc: AccountPayload):
-        """Register or update an SMTP account definition."""
+        """Register or update an SMTP account configuration.
+
+        Creates a new SMTP account or updates an existing one with the same ID.
+        Account settings include host, port, credentials, TLS options, and rate limits.
+
+        Args:
+            acc: SMTP account configuration including connection details and limits.
+
+        Returns:
+            BasicOkResponse: Confirmation with ``ok=True``.
+
+        Raises:
+            HTTPException: 500 if the service is not initialized.
+        """
         if not service:
             raise HTTPException(500, "Service not initialized")
         result = await service.handle_command("addAccount", acc.model_dump())
@@ -401,7 +498,17 @@ def create_app(
 
     @api.get("/accounts", response_model=AccountsResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
     async def list_accounts():
-        """List the SMTP accounts known by the dispatcher."""
+        """Retrieve all configured SMTP accounts.
+
+        Returns the list of registered SMTP accounts with their configuration,
+        excluding sensitive data like passwords.
+
+        Returns:
+            AccountsResponse: List of account configurations with ``ok=True``.
+
+        Raises:
+            HTTPException: 500 if the service is not initialized.
+        """
         if not service:
             raise HTTPException(500, "Service not initialized")
         result = await service.handle_command("listAccounts", {})
@@ -409,7 +516,20 @@ def create_app(
 
     @api.delete("/account/{account_id}", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
     async def delete_account(account_id: str):
-        """Remove an SMTP account and any scheduler state bound to it."""
+        """Delete an SMTP account by its ID.
+
+        Removes the account configuration and cleans up associated scheduler state.
+        Messages assigned to this account will fail delivery.
+
+        Args:
+            account_id: Unique identifier of the account to delete.
+
+        Returns:
+            BasicOkResponse: Confirmation with ``ok=True``.
+
+        Raises:
+            HTTPException: 500 if the service is not initialized.
+        """
         if not service:
             raise HTTPException(500, "Service not initialized")
         result = await service.handle_command("deleteAccount", {"id": account_id})
@@ -417,7 +537,17 @@ def create_app(
 
     @api.get("/messages", response_model=MessagesResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
     async def all_messages():
-        """Expose the current message queue with detailed payload information."""
+        """List all messages currently in the dispatch queue.
+
+        Returns complete message records including payload, status timestamps,
+        and error information for debugging and monitoring purposes.
+
+        Returns:
+            MessagesResponse: List of message records with ``ok=True``.
+
+        Raises:
+            HTTPException: 500 if the service is not initialized.
+        """
         if not service:
             raise HTTPException(500, "Service not initialized")
         result = await service.handle_command("listMessages", {})
@@ -425,14 +555,37 @@ def create_app(
 
     @api.get("/metrics", dependencies=[auth_dependency])
     async def metrics():
-        """Expose Prometheus metrics collected by the dispatcher."""
+        """Export Prometheus metrics in text exposition format.
+
+        Provides operational metrics including message counts, delivery latencies,
+        error rates, and queue depths for monitoring and alerting.
+
+        Returns:
+            Response: Plain text response in Prometheus exposition format.
+
+        Raises:
+            HTTPException: 500 if the service is not initialized.
+        """
         if not service:
             raise HTTPException(500, "Service not initialized")
         return Response(content=service.metrics.generate_latest(), media_type="text/plain; version=0.0.4")
 
     @api.post("/volume", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
     async def add_volume(payload: VolumePayload):
-        """Register or update a storage volume definition."""
+        """Register or update a storage volume for attachments.
+
+        Configures a storage backend (S3, GCS, Azure, local, etc.) that can be
+        used to fetch email attachments. Volumes can be global or account-specific.
+
+        Args:
+            payload: Volume configuration including backend type and credentials.
+
+        Returns:
+            BasicOkResponse: Confirmation with ``ok=True``.
+
+        Raises:
+            HTTPException: 500 if the service is not initialized.
+        """
         if not service:
             raise HTTPException(500, "Service not initialized")
         await service.persistence.add_volumes([payload.model_dump()])
@@ -440,7 +593,7 @@ def create_app(
         return BasicOkResponse(ok=True)
 
     @api.get("/volumes", response_model=VolumesResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
-    async def list_volumes(account_id: Optional[str] = None):
+    async def list_volumes(account_id: str | None = None):
         """List storage volumes.
 
         If account_id is provided, returns volumes accessible by that account (specific + global).
@@ -452,8 +605,21 @@ def create_app(
         return VolumesResponse(ok=True, volumes=volumes)
 
     @api.get("/volume/{name}", response_model=VolumeInfo, response_model_exclude_none=True, dependencies=[auth_dependency])
-    async def get_volume(name: str, account_id: Optional[str] = None):
-        """Get a specific storage volume by name."""
+    async def get_volume(name: str, account_id: str | None = None):
+        """Retrieve a specific storage volume configuration.
+
+        Args:
+            name: Unique name of the volume to retrieve.
+            account_id: Optional account ID to scope the lookup. If provided,
+                looks for an account-specific volume first.
+
+        Returns:
+            VolumeInfo: Volume configuration details.
+
+        Raises:
+            HTTPException: 404 if the volume is not found.
+            HTTPException: 500 if the service is not initialized.
+        """
         if not service:
             raise HTTPException(500, "Service not initialized")
         volume = await service.persistence.get_volume(name, account_id)
@@ -462,8 +628,23 @@ def create_app(
         return VolumeInfo(**volume)
 
     @api.delete("/volume/{name}", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
-    async def delete_volume(name: str, account_id: Optional[str] = None):
-        """Remove a storage volume by name."""
+    async def delete_volume(name: str, account_id: str | None = None):
+        """Delete a storage volume configuration.
+
+        Removes the volume definition. Existing messages referencing this volume
+        will fail to fetch their attachments.
+
+        Args:
+            name: Unique name of the volume to delete.
+            account_id: Optional account ID to scope the deletion.
+
+        Returns:
+            BasicOkResponse: Confirmation with ``ok=True``.
+
+        Raises:
+            HTTPException: 404 if the volume is not found.
+            HTTPException: 500 if the service is not initialized.
+        """
         if not service:
             raise HTTPException(500, "Service not initialized")
         deleted = await service.persistence.delete_volume(name, account_id)
@@ -475,7 +656,20 @@ def create_app(
     # Tenant endpoints
     @api.post("/tenant", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
     async def add_tenant(payload: TenantPayload):
-        """Register or update a tenant configuration."""
+        """Register or update a tenant configuration.
+
+        Creates a new tenant or updates an existing one. Tenants provide
+        multi-tenancy support with isolated message queues and SMTP accounts.
+
+        Args:
+            payload: Tenant configuration including client sync settings and rate limits.
+
+        Returns:
+            BasicOkResponse: Confirmation with ``ok=True``.
+
+        Raises:
+            HTTPException: 500 if the service is not initialized.
+        """
         if not service:
             raise HTTPException(500, "Service not initialized")
         result = await service.handle_command("addTenant", payload.model_dump())
@@ -483,7 +677,17 @@ def create_app(
 
     @api.get("/tenants", response_model=TenantsResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
     async def list_tenants(active_only: bool = False):
-        """List all tenants."""
+        """Retrieve all registered tenants.
+
+        Args:
+            active_only: If True, returns only active tenants. Defaults to False.
+
+        Returns:
+            TenantsResponse: List of tenant configurations with ``ok=True``.
+
+        Raises:
+            HTTPException: 500 if the service is not initialized.
+        """
         if not service:
             raise HTTPException(500, "Service not initialized")
         result = await service.handle_command("listTenants", {"active_only": active_only})
@@ -491,7 +695,18 @@ def create_app(
 
     @api.get("/tenant/{tenant_id}", response_model=TenantInfo, response_model_exclude_none=True, dependencies=[auth_dependency])
     async def get_tenant(tenant_id: str):
-        """Get a specific tenant by ID."""
+        """Retrieve a specific tenant configuration.
+
+        Args:
+            tenant_id: Unique identifier of the tenant.
+
+        Returns:
+            TenantInfo: Complete tenant configuration.
+
+        Raises:
+            HTTPException: 404 if the tenant is not found.
+            HTTPException: 500 if the service is not initialized.
+        """
         if not service:
             raise HTTPException(500, "Service not initialized")
         result = await service.handle_command("getTenant", {"id": tenant_id})
@@ -503,7 +718,22 @@ def create_app(
 
     @api.put("/tenant/{tenant_id}", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
     async def update_tenant(tenant_id: str, payload: TenantUpdatePayload):
-        """Update a tenant's configuration."""
+        """Update an existing tenant's configuration.
+
+        Applies partial updates to the tenant. Only provided fields are updated;
+        omitted fields retain their current values.
+
+        Args:
+            tenant_id: Unique identifier of the tenant to update.
+            payload: Fields to update (all optional).
+
+        Returns:
+            BasicOkResponse: Confirmation with ``ok=True``.
+
+        Raises:
+            HTTPException: 404 if the tenant is not found.
+            HTTPException: 500 if the service is not initialized.
+        """
         if not service:
             raise HTTPException(500, "Service not initialized")
         update_data = payload.model_dump(exclude_none=True)
@@ -515,7 +745,21 @@ def create_app(
 
     @api.delete("/tenant/{tenant_id}", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
     async def delete_tenant(tenant_id: str):
-        """Delete a tenant and all associated accounts/messages."""
+        """Delete a tenant and all associated resources.
+
+        Removes the tenant along with all its SMTP accounts and queued messages.
+        This operation is irreversible.
+
+        Args:
+            tenant_id: Unique identifier of the tenant to delete.
+
+        Returns:
+            BasicOkResponse: Confirmation with ``ok=True``.
+
+        Raises:
+            HTTPException: 404 if the tenant is not found.
+            HTTPException: 500 if the service is not initialized.
+        """
         if not service:
             raise HTTPException(500, "Service not initialized")
         result = await service.handle_command("deleteTenant", {"id": tenant_id})

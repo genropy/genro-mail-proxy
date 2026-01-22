@@ -1,3 +1,4 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Base64 inline content decoder.
 
 This module provides a fetcher for base64-encoded attachment content
@@ -14,7 +15,6 @@ Example:
 from __future__ import annotations
 
 import base64
-from typing import Optional
 
 
 class Base64Fetcher:
@@ -24,7 +24,7 @@ class Base64Fetcher:
     where ENCODED_CONTENT is standard base64-encoded binary data.
     """
 
-    async def fetch(self, base64_content: str) -> Optional[bytes]:
+    async def fetch(self, base64_content: str) -> bytes | None:
         """Decode base64 content to bytes.
 
         Args:

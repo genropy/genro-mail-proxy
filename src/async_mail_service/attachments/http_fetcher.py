@@ -1,3 +1,4 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """HTTP attachment fetcher with batching support.
 
 This module provides a fetcher for attachments served via HTTP endpoints.
@@ -28,7 +29,7 @@ from __future__ import annotations
 
 import base64
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import aiohttp
 
@@ -46,8 +47,8 @@ class HttpFetcher:
 
     def __init__(
         self,
-        default_endpoint: Optional[str] = None,
-        auth_config: Optional[Dict[str, str]] = None,
+        default_endpoint: str | None = None,
+        auth_config: dict[str, str] | None = None,
     ):
         """Initialize the HTTP fetcher.
 
@@ -62,7 +63,7 @@ class HttpFetcher:
         self._default_endpoint = default_endpoint
         self._auth_config = auth_config or {}
 
-    def _parse_path(self, path: str) -> Tuple[str, str]:
+    def _parse_path(self, path: str) -> tuple[str, str]:
         """Parse HTTP path into server URL and params.
 
         Args:
@@ -89,8 +90,8 @@ class HttpFetcher:
         return self._default_endpoint, path
 
     def _get_auth_headers(
-        self, auth_override: Optional[Dict[str, str]] = None
-    ) -> Dict[str, str]:
+        self, auth_override: dict[str, str] | None = None
+    ) -> dict[str, str]:
         """Build authentication headers based on config.
 
         Args:
@@ -115,7 +116,7 @@ class HttpFetcher:
         return {}
 
     async def fetch(
-        self, path: str, auth_override: Optional[Dict[str, str]] = None
+        self, path: str, auth_override: dict[str, str] | None = None
     ) -> bytes:
         """Fetch a single attachment via HTTP POST with JSON body.
 
@@ -133,19 +134,18 @@ class HttpFetcher:
         server_url, params = self._parse_path(path)
         headers = self._get_auth_headers(auth_override)
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                server_url,
-                json={"storage_path": params},
-                headers=headers,
-            ) as response:
-                response.raise_for_status()
-                return await response.read()
+        async with aiohttp.ClientSession() as session, session.post(
+            server_url,
+            json={"storage_path": params},
+            headers=headers,
+        ) as response:
+            response.raise_for_status()
+            return await response.read()
 
     async def fetch_batch(
         self,
-        attachments: List[Dict[str, Any]],
-    ) -> Dict[str, bytes]:
+        attachments: list[dict[str, Any]],
+    ) -> dict[str, bytes]:
         """Fetch multiple attachments, batching by server.
 
         Groups attachments by server URL and sends batched requests
@@ -162,10 +162,10 @@ class HttpFetcher:
         Raises:
             aiohttp.ClientError: If an HTTP request fails.
         """
-        results: Dict[str, bytes] = {}
+        results: dict[str, bytes] = {}
 
         # Group by server
-        by_server: Dict[str, List[Tuple[str, str]]] = {}
+        by_server: dict[str, list[tuple[str, str]]] = {}
         for att in attachments:
             storage_path = att.get("storage_path", "")
             if not storage_path:
@@ -198,7 +198,7 @@ class HttpFetcher:
                         batch_results = await self._fetch_batch_from_server(
                             session, server_url, params_list, headers
                         )
-                        for (storage_path, _), content in zip(items, batch_results):
+                        for (storage_path, _), content in zip(items, batch_results, strict=True):
                             results[storage_path] = content
                     except Exception:
                         # Fallback to individual requests if batch fails
@@ -217,9 +217,9 @@ class HttpFetcher:
         self,
         session: aiohttp.ClientSession,
         server_url: str,
-        params_list: List[str],
-        headers: Dict[str, str],
-    ) -> List[bytes]:
+        params_list: list[str],
+        headers: dict[str, str],
+    ) -> list[bytes]:
         """Send a batch request and parse multipart response.
 
         Args:
@@ -257,7 +257,7 @@ class HttpFetcher:
     async def _parse_multipart_response(
         self,
         response: aiohttp.ClientResponse,
-    ) -> List[bytes]:
+    ) -> list[bytes]:
         """Parse a multipart/mixed response into content list.
 
         Args:
@@ -276,6 +276,6 @@ class HttpFetcher:
         return results
 
     @property
-    def default_endpoint(self) -> Optional[str]:
+    def default_endpoint(self) -> str | None:
         """The configured default endpoint URL."""
         return self._default_endpoint

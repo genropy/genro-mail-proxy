@@ -1,3 +1,4 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Core orchestration logic for the asynchronous mail dispatcher.
 
 This module provides the AsyncMailCore class, the central coordinator for
@@ -43,9 +44,10 @@ from __future__ import annotations
 
 import asyncio
 import math
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import datetime, timezone
 from email.message import EmailMessage
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 import aiosmtplib
@@ -93,7 +95,7 @@ class AccountConfigurationError(RuntimeError):
         self.code = "missing_account_configuration"
 
 
-def _classify_smtp_error(exc: Exception) -> tuple[bool, Optional[int]]:
+def _classify_smtp_error(exc: Exception) -> tuple[bool, int | None]:
     """
     Classify an SMTP error as temporary or permanent.
 
@@ -162,7 +164,7 @@ def _classify_smtp_error(exc: Exception) -> tuple[bool, Optional[int]]:
     return True, smtp_code
 
 
-def _calculate_retry_delay(retry_count: int, delays: List[int] = None) -> int:
+def _calculate_retry_delay(retry_count: int, delays: list[int] = None) -> int:
     """
     Calculate the delay in seconds before the next retry attempt.
 
@@ -225,14 +227,14 @@ class AsyncMailCore:
         client_sync_password: str | None = None,
         client_sync_token: str | None = None,
         default_priority: int | str = DEFAULT_PRIORITY,
-        report_delivery_callable: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+        report_delivery_callable: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         send_loop_interval: float = 0.5,
         report_retention_seconds: int | None = None,
         batch_size_per_account: int = 50,
         test_mode: bool = False,
         log_delivery_activity: bool = False,
         max_retries: int = DEFAULT_MAX_RETRIES,
-        retry_delays: Optional[List[int]] = None,
+        retry_delays: list[int] | None = None,
     ):
         """Initialize the mail dispatcher core with configuration options.
 
@@ -290,11 +292,11 @@ class AsyncMailCore:
         self._send_loop_interval = math.inf if self._test_mode else base_send_interval
         self._wake_event = asyncio.Event()  # Wake event for SMTP dispatch loop
         self._wake_client_event = asyncio.Event()  # Wake event for client report loop
-        self._run_now_tenant_id: Optional[str] = None  # Tenant to sync on run-now (None = all)
-        self._result_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=result_queue_size)
-        self._task_smtp: Optional[asyncio.Task] = None
-        self._task_client: Optional[asyncio.Task] = None
-        self._task_cleanup: Optional[asyncio.Task] = None
+        self._run_now_tenant_id: str | None = None  # Tenant to sync on run-now (None = all)
+        self._result_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=result_queue_size)
+        self._task_smtp: asyncio.Task | None = None
+        self._task_client: asyncio.Task | None = None
+        self._task_cleanup: asyncio.Task | None = None
 
         self._client_sync_url = client_sync_url
         self._client_sync_user = client_sync_user
@@ -303,10 +305,10 @@ class AsyncMailCore:
         self._report_delivery_callable = report_delivery_callable
 
         # Storage, attachments, and cache will be initialized in init()
-        self._storage_manager: Optional["AsyncStorageManagerType"] = None
-        self._attachment_cache: Optional[TieredCache] = None
-        self._attachment_config: Optional[AttachmentConfig] = None
-        self.attachments: Optional[AttachmentManager] = None
+        self._storage_manager: AsyncStorageManagerType | None = None
+        self._attachment_cache: TieredCache | None = None
+        self._attachment_config: AttachmentConfig | None = None
+        self.attachments: AttachmentManager | None = None
         priority_value, _ = self._normalise_priority(default_priority, DEFAULT_PRIORITY)
         self._default_priority = priority_value
         self._log_delivery_activity = bool(log_delivery_activity)
@@ -317,16 +319,33 @@ class AsyncMailCore:
     # --------------------------------------------------------------------- utils
     @staticmethod
     def _utc_now_iso() -> str:
-        """Return the current UTC timestamp as ISO-8601 string."""
+        """Return the current UTC timestamp as ISO-8601 string.
+
+        Returns:
+            str: ISO-8601 formatted timestamp with 'Z' suffix.
+        """
         return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     @staticmethod
     def _utc_now_epoch() -> int:
-        """Return the current UTC timestamp as seconds since epoch."""
+        """Return the current UTC timestamp as seconds since Unix epoch.
+
+        Returns:
+            int: Unix timestamp in seconds.
+        """
         return int(datetime.now(timezone.utc).timestamp())
 
     async def init(self) -> None:
-        """Initialise persistence and storage."""
+        """Initialize persistence layer, storage volumes, and attachment manager.
+
+        Performs the following initialization steps:
+        1. Initialize SQLite database schema
+        2. Load volume configurations from config file (if provided)
+        3. Load attachment configuration (cache settings, paths)
+        4. Initialize attachment cache (memory and disk tiers)
+        5. Configure storage manager with volumes from database
+        6. Create the AttachmentManager with all backends
+        """
         await self.persistence.init_db()
         await self._refresh_queue_gauge()
 
@@ -436,8 +455,19 @@ class AsyncMailCore:
         self._storage_manager.configure(mount_configs)
         self.logger.info(f"Reloaded {len(mount_configs)} volume(s) from database")
 
-    def _normalise_priority(self, value: Any, default: Any = DEFAULT_PRIORITY) -> Tuple[int, str]:
-        """Coerce user supplied priority into the internal representation."""
+    def _normalise_priority(self, value: Any, default: Any = DEFAULT_PRIORITY) -> tuple[int, str]:
+        """Convert a priority value to internal numeric representation.
+
+        Accepts integers (0-3), strings ("immediate", "high", "medium", "low"),
+        or numeric strings and normalizes to (int, label) tuple.
+
+        Args:
+            value: Priority value to normalize.
+            default: Fallback if value is invalid.
+
+        Returns:
+            Tuple of (priority_int, priority_label).
+        """
         if isinstance(default, str):
             fallback = LABEL_TO_PRIORITY.get(default.lower(), DEFAULT_PRIORITY)
         elif isinstance(default, (int, float)):
@@ -471,7 +501,14 @@ class AsyncMailCore:
 
     @staticmethod
     def _summarise_addresses(value: Any) -> str:
-        """Return a compact textual representation of recipient-like values."""
+        """Create a compact string summary of email addresses for logging.
+
+        Args:
+            value: String, list, or other iterable of email addresses.
+
+        Returns:
+            Comma-separated addresses, truncated to 200 chars if needed.
+        """
         if not value:
             return "-"
         if isinstance(value, str):
@@ -486,8 +523,25 @@ class AsyncMailCore:
         return preview or "-"
 
     # ------------------------------------------------------------------ commands
-    async def handle_command(self, cmd: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Execute one of the external control commands."""
+    async def handle_command(self, cmd: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Execute an external control command.
+
+        Dispatches the command to the appropriate handler method. Supported commands:
+        - ``run now``: Trigger immediate dispatch cycle
+        - ``suspend``: Pause the scheduler
+        - ``activate``: Resume the scheduler
+        - ``addAccount``, ``listAccounts``, ``deleteAccount``: SMTP account management
+        - ``addMessages``, ``deleteMessages``, ``listMessages``: Message queue management
+        - ``cleanupMessages``: Remove old reported messages
+        - ``addTenant``, ``getTenant``, ``listTenants``, ``updateTenant``, ``deleteTenant``: Tenant management
+
+        Args:
+            cmd: Command name to execute.
+            payload: Command-specific parameters.
+
+        Returns:
+            dict: Command result with ``ok`` status and command-specific data.
+        """
         payload = payload or {}
         match cmd:
             case "run now":
@@ -558,7 +612,19 @@ class AsyncMailCore:
             case _:
                 return {"ok": False, "error": "unknown command"}
 
-    async def _handle_add_messages(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_add_messages(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Process the addMessages command to enqueue emails for delivery.
+
+        Validates each message in the batch, checking required fields and account
+        configuration. Invalid messages are rejected with detailed reasons and
+        optionally persisted for error reporting.
+
+        Args:
+            payload: Dict with ``messages`` list and optional ``default_priority``.
+
+        Returns:
+            dict: Result with ``ok``, ``queued`` count, and ``rejected`` list.
+        """
         messages = payload.get("messages") if isinstance(payload, dict) else None
         if not isinstance(messages, list):
             return {"ok": False, "error": "messages must be a list"}
@@ -569,9 +635,9 @@ class AsyncMailCore:
         if "default_priority" in payload:
             default_priority_value, _ = self._normalise_priority(payload.get("default_priority"), 2)
 
-        validated: List[Dict[str, Any]] = []
-        rejected: List[Dict[str, Any]] = []
-        rejected_for_sync: List[Dict[str, Any]] = []  # Messages to report via proxy_sync
+        validated: list[dict[str, Any]] = []
+        rejected: list[dict[str, Any]] = []
+        rejected_for_sync: list[dict[str, Any]] = []  # Messages to report via proxy_sync
         now_ts = self._utc_now_epoch()
 
         for item in messages:
@@ -679,19 +745,27 @@ class AsyncMailCore:
         # (not for "already sent" which is a normal case)
         validation_failures = [r for r in rejected if r.get("reason") != "already sent"]
         ok = queued_count > 0 or len(validation_failures) == 0
-        result: Dict[str, Any] = {
+        result: dict[str, Any] = {
             "ok": ok,
             "queued": queued_count,
             "rejected": rejected,
         }
         return result
 
-    async def _delete_messages(self, message_ids: Iterable[str]) -> Tuple[int, List[str]]:
+    async def _delete_messages(self, message_ids: Iterable[str]) -> tuple[int, list[str]]:
+        """Remove messages from the queue by their IDs.
+
+        Args:
+            message_ids: Iterable of message IDs to delete.
+
+        Returns:
+            Tuple of (count of removed messages, list of IDs not found).
+        """
         ids = {mid for mid in message_ids if mid}
         if not ids:
             return 0, []
         removed = 0
-        missing: List[str] = []
+        missing: list[str] = []
         for mid in sorted(ids):
             if await self.persistence.delete_message(mid):
                 removed += 1
@@ -699,7 +773,7 @@ class AsyncMailCore:
                 missing.append(mid)
         return removed, missing
 
-    async def _cleanup_reported_messages(self, older_than_seconds: Optional[int] = None) -> int:
+    async def _cleanup_reported_messages(self, older_than_seconds: int | None = None) -> int:
         """Remove reported messages older than the specified threshold.
 
         Args:
@@ -722,7 +796,13 @@ class AsyncMailCore:
 
     # ----------------------------------------------------------------- lifecycle
     async def start(self) -> None:
-        """Start the background scheduler and maintenance tasks."""
+        """Start the background scheduler and maintenance tasks.
+
+        Initializes the persistence layer and spawns background tasks for:
+        - SMTP dispatch loop: processes queued messages
+        - Client report loop: sends delivery reports to upstream services
+        - Cleanup loop: maintains SMTP connection pool health (production only)
+        """
         self.logger.debug("Starting AsyncMailCore...")
         await self.init()
         self._stop.clear()
@@ -736,7 +816,11 @@ class AsyncMailCore:
         self.logger.debug("All background tasks created")
 
     async def stop(self) -> None:
-        """Stop the background tasks gracefully."""
+        """Stop all background tasks gracefully.
+
+        Signals all running loops to terminate and waits for them to complete.
+        Outstanding operations are allowed to finish before returning.
+        """
         self._stop.set()
         self._wake_event.set()
         self._wake_client_event.set()
@@ -747,7 +831,12 @@ class AsyncMailCore:
 
     # --------------------------------------------------------------- SMTP logic
     async def _smtp_dispatch_loop(self) -> None:
-        """Continuously pick messages from storage and attempt delivery."""
+        """Background loop that continuously processes queued messages.
+
+        Runs until stop() is called, fetching ready messages from the database
+        and attempting SMTP delivery. Respects scheduler active/suspended state
+        and can be woken early via run-now command.
+        """
         self.logger.debug("SMTP dispatch loop started")
         first_iteration = True
         while not self._stop.is_set():
@@ -771,7 +860,14 @@ class AsyncMailCore:
                 await self._wait_for_wakeup(self._send_loop_interval)
 
     async def _process_smtp_cycle(self) -> bool:
-        """Process one batch of messages ready for delivery, respecting per-account batch limits."""
+        """Execute one SMTP dispatch cycle.
+
+        Fetches ready messages from the database, groups them by account,
+        and processes each account's batch respecting configured limits.
+
+        Returns:
+            True if any messages were processed, False otherwise.
+        """
         now_ts = self._utc_now_epoch()
         self.logger.debug(f"Fetching ready messages (now_ts={now_ts}, limit={self._smtp_batch_size})")
         batch = await self.persistence.fetch_ready_messages(limit=self._smtp_batch_size, now_ts=now_ts)
@@ -818,7 +914,16 @@ class AsyncMailCore:
         await self._refresh_queue_gauge()
         return processed_any
 
-    async def _dispatch_message(self, entry: Dict[str, Any], now_ts: int) -> None:
+    async def _dispatch_message(self, entry: dict[str, Any], now_ts: int) -> None:
+        """Attempt to deliver a single message via SMTP.
+
+        Builds the email, resolves the SMTP account, applies rate limits,
+        and performs the actual send. Updates message status based on outcome.
+
+        Args:
+            entry: Message entry dict with id, message payload, and metadata.
+            now_ts: Current UTC timestamp for error/sent timestamp recording.
+        """
         msg_id = entry.get("id")
         message = entry.get("message") or {}
         if self._log_delivery_activity:
@@ -868,11 +973,26 @@ class AsyncMailCore:
     async def _send_with_limits(
         self,
         msg: EmailMessage,
-        envelope_from: Optional[str],
-        msg_id: Optional[str],
-        payload: Dict[str, Any],
-    ) -> Optional[Dict[str, Any]]:
-        """Send a message enforcing rate limits and bookkeeping."""
+        envelope_from: str | None,
+        msg_id: str | None,
+        payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Send an email message with rate limiting and retry logic.
+
+        Resolves the SMTP account, checks rate limits, and attempts delivery.
+        Handles temporary failures with exponential backoff retries and
+        permanent failures with immediate error reporting.
+
+        Args:
+            msg: Constructed EmailMessage ready for sending.
+            envelope_from: SMTP envelope sender address.
+            msg_id: Message ID for tracking and status updates.
+            payload: Original message payload with retry state.
+
+        Returns:
+            Event dict describing the outcome (sent/error/deferred), or None
+            if the message was deferred due to rate limiting.
+        """
         account_id = payload.get("account_id")
         try:
             host, port, user, password, acc = await self._resolve_account(account_id)
@@ -889,10 +1009,7 @@ class AsyncMailCore:
             }
 
         use_tls = acc.get("use_tls")
-        if use_tls is None:
-            use_tls = int(port) == 465
-        else:
-            use_tls = bool(use_tls)
+        use_tls = int(port) == 465 if use_tls is None else bool(use_tls)
         resolved_account_id = account_id or acc.get("id") or "default"
 
         deferred_until = await self.rate_limiter.check_and_plan(acc)
@@ -1101,7 +1218,7 @@ class AsyncMailCore:
         # Group reports by tenant_id for per-tenant delivery
         # Payload minimale: solo id, sent_ts, error_ts, error
         from collections import defaultdict
-        reports_by_tenant: Dict[Optional[str], List[Dict[str, Any]]] = defaultdict(list)
+        reports_by_tenant: dict[str | None, list[dict[str, Any]]] = defaultdict(list)
         for item in reports:
             tenant_id = item.get("tenant_id")
             payload = {
@@ -1113,7 +1230,7 @@ class AsyncMailCore:
             reports_by_tenant[tenant_id].append(payload)
 
         # Track acknowledged message IDs (only mark as reported if client confirms)
-        acked_ids: List[str] = []
+        acked_ids: list[str] = []
 
         # Send reports to each tenant's endpoint
         for tenant_id, payloads in reports_by_tenant.items():
@@ -1164,7 +1281,11 @@ class AsyncMailCore:
         return total_queued
 
     async def _apply_retention(self) -> None:
-        """Delete reported messages older than the configured retention."""
+        """Remove reported messages older than the configured retention period.
+
+        Messages that have been successfully reported to upstream services
+        are deleted after the retention period expires to prevent database growth.
+        """
         if self._report_retention_seconds <= 0:
             return
         threshold = self._utc_now_epoch() - self._report_retention_seconds
@@ -1174,13 +1295,21 @@ class AsyncMailCore:
 
     # ---------------------------------------------------------------- housekeeping
     async def _cleanup_loop(self) -> None:
-        """Background coroutine that keeps SMTP pooled connections healthy."""
+        """Background loop that maintains SMTP connection pool health.
+
+        Periodically removes idle or expired connections from the pool
+        to prevent resource leaks and connection timeouts.
+        """
         while not self._stop.is_set():
             await asyncio.sleep(150)
             await self.pool.cleanup()
 
     async def _refresh_queue_gauge(self) -> None:
-        """Refresh the metric describing queued messages."""
+        """Update the Prometheus gauge for pending message count.
+
+        Queries the database for active (unsent, unreported) messages
+        and updates the metrics collector.
+        """
         try:
             count = await self.persistence.count_active_messages()
         except Exception:  # pragma: no cover - defensive
@@ -1189,7 +1318,11 @@ class AsyncMailCore:
         self.metrics.set_pending(count)
 
     async def _wait_for_wakeup(self, timeout: float | None) -> None:
-        """Pause the loop while allowing external wake-ups via 'run now'."""
+        """Pause the SMTP dispatch loop until timeout or wake event.
+
+        Args:
+            timeout: Maximum seconds to wait. None or infinity waits indefinitely.
+        """
         self.logger.debug(f"_wait_for_wakeup called with timeout={timeout}")
         if self._stop.is_set():
             self.logger.debug("_stop is set, returning immediately")
@@ -1220,7 +1353,11 @@ class AsyncMailCore:
         self._wake_event.clear()
 
     async def _wait_for_client_wakeup(self, timeout: float | None) -> None:
-        """Pause the client report loop while allowing immediate wake-ups when messages are sent."""
+        """Pause the client report loop until timeout or wake event.
+
+        Args:
+            timeout: Maximum seconds to wait. None or infinity waits indefinitely.
+        """
         if self._stop.is_set():
             return
         if timeout is None:
@@ -1244,20 +1381,34 @@ class AsyncMailCore:
 
     # ----------------------------------------------------------------- messaging
     async def results(self):
-        """Yield delivery events to API consumers."""
+        """Async generator that yields delivery result events.
+
+        Yields:
+            dict: Delivery event with message ID, status, timestamp, and error info.
+        """
         while True:
             event = await self._result_queue.get()
             yield event
 
     async def _put_with_backpressure(self, queue: asyncio.Queue[Any], item: Any, queue_name: str) -> None:
-        """Push an item to a queue, avoiding unbounded growth by timing out."""
+        """Push an item to a queue with timeout-based backpressure.
+
+        Args:
+            queue: Target asyncio.Queue.
+            item: Item to enqueue.
+            queue_name: Name for logging purposes.
+        """
         try:
             await asyncio.wait_for(queue.put(item), timeout=self._queue_put_timeout)
         except asyncio.TimeoutError:  # pragma: no cover - defensive
             self.logger.error("Timed out while enqueuing item into %s queue; dropping item", queue_name)
 
-    def _log_delivery_event(self, event: Dict[str, Any]) -> None:
-        """Emit a console log describing the outcome of a delivery attempt."""
+    def _log_delivery_event(self, event: dict[str, Any]) -> None:
+        """Log a delivery outcome when verbose logging is enabled.
+
+        Args:
+            event: Delivery event dict with status, id, account, and error info.
+        """
         if not self._log_delivery_activity:
             return
         status = (event.get("status") or "unknown").lower()
@@ -1294,14 +1445,28 @@ class AsyncMailCore:
             case _:
                 self.logger.info("Delivery event for message %s (account=%s): %s", msg_id, account, status)
 
-    async def _publish_result(self, event: Dict[str, Any]) -> None:
-        """Publish a delivery event while observing queue backpressure."""
+    async def _publish_result(self, event: dict[str, Any]) -> None:
+        """Publish a delivery event to the result queue.
+
+        Args:
+            event: Delivery event dict to publish.
+        """
         self._log_delivery_event(event)
         await self._put_with_backpressure(self._result_queue, event, "result")
 
     # ---------------------------------------------------------- SMTP primitives
-    async def _resolve_account(self, account_id: Optional[str]) -> Tuple[str, int, Optional[str], Optional[str], Dict[str, Any]]:
-        """Return SMTP credentials for the requested account or defaults."""
+    async def _resolve_account(self, account_id: str | None) -> tuple[str, int, str | None, str | None, dict[str, Any]]:
+        """Resolve SMTP connection parameters for a message.
+
+        Args:
+            account_id: Account ID to look up, or None to use defaults.
+
+        Returns:
+            Tuple of (host, port, user, password, account_dict).
+
+        Raises:
+            AccountConfigurationError: If no account found and no defaults configured.
+        """
         if account_id:
             acc = await self.persistence.get_account(account_id)
             return acc["host"], int(acc["port"]), acc.get("user"), acc.get("password"), acc
@@ -1315,8 +1480,22 @@ class AsyncMailCore:
             )
         raise AccountConfigurationError()
 
-    async def _build_email(self, data: Dict[str, Any]) -> Tuple[EmailMessage, str]:
-        """Translate the command payload into an :class:`EmailMessage` and envelope sender."""
+    async def _build_email(self, data: dict[str, Any]) -> tuple[EmailMessage, str]:
+        """Build an EmailMessage from a message payload.
+
+        Constructs headers (From, To, Cc, Bcc, Subject, etc.), sets the body
+        content with appropriate MIME type, and fetches/attaches any attachments.
+
+        Args:
+            data: Message payload with from, to, subject, body, attachments, etc.
+
+        Returns:
+            Tuple of (EmailMessage, envelope_sender_address).
+
+        Raises:
+            KeyError: If required fields (from, to) are missing.
+            ValueError: If attachment fetching fails.
+        """
 
         def _format_addresses(value: Any) -> str | None:
             if not value:
@@ -1364,7 +1543,7 @@ class AsyncMailCore:
                 *[self._fetch_attachment_with_timeout(att, attachment_manager) for att in attachments],
                 return_exceptions=True,
             )
-            for att, result in zip(attachments, results):
+            for att, result in zip(attachments, results, strict=True):
                 filename = att.get("filename", "file.bin")
                 if isinstance(result, Exception):
                     self.logger.error("Failed to fetch attachment %s: %s - message will not be sent", filename, result)
@@ -1382,7 +1561,7 @@ class AsyncMailCore:
                 msg.add_attachment(content, maintype=maintype, subtype=subtype, filename=resolved_filename)
         return msg, envelope_from
 
-    async def _get_attachment_manager_for_message(self, data: Dict[str, Any]) -> AttachmentManager:
+    async def _get_attachment_manager_for_message(self, data: dict[str, Any]) -> AttachmentManager:
         """Get the appropriate AttachmentManager for a message.
 
         If the message's account is associated with a tenant that has custom
@@ -1434,9 +1613,9 @@ class AsyncMailCore:
 
     async def _fetch_attachment_with_timeout(
         self,
-        att: Dict[str, Any],
-        attachment_manager: Optional[AttachmentManager] = None,
-    ) -> Optional[Tuple[bytes, str]]:
+        att: dict[str, Any],
+        attachment_manager: AttachmentManager | None = None,
+    ) -> tuple[bytes, str] | None:
         """Fetch an attachment using the configured timeout budget.
 
         The AttachmentManager.fetch() now returns Tuple[bytes, clean_filename]
@@ -1455,7 +1634,7 @@ class AsyncMailCore:
         return result
 
     # ------------------------------------------------------------ client bridge
-    async def _send_delivery_reports(self, payloads: List[Dict[str, Any]]) -> Tuple[List[str], int]:
+    async def _send_delivery_reports(self, payloads: list[dict[str, Any]]) -> tuple[list[str], int]:
         """Send delivery report payloads to the configured proxy or callback.
 
         Returns:
@@ -1482,7 +1661,7 @@ class AsyncMailCore:
             if payloads:
                 raise RuntimeError("Client sync URL is not configured")
             return [], 0
-        headers: Dict[str, str] = {}
+        headers: dict[str, str] = {}
         auth = None
         if self._client_sync_token:
             headers["Authorization"] = f"Bearer {self._client_sync_token}"
@@ -1515,9 +1694,9 @@ class AsyncMailCore:
                 resp.raise_for_status()
                 # All IDs are marked as reported on valid JSON response
                 # Response format: {"ok": true, "queued": N} or {"error": [...], "not_found": [...], "queued": N}
-                processed_ids: List[str] = [p["id"] for p in payloads]
-                error_ids: List[str] = []
-                not_found_ids: List[str] = []
+                processed_ids: list[str] = [p["id"] for p in payloads]
+                error_ids: list[str] = []
+                not_found_ids: list[str] = []
                 is_ok = False
                 queued_count = 0
                 try:
@@ -1557,8 +1736,8 @@ class AsyncMailCore:
         return processed_ids, queued_count
 
     async def _send_reports_to_tenant(
-        self, tenant: Dict[str, Any], payloads: List[Dict[str, Any]]
-    ) -> Tuple[List[str], int]:
+        self, tenant: dict[str, Any], payloads: list[dict[str, Any]]
+    ) -> tuple[list[str], int]:
         """Send delivery report payloads to a tenant-specific endpoint.
 
         Args:
@@ -1577,7 +1756,7 @@ class AsyncMailCore:
             raise RuntimeError(f"Tenant {tenant.get('id')} has no sync URL configured")
 
         # Build authentication from tenant config (common auth for all endpoints)
-        headers: Dict[str, str] = {}
+        headers: dict[str, str] = {}
         auth = None
         auth_config = tenant.get("client_auth") or {}
         auth_method = auth_config.get("method", "none")
@@ -1623,9 +1802,9 @@ class AsyncMailCore:
                 resp.raise_for_status()
                 # All IDs are marked as reported on valid JSON response
                 # Response format: {"ok": true, "queued": N} or {"error": [...], "not_found": [...], "queued": N}
-                processed_ids: List[str] = [p["id"] for p in payloads]
-                error_ids: List[str] = []
-                not_found_ids: List[str] = []
+                processed_ids: list[str] = [p["id"] for p in payloads]
+                error_ids: list[str] = []
+                not_found_ids: list[str] = []
                 is_ok = False
                 queued_count = 0
                 try:
@@ -1673,7 +1852,18 @@ class AsyncMailCore:
         return processed_ids, queued_count
 
     # ------------------------------------------------------------- validations
-    async def _validate_enqueue_payload(self, payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    async def _validate_enqueue_payload(self, payload: dict[str, Any]) -> tuple[bool, str | None]:
+        """Validate a message payload before enqueueing.
+
+        Checks for required fields (id, from, to) and verifies that the
+        specified SMTP account exists if provided.
+
+        Args:
+            payload: Message payload dict to validate.
+
+        Returns:
+            Tuple of (is_valid, error_reason). error_reason is None if valid.
+        """
         msg_id = payload.get("id")
         if not msg_id:
             return False, "missing id"

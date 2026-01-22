@@ -1,3 +1,4 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Interactive terminal forms with Pydantic validation.
 
 This module provides interactive forms for creating tenants, accounts,
@@ -18,7 +19,7 @@ validate input in real-time, showing errors immediately.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Type, get_args, get_origin
+from typing import Any, get_args, get_origin
 
 from pydantic import BaseModel, ValidationError
 from pydantic.fields import FieldInfo
@@ -31,14 +32,28 @@ console = Console()
 
 
 def get_field_description(field_info: FieldInfo) -> str:
-    """Extract description from Pydantic field."""
+    """Extract the description string from a Pydantic FieldInfo.
+
+    Args:
+        field_info: Pydantic field metadata object.
+
+    Returns:
+        str: Field description, or empty string if not defined.
+    """
     if field_info.description:
         return field_info.description
     return ""
 
 
 def get_field_type_hint(annotation: Any) -> str:
-    """Get a human-readable type hint (simple, short form)."""
+    """Convert a type annotation to a human-readable hint for prompts.
+
+    Args:
+        annotation: Python type annotation (str, int, Optional[str], etc.).
+
+    Returns:
+        str: Short description like "text", "integer", "yes/no", or enum choices.
+    """
     origin = get_origin(annotation)
 
     if origin is None:
@@ -75,7 +90,14 @@ def get_field_type_hint(annotation: Any) -> str:
 
 
 def is_optional(annotation: Any) -> bool:
-    """Check if a type annotation is Optional."""
+    """Check if a type annotation represents an optional field.
+
+    Args:
+        annotation: Python type annotation.
+
+    Returns:
+        bool: True if annotation is Optional[T] or Union[T, None].
+    """
     origin = get_origin(annotation)
     if origin is None:
         return False
@@ -84,7 +106,14 @@ def is_optional(annotation: Any) -> bool:
 
 
 def get_inner_type(annotation: Any) -> Any:
-    """Get the inner type of Optional[X]."""
+    """Extract the inner type from Optional[X] or other union types.
+
+    Args:
+        annotation: Python type annotation.
+
+    Returns:
+        The unwrapped inner type, or the original if not a union.
+    """
     origin = get_origin(annotation)
     if origin is None:
         return annotation
@@ -94,13 +123,27 @@ def get_inner_type(annotation: Any) -> Any:
 
 
 def is_nested_model(annotation: Any) -> bool:
-    """Check if annotation is a nested Pydantic model."""
+    """Check if annotation references a nested Pydantic BaseModel.
+
+    Args:
+        annotation: Python type annotation.
+
+    Returns:
+        bool: True if the inner type is a Pydantic BaseModel subclass.
+    """
     inner = get_inner_type(annotation)
     return isinstance(inner, type) and issubclass(inner, BaseModel)
 
 
-def get_nested_model_class(annotation: Any) -> Optional[Type[BaseModel]]:
-    """Get the nested model class from annotation."""
+def get_nested_model_class(annotation: Any) -> type[BaseModel] | None:
+    """Extract the Pydantic model class from a nested annotation.
+
+    Args:
+        annotation: Python type annotation.
+
+    Returns:
+        The BaseModel subclass, or None if not a nested model.
+    """
     inner = get_inner_type(annotation)
     if isinstance(inner, type) and issubclass(inner, BaseModel):
         return inner
@@ -120,20 +163,20 @@ class InteractiveForm:
     with the pattern: parent_field_subfield (e.g., client_auth_method).
     """
 
-    model: Type[BaseModel]
+    model: type[BaseModel]
     title: str = "Form"
-    fields: List[str] = []
-    field_groups: Dict[str, List[str]] = {}
+    fields: list[str] = []
+    field_groups: dict[str, list[str]] = {}
 
     def __init__(self):
-        self.values: Dict[str, Any] = {}
-        self.errors: Dict[str, str] = {}
+        self.values: dict[str, Any] = {}
+        self.errors: dict[str, str] = {}
         # Expanded fields list (with nested fields flattened)
-        self._expanded_fields: List[str] = []
+        self._expanded_fields: list[str] = []
         # Map expanded field name -> (parent_field, subfield) for nested fields
-        self._nested_map: Dict[str, tuple[str, str]] = {}
+        self._nested_map: dict[str, tuple[str, str]] = {}
         # Map parent field -> nested model class
-        self._nested_models: Dict[str, Type[BaseModel]] = {}
+        self._nested_models: dict[str, type[BaseModel]] = {}
         self._expand_fields()
 
     def _expand_fields(self) -> None:
@@ -156,7 +199,7 @@ class InteractiveForm:
                 nested_class = get_nested_model_class(annotation)
                 if nested_class:
                     self._nested_models[field_name] = nested_class
-                    for subfield in nested_class.model_fields.keys():
+                    for subfield in nested_class.model_fields:
                         expanded_name = f"{field_name}_{subfield}"
                         self._expanded_fields.append(expanded_name)
                         self._nested_map[expanded_name] = (field_name, subfield)
@@ -164,7 +207,7 @@ class InteractiveForm:
                 # Regular field
                 self._expanded_fields.append(field_name)
 
-    def _get_field_info(self, field_name: str) -> Optional[FieldInfo]:
+    def _get_field_info(self, field_name: str) -> FieldInfo | None:
         """Get Pydantic FieldInfo for a field (handles expanded nested fields)."""
         # Check if it's an expanded nested field
         if field_name in self._nested_map:
@@ -302,7 +345,7 @@ class InteractiveForm:
 
         return value
 
-    def _collect_nested_values(self) -> Dict[str, Any]:
+    def _collect_nested_values(self) -> dict[str, Any]:
         """Collect expanded nested field values back into nested dicts."""
         result = {}
 
@@ -317,7 +360,7 @@ class InteractiveForm:
             nested_dict = {}
             has_value = False
 
-            for subfield in nested_class.model_fields.keys():
+            for subfield in nested_class.model_fields:
                 expanded_name = f"{parent_field}_{subfield}"
                 if expanded_name in self.values and self.values[expanded_name] is not None:
                     nested_dict[subfield] = self.values[expanded_name]
@@ -392,20 +435,20 @@ class InteractiveForm:
         self.values[field_name] = self._prompt_field(field_name, current)
         self._validate()
 
-    def _get_expanded_group_fields(self, group_fields: List[str]) -> List[str]:
+    def _get_expanded_group_fields(self, group_fields: list[str]) -> list[str]:
         """Get expanded field names for a group."""
         result = []
         for field_name in group_fields:
             if field_name in self._nested_models:
                 # Add all expanded subfields
                 nested_class = self._nested_models[field_name]
-                for subfield in nested_class.model_fields.keys():
+                for subfield in nested_class.model_fields:
                     result.append(f"{field_name}_{subfield}")
             else:
                 result.append(field_name)
         return result
 
-    def run(self) -> Optional[Dict[str, Any]]:
+    def run(self) -> dict[str, Any] | None:
         """Run the interactive form.
 
         Returns:
@@ -580,7 +623,7 @@ def set_proxy(proxy) -> None:
     _proxy = proxy
 
 
-def new_tenant() -> Optional[Dict[str, Any]]:
+def new_tenant() -> dict[str, Any] | None:
     """Interactive form to create and save a new tenant.
 
     Returns:
@@ -596,7 +639,7 @@ def new_tenant() -> Optional[Dict[str, Any]]:
     return data
 
 
-def new_account() -> Optional[Dict[str, Any]]:
+def new_account() -> dict[str, Any] | None:
     """Interactive form to create and save a new SMTP account.
 
     Returns:
@@ -612,7 +655,7 @@ def new_account() -> Optional[Dict[str, Any]]:
     return data
 
 
-def new_message() -> Optional[Dict[str, Any]]:
+def new_message() -> dict[str, Any] | None:
     """Interactive form to create and queue a new message.
 
     Returns:
@@ -622,7 +665,7 @@ def new_message() -> Optional[Dict[str, Any]]:
     if data and _proxy:
         try:
             _proxy.messages.add([data])
-            console.print(f"[green]✓[/green] Message queued")
+            console.print("[green]✓[/green] Message queued")
         except Exception as e:
             console.print(f"[red]Error queuing message:[/red] {e}")
     return data

@@ -1,3 +1,4 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Base protocol for attachment fetchers.
 
 This module defines the abstract interface that all attachment fetcher
@@ -9,7 +10,7 @@ fetcher implementations interchangeably, supporting extensibility for
 new storage backends.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 class AttachmentFetcherBase:
@@ -20,7 +21,7 @@ class AttachmentFetcherBase:
     across different storage backends.
     """
 
-    async def fetch(self, att: Dict[str, Any]) -> Optional[bytes]:
+    async def fetch(self, att: dict[str, Any]) -> bytes | None:
         """Retrieve attachment content from storage.
 
         This method must be implemented by subclasses to provide the

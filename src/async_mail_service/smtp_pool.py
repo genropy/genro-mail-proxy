@@ -1,3 +1,4 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Lightweight asyncio-friendly SMTP connection pool.
 
 This module provides a connection pool for SMTP clients, enabling efficient
@@ -34,7 +35,6 @@ Example:
 
 import asyncio
 import time
-from typing import Dict, Optional, Tuple
 
 import aiosmtplib
 
@@ -66,10 +66,10 @@ class SMTPPool:
                 replaced on the next access. Defaults to 300 seconds (5 minutes).
         """
         self.ttl = ttl
-        self.pool: Dict[int, Tuple[aiosmtplib.SMTP, float, Tuple[str, int, Optional[str], Optional[str], bool]]] = {}
+        self.pool: dict[int, tuple[aiosmtplib.SMTP, float, tuple[str, int, str | None, str | None, bool]]] = {}
         self.lock = asyncio.Lock()
 
-    async def _connect(self, host: str, port: int, user: Optional[str], password: Optional[str], use_tls: bool) -> aiosmtplib.SMTP:
+    async def _connect(self, host: str, port: int, user: str | None, password: str | None, use_tls: bool) -> aiosmtplib.SMTP:
         """Establish a new SMTP connection with optional authentication.
 
         Creates a new aiosmtplib SMTP client, connects to the specified server,
@@ -137,7 +137,7 @@ class SMTPPool:
         except Exception:
             return False
 
-    async def get_connection(self, host: str, port: int, user: Optional[str], password: Optional[str], *, use_tls: bool) -> aiosmtplib.SMTP:
+    async def get_connection(self, host: str, port: int, user: str | None, password: str | None, *, use_tls: bool) -> aiosmtplib.SMTP:
         """Retrieve or create an SMTP connection for the current asyncio task.
 
         Returns a pooled connection if one exists for the current task with
@@ -213,9 +213,9 @@ class SMTPPool:
         async with self.lock:
             items = list(self.pool.items())
 
-        expired: list[Tuple[int, aiosmtplib.SMTP]] = []
-        candidates: list[Tuple[int, aiosmtplib.SMTP]] = []
-        for task_id, (smtp, last_used, params) in items:
+        expired: list[tuple[int, aiosmtplib.SMTP]] = []
+        candidates: list[tuple[int, aiosmtplib.SMTP]] = []
+        for task_id, (smtp, last_used, _params) in items:
             if (now - last_used) > self.ttl:
                 expired.append((task_id, smtp))
             else:
@@ -229,7 +229,7 @@ class SMTPPool:
             if not alive:
                 expired.append((task_id, smtp))
 
-        for task_id, smtp in expired:
+        for task_id, _smtp in expired:
             async with self.lock:
                 entry = self.pool.pop(task_id, None)
             if entry:

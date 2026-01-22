@@ -1,3 +1,4 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Prometheus metrics for monitoring the mail dispatcher.
 
 This module defines the Prometheus counters and gauges used to track email
@@ -18,7 +19,7 @@ Example:
     Returns Prometheus text format suitable for scraping.
 """
 
-from prometheus_client import Counter, Gauge, CollectorRegistry, generate_latest
+from prometheus_client import CollectorRegistry, Counter, Gauge, generate_latest
 
 
 class MailMetrics:

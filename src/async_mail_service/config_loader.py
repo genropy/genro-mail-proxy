@@ -1,3 +1,4 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Configuration loader for storage volumes and attachment settings.
 
 This module provides utilities for loading storage volume configurations and
@@ -61,9 +62,9 @@ from __future__ import annotations
 
 import configparser
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from async_mail_service.logger import get_logger
 
@@ -88,27 +89,27 @@ class AttachmentConfig:
     """
 
     # Filesystem
-    base_dir: Optional[str] = None
+    base_dir: str | None = None
 
     # HTTP
-    http_endpoint: Optional[str] = None
+    http_endpoint: str | None = None
     http_auth_method: str = "none"
-    http_auth_token: Optional[str] = None
-    http_auth_user: Optional[str] = None
-    http_auth_password: Optional[str] = None
+    http_auth_token: str | None = None
+    http_auth_user: str | None = None
+    http_auth_password: str | None = None
 
     # Cache - Memory
     cache_memory_max_mb: float = 50.0
     cache_memory_ttl_seconds: int = 300
 
     # Cache - Disk
-    cache_disk_dir: Optional[str] = None
+    cache_disk_dir: str | None = None
     cache_disk_max_mb: float = 500.0
     cache_disk_ttl_seconds: int = 3600
     cache_disk_threshold_kb: float = 100.0
 
     @property
-    def http_auth_config(self) -> Optional[Dict[str, str]]:
+    def http_auth_config(self) -> dict[str, str] | None:
         """Build HTTP auth config dict for HttpFetcher."""
         if self.http_auth_method == "none":
             return None
@@ -162,7 +163,7 @@ class VolumeConfigLoader:
 
         self.config.read(self.config_path)
 
-    def parse_volumes(self) -> List[Dict[str, Any]]:
+    def parse_volumes(self) -> list[dict[str, Any]]:
         """Parse volumes from [volumes] section.
 
         Expected format in config.ini:
@@ -184,7 +185,7 @@ class VolumeConfigLoader:
             logger.info("No [volumes] section found in config file")
             return []
 
-        volumes_dict: Dict[str, Dict[str, Any]] = {}
+        volumes_dict: dict[str, dict[str, Any]] = {}
 
         # Parse all volume.* entries
         for key, value in self.config.items("volumes"):
@@ -210,7 +211,7 @@ class VolumeConfigLoader:
                     volumes_dict[vol_name]["config"] = json.loads(value)
                 except json.JSONDecodeError as e:
                     logger.error(f"Invalid JSON in volume.{vol_name}.config: {e}")
-                    raise ValueError(f"Invalid JSON in volume.{vol_name}.config: {e}")
+                    raise ValueError(f"Invalid JSON in volume.{vol_name}.config: {e}") from e
             elif field == "account_id":
                 # Empty string or whitespace becomes None (global volume)
                 account_id = value.strip()
@@ -219,7 +220,7 @@ class VolumeConfigLoader:
                 logger.warning(f"Unknown volume field: {field} (in {key})")
 
         # Validate volumes
-        volumes: List[Dict[str, Any]] = []
+        volumes: list[dict[str, Any]] = []
         for vol_name, vol_data in volumes_dict.items():
             if "backend" not in vol_data:
                 logger.error(f"Volume '{vol_name}' missing required field 'backend'")
@@ -319,7 +320,7 @@ def load_attachment_config(config_path: str) -> AttachmentConfig:
         logger.info("No [attachments] section in config, using defaults")
         return AttachmentConfig()
 
-    def get_str(key: str, default: Optional[str] = None) -> Optional[str]:
+    def get_str(key: str, default: str | None = None) -> str | None:
         value = config.get("attachments", key, fallback=default)
         return value.strip() if value else default
 

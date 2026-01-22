@@ -1,3 +1,4 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Logging utilities for the async mail service.
 
 This module provides a centralized logging configuration helper. The actual

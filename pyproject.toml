@@ -1,5 +1,5 @@
 # Copyright 2025 Softwell S.r.l.
-# Licensed under the MIT License
+# Licensed under the Apache License, Version 2.0
 
 [build-system]
 requires = ["hatchling"]
@@ -7,10 +7,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genro-mail-proxy"
-version = "0.1.0"
+version = "0.3.0"
 description = "Asynchronous email dispatcher microservice with scheduling, rate limiting, attachments, and a FastAPI REST API."
 readme = "README.md"
-license = "MIT"
+license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [
     {name = "Genropy Team", email = "info@genropy.org"}

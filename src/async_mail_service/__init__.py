@@ -1,3 +1,4 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Asynchronous email dispatcher microservice with scheduling and rate limiting.
 
 This package provides a complete email dispatch solution with features including:

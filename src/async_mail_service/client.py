@@ -1,3 +1,4 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Python client for interacting with mail-proxy instances.
 
 This module provides a Pythonic interface for connecting to running
@@ -31,32 +32,53 @@ Example:
 
 from __future__ import annotations
 
-import json
+import builtins
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 import aiohttp
 
 
 @dataclass
 class Message:
-    """Represents an email message in the queue."""
+    """Email message representation for the client API.
+
+    Attributes:
+        id: Unique message identifier.
+        account_id: SMTP account used for delivery.
+        subject: Email subject line.
+        from_addr: Sender email address.
+        to: List of recipient addresses.
+        status: Current status (pending, sent, error, deferred).
+        priority: Delivery priority (0=immediate, 1=high, 2=medium, 3=low).
+        created_at: ISO timestamp when message was queued.
+        sent_ts: Unix timestamp when sent (if delivered).
+        error_ts: Unix timestamp when error occurred (if failed).
+        error: Error message (if failed).
+    """
 
     id: str
-    account_id: Optional[str] = None
+    account_id: str | None = None
     subject: str = ""
     from_addr: str = ""
-    to: List[str] = field(default_factory=list)
+    to: list[str] = field(default_factory=list)
     status: str = "pending"
     priority: int = 2
-    created_at: Optional[str] = None
-    sent_ts: Optional[int] = None
-    error_ts: Optional[int] = None
-    error: Optional[str] = None
+    created_at: str | None = None
+    sent_ts: int | None = None
+    error_ts: int | None = None
+    error: str | None = None
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "Message":
-        """Create a Message from API response dict."""
+    def from_dict(cls, data: dict[str, Any]) -> Message:
+        """Create a Message from API response dictionary.
+
+        Args:
+            data: Message data from API response including nested ``message`` payload.
+
+        Returns:
+            Message: Populated instance with status derived from timestamps.
+        """
         msg = data.get("message", {})
         status = "pending"
         if data.get("sent_ts"):
@@ -86,25 +108,48 @@ class Message:
 
 @dataclass
 class Account:
-    """Represents an SMTP account."""
+    """SMTP account configuration for the client API.
+
+    Attributes:
+        id: Unique account identifier.
+        tenant_id: Associated tenant (if multi-tenant).
+        host: SMTP server hostname.
+        port: SMTP server port.
+        user: SMTP username for authentication.
+        use_tls: Whether to use STARTTLS.
+        use_ssl: Whether to use implicit SSL.
+        ttl: Connection TTL in seconds.
+        limit_per_minute: Rate limit per minute.
+        limit_per_hour: Rate limit per hour.
+        limit_per_day: Rate limit per day.
+        limit_behavior: What to do when rate limited (defer, reject).
+        batch_size: Max messages per dispatch cycle.
+    """
 
     id: str
-    tenant_id: Optional[str] = None
+    tenant_id: str | None = None
     host: str = ""
     port: int = 587
-    user: Optional[str] = None
+    user: str | None = None
     use_tls: bool = True
     use_ssl: bool = False
     ttl: int = 300
-    limit_per_minute: Optional[int] = None
-    limit_per_hour: Optional[int] = None
-    limit_per_day: Optional[int] = None
-    limit_behavior: Optional[str] = "defer"
-    batch_size: Optional[int] = None
+    limit_per_minute: int | None = None
+    limit_per_hour: int | None = None
+    limit_per_day: int | None = None
+    limit_behavior: str | None = "defer"
+    batch_size: int | None = None
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "Account":
-        """Create an Account from API response dict."""
+    def from_dict(cls, data: dict[str, Any]) -> Account:
+        """Create an Account from API response dictionary.
+
+        Args:
+            data: Account data from API response.
+
+        Returns:
+            Account: Populated instance.
+        """
         return cls(
             id=data["id"],
             tenant_id=data.get("tenant_id"),
@@ -127,18 +172,34 @@ class Account:
 
 @dataclass
 class Tenant:
-    """Represents a tenant configuration."""
+    """Multi-tenant configuration for the client API.
+
+    Attributes:
+        id: Unique tenant identifier.
+        name: Human-readable tenant name.
+        active: Whether tenant is active for message processing.
+        client_base_url: Base URL for client sync/attachment endpoints.
+        client_sync_path: Path for delivery report sync endpoint.
+        client_attachment_path: Path for attachment fetch endpoint.
+    """
 
     id: str
-    name: Optional[str] = None
+    name: str | None = None
     active: bool = True
-    client_base_url: Optional[str] = None
-    client_sync_path: Optional[str] = None
-    client_attachment_path: Optional[str] = None
+    client_base_url: str | None = None
+    client_sync_path: str | None = None
+    client_attachment_path: str | None = None
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "Tenant":
-        """Create a Tenant from API response dict."""
+    def from_dict(cls, data: dict[str, Any]) -> Tenant:
+        """Create a Tenant from API response dictionary.
+
+        Args:
+            data: Tenant data from API response.
+
+        Returns:
+            Tenant: Populated instance.
+        """
         return cls(
             id=data["id"],
             name=data.get("name"),
@@ -154,43 +215,54 @@ class Tenant:
 
 
 class MessagesAPI:
-    """API for managing messages."""
+    """Sub-API for managing email messages in the queue.
 
-    def __init__(self, client: "MailProxyClient"):
+    Access via ``client.messages``.
+    """
+
+    def __init__(self, client: MailProxyClient):
         self._client = client
 
-    def list(self, limit: int = 100, active_only: bool = False) -> List[Message]:
-        """List all messages in the queue."""
+    def list(self, limit: int = 100, active_only: bool = False) -> builtins.list[Message]:
+        """List messages in the queue.
+
+        Args:
+            limit: Maximum number of messages to return.
+            active_only: If True, only return non-sent messages.
+
+        Returns:
+            List of Message objects.
+        """
         params = {"limit": limit}
         if active_only:
             params["active_only"] = "true"
         data = self._client._get("/messages", params=params)
         return [Message.from_dict(m) for m in data.get("messages", [])]
 
-    def pending(self, limit: int = 100) -> List[Message]:
+    def pending(self, limit: int = 100) -> builtins.list[Message]:
         """List pending (not yet sent) messages."""
         return [m for m in self.list(limit=limit) if m.status == "pending"]
 
-    def sent(self, limit: int = 100) -> List[Message]:
+    def sent(self, limit: int = 100) -> builtins.list[Message]:
         """List sent messages."""
         return [m for m in self.list(limit=limit) if m.status == "sent"]
 
-    def errors(self, limit: int = 100) -> List[Message]:
+    def errors(self, limit: int = 100) -> builtins.list[Message]:
         """List messages with errors."""
         return [m for m in self.list(limit=limit) if m.status == "error"]
 
-    def get(self, message_id: str) -> Optional[Message]:
+    def get(self, message_id: str) -> Message | None:
         """Get a specific message by ID."""
         for m in self.list():
             if m.id == message_id:
                 return m
         return None
 
-    def add(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def add(self, messages: builtins.list[dict[str, Any]]) -> dict[str, Any]:
         """Add messages to the queue."""
         return self._client._post("/commands/add-messages", {"messages": messages})
 
-    def delete(self, message_ids: Union[str, List[str]]) -> Dict[str, Any]:
+    def delete(self, message_ids: str | builtins.list[str]) -> dict[str, Any]:
         """Delete messages from the queue."""
         if isinstance(message_ids, str):
             message_ids = [message_ids]
@@ -201,28 +273,35 @@ class MessagesAPI:
 
 
 class AccountsAPI:
-    """API for managing SMTP accounts."""
+    """Sub-API for managing SMTP accounts.
 
-    def __init__(self, client: "MailProxyClient"):
+    Access via ``client.accounts``.
+    """
+
+    def __init__(self, client: MailProxyClient):
         self._client = client
 
-    def list(self) -> List[Account]:
-        """List all accounts."""
+    def list(self) -> builtins.list[Account]:
+        """List all configured SMTP accounts.
+
+        Returns:
+            List of Account objects.
+        """
         data = self._client._get("/accounts")
         return [Account.from_dict(a) for a in data.get("accounts", [])]
 
-    def get(self, account_id: str) -> Optional[Account]:
+    def get(self, account_id: str) -> Account | None:
         """Get a specific account by ID."""
         for a in self.list():
             if a.id == account_id:
                 return a
         return None
 
-    def add(self, account: Dict[str, Any]) -> Dict[str, Any]:
+    def add(self, account: dict[str, Any]) -> dict[str, Any]:
         """Add a new account."""
         return self._client._post("/account", account)
 
-    def delete(self, account_id: str) -> Dict[str, Any]:
+    def delete(self, account_id: str) -> dict[str, Any]:
         """Delete an account."""
         return self._client._delete(f"/account/{account_id}")
 
@@ -231,28 +310,31 @@ class AccountsAPI:
 
 
 class TenantsAPI:
-    """API for managing tenants."""
+    """Sub-API for managing multi-tenant configurations.
 
-    def __init__(self, client: "MailProxyClient"):
+    Access via ``client.tenants``.
+    """
+
+    def __init__(self, client: MailProxyClient):
         self._client = client
 
-    def list(self) -> List[Tenant]:
+    def list(self) -> builtins.list[Tenant]:
         """List all tenants."""
         data = self._client._get("/tenants")
         return [Tenant.from_dict(t) for t in data.get("tenants", [])]
 
-    def get(self, tenant_id: str) -> Optional[Tenant]:
+    def get(self, tenant_id: str) -> Tenant | None:
         """Get a specific tenant by ID."""
         data = self._client._get(f"/tenant/{tenant_id}")
         if data:
             return Tenant.from_dict(data)
         return None
 
-    def add(self, tenant: Dict[str, Any]) -> Dict[str, Any]:
+    def add(self, tenant: dict[str, Any]) -> dict[str, Any]:
         """Add a new tenant."""
         return self._client._post("/tenant", tenant)
 
-    def delete(self, tenant_id: str) -> Dict[str, Any]:
+    def delete(self, tenant_id: str) -> dict[str, Any]:
         """Delete a tenant."""
         return self._client._delete(f"/tenant/{tenant_id}")
 
@@ -281,8 +363,8 @@ class MailProxyClient:
     def __init__(
         self,
         url: str = "http://localhost:8000",
-        token: Optional[str] = None,
-        name: Optional[str] = None,
+        token: str | None = None,
+        name: str | None = None,
     ):
         """Initialize the client.
 
@@ -294,21 +376,21 @@ class MailProxyClient:
         self.url = url.rstrip("/")
         self.token = token
         self.name = name or url
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._session: aiohttp.ClientSession | None = None
 
         # Sub-APIs
         self.messages = MessagesAPI(self)
         self.accounts = AccountsAPI(self)
         self.tenants = TenantsAPI(self)
 
-    def _headers(self) -> Dict[str, str]:
+    def _headers(self) -> dict[str, str]:
         """Build request headers."""
         headers = {"Content-Type": "application/json"}
         if self.token:
             headers["X-API-Token"] = self.token
         return headers
 
-    def _get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
+    def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         """Make a GET request."""
         import requests
         url = f"{self.url}{path}"
@@ -316,7 +398,7 @@ class MailProxyClient:
         resp.raise_for_status()
         return resp.json()
 
-    def _post(self, path: str, data: Optional[Dict[str, Any]] = None) -> Any:
+    def _post(self, path: str, data: dict[str, Any] | None = None) -> Any:
         """Make a POST request."""
         import requests
         url = f"{self.url}{path}"
@@ -332,7 +414,7 @@ class MailProxyClient:
         resp.raise_for_status()
         return resp.json()
 
-    def status(self) -> Dict[str, Any]:
+    def status(self) -> dict[str, Any]:
         """Get server status."""
         return self._get("/status")
 
@@ -344,19 +426,19 @@ class MailProxyClient:
         except Exception:
             return False
 
-    def run_now(self) -> Dict[str, Any]:
+    def run_now(self) -> dict[str, Any]:
         """Trigger immediate dispatch cycle."""
         return self._post("/commands/run-now")
 
-    def suspend(self) -> Dict[str, Any]:
+    def suspend(self) -> dict[str, Any]:
         """Suspend the scheduler."""
         return self._post("/commands/suspend")
 
-    def activate(self) -> Dict[str, Any]:
+    def activate(self) -> dict[str, Any]:
         """Activate the scheduler."""
         return self._post("/commands/activate")
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         """Get queue statistics."""
         messages = self.messages.list()
         pending = sum(1 for m in messages if m.status == "pending")
@@ -377,13 +459,13 @@ class MailProxyClient:
 
 
 # Registry for named connections
-_connections: Dict[str, Dict[str, Any]] = {}
+_connections: dict[str, dict[str, Any]] = {}
 
 
-def _load_connections_from_file() -> Dict[str, Dict[str, Any]]:
+def _load_connections_from_file() -> dict[str, dict[str, Any]]:
     """Load connections from ~/.mail-proxy/connections.json."""
-    from pathlib import Path
     import json as _json
+    from pathlib import Path
 
     connections_file = Path.home() / ".mail-proxy" / "connections.json"
     if connections_file.exists():
@@ -397,7 +479,7 @@ def _load_connections_from_file() -> Dict[str, Dict[str, Any]]:
 def register_connection(
     name: str,
     url: str,
-    token: Optional[str] = None,
+    token: str | None = None,
 ) -> None:
     """Register a named connection for later use.
 
@@ -411,8 +493,8 @@ def register_connection(
 
 def connect(
     name_or_url: str,
-    token: Optional[str] = None,
-    name: Optional[str] = None,
+    token: str | None = None,
+    name: str | None = None,
 ) -> MailProxyClient:
     """Connect to a mail-proxy server.
 

@@ -1,3 +1,4 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """ASGI application entry point for uvicorn.
 
 This module provides a pre-configured FastAPI application that reads
@@ -15,8 +16,8 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Dict
 
 from fastapi import FastAPI
 
@@ -24,7 +25,7 @@ from .api import create_app
 from .core import AsyncMailCore
 
 
-def _get_config_from_db(db_path: str) -> Dict[str, str]:
+def _get_config_from_db(db_path: str) -> dict[str, str]:
     """Read configuration from database using sync SQLite.
 
     Uses synchronous SQLite to avoid issues with asyncio.run() when

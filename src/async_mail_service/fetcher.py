@@ -1,3 +1,4 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Transport helpers to fetch pending messages and push delivery reports.
 
 This module provides the Fetcher class for bidirectional communication with
@@ -31,12 +32,13 @@ Example:
         messages = await fetcher.fetch_messages()
 """
 
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import aiohttp
 
-JsonDict = Dict[str, Any]
-FetchCallable = Callable[[], Awaitable[List[JsonDict]]]
+JsonDict = dict[str, Any]
+FetchCallable = Callable[[], Awaitable[list[JsonDict]]]
 ReportCallable = Callable[[JsonDict], Awaitable[None]]
 
 
@@ -58,9 +60,9 @@ class Fetcher:
 
     def __init__(
         self,
-        fetch_url: Optional[str] = None,
-        fetch_callable: Optional[FetchCallable] = None,
-        report_callable: Optional[ReportCallable] = None,
+        fetch_url: str | None = None,
+        fetch_callable: FetchCallable | None = None,
+        report_callable: ReportCallable | None = None,
     ):
         """Initialize the Fetcher with transport configuration.
 
@@ -76,7 +78,7 @@ class Fetcher:
         self.fetch_callable = fetch_callable
         self.report_callable = report_callable
 
-    def _endpoint(self, suffix: str) -> Optional[str]:
+    def _endpoint(self, suffix: str) -> str | None:
         """Construct a full endpoint URL from the base URL and path suffix.
 
         Args:
@@ -90,7 +92,7 @@ class Fetcher:
         base = self.fetch_url.rstrip("/")
         return f"{base}/{suffix.lstrip('/')}"
 
-    async def fetch_messages(self) -> List[JsonDict]:
+    async def fetch_messages(self) -> list[JsonDict]:
         """Retrieve pending messages from the upstream service.
 
         If a custom fetch_callable was provided during initialization, it will
@@ -110,12 +112,11 @@ class Fetcher:
         endpoint = self._endpoint("fetch-messages")
         if not endpoint:
             return []
-        async with aiohttp.ClientSession() as session:
-            async with session.get(endpoint) as resp:
-                resp.raise_for_status()
-                data = await resp.json()
-                msgs = data.get("messages", [])
-                return msgs if isinstance(msgs, list) else []
+        async with aiohttp.ClientSession() as session, session.get(endpoint) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            msgs = data.get("messages", [])
+            return msgs if isinstance(msgs, list) else []
 
     async def report_delivery(self, payload: JsonDict) -> None:
         """Submit a delivery report to the upstream service.

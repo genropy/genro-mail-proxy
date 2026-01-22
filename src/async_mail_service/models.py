@@ -1,3 +1,4 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Pydantic models for multi-tenant mail service.
 
 This module defines the data models used throughout the application for
@@ -15,13 +16,19 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Any, Dict, List, Literal, Optional, Union
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class AuthMethod(str, Enum):
-    """Authentication methods for client sync."""
+    """Authentication methods supported for HTTP endpoints.
+
+    Attributes:
+        NONE: No authentication required.
+        BEARER: Bearer token authentication (Authorization: Bearer <token>).
+        BASIC: HTTP Basic authentication (username:password).
+    """
 
     NONE = "none"
     BEARER = "bearer"
@@ -47,21 +54,21 @@ class TenantAuth(BaseModel):
         Field(default=AuthMethod.NONE, description="Authentication method")
     ]
     token: Annotated[
-        Optional[str],
+        str | None,
         Field(default=None, description="Bearer token for authentication")
     ]
     user: Annotated[
-        Optional[str],
+        str | None,
         Field(default=None, description="Username for basic auth")
     ]
     password: Annotated[
-        Optional[str],
+        str | None,
         Field(default=None, description="Password for basic auth")
     ]
 
     @field_validator("token")
     @classmethod
-    def token_required_for_bearer(cls, v: Optional[str], info) -> Optional[str]:
+    def token_required_for_bearer(cls, v: str | None, info) -> str | None:
         """Validate that token is provided when method is bearer."""
         if info.data.get("method") == AuthMethod.BEARER and not v:
             raise ValueError("token is required when method is 'bearer'")
@@ -69,7 +76,7 @@ class TenantAuth(BaseModel):
 
     @field_validator("password")
     @classmethod
-    def basic_auth_requires_user_and_password(cls, v: Optional[str], info) -> Optional[str]:
+    def basic_auth_requires_user_and_password(cls, v: str | None, info) -> str | None:
         """Validate that user and password are provided for basic auth."""
         if info.data.get("method") == AuthMethod.BASIC:
             if not info.data.get("user"):
@@ -125,27 +132,27 @@ class TenantCreate(BaseModel):
               description="Unique tenant identifier (alphanumeric, underscore, hyphen)")
     ]
     name: Annotated[
-        Optional[str],
+        str | None,
         Field(default=None, max_length=255, description="Human-readable tenant name")
     ]
     client_auth: Annotated[
-        Optional[TenantAuth],
+        TenantAuth | None,
         Field(default=None, description="Common authentication for HTTP endpoints")
     ]
     client_base_url: Annotated[
-        Optional[str],
+        str | None,
         Field(default=None, description="Base URL for tenant HTTP endpoints")
     ]
     client_sync_path: Annotated[
-        Optional[str],
+        str | None,
         Field(default=None, description="Path for delivery report callbacks (default: /mail-proxy/sync)")
     ]
     client_attachment_path: Annotated[
-        Optional[str],
+        str | None,
         Field(default=None, description="Path for attachment fetcher endpoint (default: /mail-proxy/attachments)")
     ]
     rate_limits: Annotated[
-        Optional[TenantRateLimits],
+        TenantRateLimits | None,
         Field(default=None, description="Rate limiting configuration")
     ]
     active: Annotated[
@@ -163,31 +170,31 @@ class TenantUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: Annotated[
-        Optional[str],
+        str | None,
         Field(default=None, max_length=255, description="Human-readable tenant name")
     ]
     client_auth: Annotated[
-        Optional[TenantAuth],
+        TenantAuth | None,
         Field(default=None, description="Common authentication for HTTP endpoints")
     ]
     client_base_url: Annotated[
-        Optional[str],
+        str | None,
         Field(default=None, description="Base URL for tenant HTTP endpoints")
     ]
     client_sync_path: Annotated[
-        Optional[str],
+        str | None,
         Field(default=None, description="Path for delivery report callbacks")
     ]
     client_attachment_path: Annotated[
-        Optional[str],
+        str | None,
         Field(default=None, description="Path for attachment fetcher endpoint")
     ]
     rate_limits: Annotated[
-        Optional[TenantRateLimits],
+        TenantRateLimits | None,
         Field(default=None, description="Rate limiting configuration")
     ]
     active: Annotated[
-        Optional[bool],
+        bool | None,
         Field(default=None, description="Whether tenant is active")
     ]
 
@@ -199,11 +206,11 @@ class Tenant(TenantCreate):
     """
 
     created_at: Annotated[
-        Optional[datetime],
+        datetime | None,
         Field(default=None, description="Timestamp when tenant was created")
     ]
     updated_at: Annotated[
-        Optional[datetime],
+        datetime | None,
         Field(default=None, description="Timestamp of last update")
     ]
 
@@ -248,11 +255,11 @@ class AccountCreate(BaseModel):
         Field(ge=1, le=65535, description="SMTP server port")
     ]
     user: Annotated[
-        Optional[str],
+        str | None,
         Field(default=None, max_length=255, description="SMTP username")
     ]
     password: Annotated[
-        Optional[str],
+        str | None,
         Field(default=None, max_length=255, description="SMTP password")
     ]
     use_tls: Annotated[
@@ -264,27 +271,27 @@ class AccountCreate(BaseModel):
         Field(default=False, description="Use SSL/TLS connection")
     ]
     batch_size: Annotated[
-        Optional[int],
+        int | None,
         Field(default=None, ge=1, description="Max messages per dispatch cycle")
     ]
     ttl: Annotated[
-        Optional[int],
+        int | None,
         Field(default=300, ge=0, description="Connection TTL in seconds")
     ]
     limit_per_minute: Annotated[
-        Optional[int],
+        int | None,
         Field(default=None, ge=0, description="Max emails per minute (0 = unlimited)")
     ]
     limit_per_hour: Annotated[
-        Optional[int],
+        int | None,
         Field(default=None, ge=0, description="Max emails per hour (0 = unlimited)")
     ]
     limit_per_day: Annotated[
-        Optional[int],
+        int | None,
         Field(default=None, ge=0, description="Max emails per day (0 = unlimited)")
     ]
     limit_behavior: Annotated[
-        Optional[Literal["defer", "reject"]],
+        Literal["defer", "reject"] | None,
         Field(default="defer", description="Behavior when rate limit is hit")
     ]
 
@@ -298,55 +305,55 @@ class AccountUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     tenant_id: Annotated[
-        Optional[str],
+        str | None,
         Field(default=None, min_length=1, max_length=64, description="Parent tenant identifier")
     ]
     host: Annotated[
-        Optional[str],
+        str | None,
         Field(default=None, min_length=1, max_length=255, description="SMTP server hostname")
     ]
     port: Annotated[
-        Optional[int],
+        int | None,
         Field(default=None, ge=1, le=65535, description="SMTP server port")
     ]
     user: Annotated[
-        Optional[str],
+        str | None,
         Field(default=None, max_length=255, description="SMTP username")
     ]
     password: Annotated[
-        Optional[str],
+        str | None,
         Field(default=None, max_length=255, description="SMTP password")
     ]
     use_tls: Annotated[
-        Optional[bool],
+        bool | None,
         Field(default=None, description="Use STARTTLS")
     ]
     use_ssl: Annotated[
-        Optional[bool],
+        bool | None,
         Field(default=None, description="Use SSL/TLS connection")
     ]
     batch_size: Annotated[
-        Optional[int],
+        int | None,
         Field(default=None, ge=1, description="Max messages per dispatch cycle")
     ]
     ttl: Annotated[
-        Optional[int],
+        int | None,
         Field(default=None, ge=0, description="Connection TTL in seconds")
     ]
     limit_per_minute: Annotated[
-        Optional[int],
+        int | None,
         Field(default=None, ge=0, description="Max emails per minute (0 = unlimited)")
     ]
     limit_per_hour: Annotated[
-        Optional[int],
+        int | None,
         Field(default=None, ge=0, description="Max emails per hour (0 = unlimited)")
     ]
     limit_per_day: Annotated[
-        Optional[int],
+        int | None,
         Field(default=None, ge=0, description="Max emails per day (0 = unlimited)")
     ]
     limit_behavior: Annotated[
-        Optional[Literal["defer", "reject"]],
+        Literal["defer", "reject"] | None,
         Field(default=None, description="Behavior when rate limit is hit")
     ]
 
@@ -355,17 +362,23 @@ class Account(AccountCreate):
     """Complete account model including timestamps."""
 
     created_at: Annotated[
-        Optional[datetime],
+        datetime | None,
         Field(default=None, description="Timestamp when account was created")
     ]
     updated_at: Annotated[
-        Optional[datetime],
+        datetime | None,
         Field(default=None, description="Timestamp of last update")
     ]
 
 
 class FetchMode(str, Enum):
-    """Fetch mode for attachments."""
+    """Source mode for fetching email attachments.
+
+    Attributes:
+        ENDPOINT: Fetch from configured HTTP endpoint with path parameter.
+        STORAGE: Fetch from genro-storage volume using storage_path.
+        HTTP_URL: Fetch directly from a full HTTP/HTTPS URL.
+    """
 
     ENDPOINT = "endpoint"
     STORAGE = "storage"
@@ -399,19 +412,19 @@ class AttachmentPayload(BaseModel):
         Field(min_length=1, description="Storage path (base64:, volume:, @http, /path)")
     ]
     mime_type: Annotated[
-        Optional[str],
+        str | None,
         Field(default=None, description="MIME type override")
     ]
     fetch_mode: Annotated[
-        Optional[FetchMode],
+        FetchMode | None,
         Field(default=None, description="Explicit fetch mode (endpoint, storage, http_url, base64)")
     ]
     content_md5: Annotated[
-        Optional[str],
+        str | None,
         Field(default=None, pattern=r"^[a-fA-F0-9]{32}$", description="MD5 hash for cache lookup")
     ]
     auth: Annotated[
-        Optional[TenantAuth],
+        TenantAuth | None,
         Field(default=None, description="Auth override for this attachment")
     ]
 
@@ -453,23 +466,23 @@ class MessageCreate(BaseModel):
         Field(alias="from", min_length=1, description="Sender email address")
     ]
     to: Annotated[
-        Union[List[str], str],
+        list[str] | str,
         Field(description="Recipient address(es)")
     ]
     cc: Annotated[
-        Optional[Union[List[str], str]],
+        list[str] | str | None,
         Field(default=None, description="CC address(es)")
     ]
     bcc: Annotated[
-        Optional[Union[List[str], str]],
+        list[str] | str | None,
         Field(default=None, description="BCC address(es)")
     ]
     reply_to: Annotated[
-        Optional[str],
+        str | None,
         Field(default=None, description="Reply-To address")
     ]
     return_path: Annotated[
-        Optional[str],
+        str | None,
         Field(default=None, description="Return-Path (envelope sender) address")
     ]
     subject: Annotated[
@@ -485,7 +498,7 @@ class MessageCreate(BaseModel):
         Field(default="plain", description="Body content type")
     ]
     message_id: Annotated[
-        Optional[str],
+        str | None,
         Field(default=None, description="Custom Message-ID header")
     ]
     priority: Annotated[
@@ -493,21 +506,21 @@ class MessageCreate(BaseModel):
         Field(default=2, ge=0, le=3, description="Priority (0=immediate, 3=low)")
     ]
     deferred_ts: Annotated[
-        Optional[int],
+        int | None,
         Field(default=None, ge=0, description="Unix timestamp to defer until")
     ]
     attachments: Annotated[
-        Optional[List[AttachmentPayload]],
+        list[AttachmentPayload] | None,
         Field(default=None, description="List of attachments")
     ]
     headers: Annotated[
-        Optional[Dict[str, str]],
+        dict[str, str] | None,
         Field(default=None, description="Additional email headers")
     ]
 
     @field_validator("to", "cc", "bcc", mode="before")
     @classmethod
-    def normalize_recipients(cls, v: Optional[Union[List[str], str]]) -> Optional[List[str]]:
+    def normalize_recipients(cls, v: list[str] | str | None) -> list[str] | None:
         """Convert string recipients to list."""
         if v is None:
             return None
@@ -517,7 +530,14 @@ class MessageCreate(BaseModel):
 
 
 class MessageStatus(str, Enum):
-    """Message delivery status."""
+    """Current delivery status of an email message.
+
+    Attributes:
+        PENDING: Queued and waiting for delivery attempt.
+        DEFERRED: Temporarily delayed (rate limit or soft error).
+        SENT: Successfully delivered to SMTP server.
+        ERROR: Delivery failed with permanent error.
+    """
 
     PENDING = "pending"
     DEFERRED = "deferred"
@@ -535,16 +555,16 @@ class Message(BaseModel):
 
     id: Annotated[str, Field(description="Message identifier")]
     account_id: Annotated[str, Field(description="SMTP account identifier")]
-    tenant_id: Annotated[Optional[str], Field(default=None, description="Tenant identifier")]
+    tenant_id: Annotated[str | None, Field(default=None, description="Tenant identifier")]
     priority: Annotated[int, Field(description="Message priority")]
     status: Annotated[MessageStatus, Field(description="Delivery status")]
-    created_at: Annotated[Optional[datetime], Field(default=None)]
-    deferred_ts: Annotated[Optional[int], Field(default=None)]
-    sent_ts: Annotated[Optional[int], Field(default=None)]
-    error_ts: Annotated[Optional[int], Field(default=None)]
-    error: Annotated[Optional[str], Field(default=None)]
-    reported_ts: Annotated[Optional[int], Field(default=None)]
-    payload: Annotated[Dict[str, Any], Field(description="Original message payload")]
+    created_at: Annotated[datetime | None, Field(default=None)]
+    deferred_ts: Annotated[int | None, Field(default=None)]
+    sent_ts: Annotated[int | None, Field(default=None)]
+    error_ts: Annotated[int | None, Field(default=None)]
+    error: Annotated[str | None, Field(default=None)]
+    reported_ts: Annotated[int | None, Field(default=None)]
+    payload: Annotated[dict[str, Any], Field(description="Original message payload")]
 
 
 # CLI-specific models for formatted output
@@ -553,9 +573,9 @@ class TenantListItem(BaseModel):
     """Tenant summary for list display."""
 
     id: str
-    name: Optional[str]
+    name: str | None
     active: bool
-    client_base_url: Optional[str]
+    client_base_url: str | None
     account_count: Annotated[int, Field(default=0)]
 
 
@@ -577,7 +597,7 @@ class MessageListItem(BaseModel):
     account_id: str
     status: MessageStatus
     subject: Annotated[str, Field(default="")]
-    created_at: Optional[datetime]
+    created_at: datetime | None
 
 
 # Helper functions for building tenant URLs
@@ -586,7 +606,7 @@ DEFAULT_SYNC_PATH = "/mail-proxy/sync"
 DEFAULT_ATTACHMENT_PATH = "/mail-proxy/attachments"
 
 
-def get_tenant_sync_url(tenant: Dict[str, Any]) -> Optional[str]:
+def get_tenant_sync_url(tenant: dict[str, Any]) -> str | None:
     """Build full sync URL from tenant config.
 
     Args:
@@ -602,7 +622,7 @@ def get_tenant_sync_url(tenant: Dict[str, Any]) -> Optional[str]:
     return f"{base_url.rstrip('/')}{sync_path}"
 
 
-def get_tenant_attachment_url(tenant: Dict[str, Any]) -> Optional[str]:
+def get_tenant_attachment_url(tenant: dict[str, Any]) -> str | None:
     """Build full attachment URL from tenant config.
 
     Args:

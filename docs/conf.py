@@ -1,5 +1,5 @@
 # Copyright 2025 Softwell S.r.l.
-# Licensed under the MIT License
+# Licensed under the Apache License, Version 2.0
 
 """Sphinx configuration for Genro Mail Proxy documentation."""
 
