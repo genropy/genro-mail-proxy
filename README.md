@@ -111,15 +111,14 @@ See [API Reference](https://genro-mail-proxy.readthedocs.io/en/latest/api_refere
 
 ## Attachment handling
 
-The proxy supports multiple attachment sources:
+The proxy supports multiple attachment sources via explicit `fetch_mode`:
 
-| Format | Example | Description |
-| ------ | ------- | ----------- |
-| `base64:content` | `base64:SGVsbG8=` | Inline base64-encoded content |
-| `/absolute/path` | `/tmp/file.pdf` | Local filesystem absolute path |
-| `relative/path` | `uploads/doc.pdf` | Relative to configured base_dir |
-| `@params` | `@doc_id=123` | HTTP POST to default endpoint |
-| `@[url]params` | `@[https://api.example.com]id=456` | HTTP POST to specific URL |
+| fetch_mode | storage_path example | Description |
+| ---------- | -------------------- | ----------- |
+| `base64` | `SGVsbG8gV29ybGQ=` | Inline base64-encoded content |
+| `filesystem` | `/tmp/file.pdf` | Local filesystem path |
+| `endpoint` | `doc_id=123` | HTTP POST to tenant's attachment endpoint |
+| `http_url` | `https://storage.example.com/file.pdf` | HTTP GET from external URL |
 
 A two-tiered cache (memory + disk) reduces redundant fetches. Filenames can include an MD5 hash marker (`report_{MD5:abc123}.pdf`) for cache lookup.
 

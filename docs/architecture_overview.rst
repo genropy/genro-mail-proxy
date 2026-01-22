@@ -535,7 +535,7 @@ The proxy exposes Prometheus metrics at ``GET /metrics``:
            # HTTP endpoint (proxy fetches via POST)
            {
                "filename": "invoice.pdf",
-               "storage_path": "@doc_id=123",
+               "storage_path": "doc_id=123",
                "fetch_mode": "endpoint"
            },
            # External URL (proxy fetches)

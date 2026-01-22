@@ -139,30 +139,27 @@ Each entry mirrors :class:`async_mail_service.api.MessagePayload`. Key fields:
 Attachment storage formats
 --------------------------
 
-Each attachment includes a ``storage_path`` field specifying where to fetch
-the content. The following formats are supported:
+Each attachment requires a ``fetch_mode`` field specifying how to retrieve
+the content, and a ``storage_path`` with the location or data.
 
 .. list-table::
    :header-rows: 1
 
-   * - Format
-     - Example
+   * - fetch_mode
+     - storage_path example
      - Description
-   * - ``base64:content``
-     - ``base64:SGVsbG8=``
+   * - ``base64``
+     - ``SGVsbG8gV29ybGQ=``
      - Inline base64-encoded content
-   * - ``/absolute/path``
+   * - ``filesystem``
      - ``/tmp/attachments/file.pdf``
-     - Local filesystem absolute path
-   * - ``relative/path``
-     - ``uploads/doc.pdf``
-     - Filesystem relative to configured ``base_dir``
-   * - ``@params``
-     - ``@doc_id=123&version=2``
-     - HTTP POST to default endpoint with params as body
-   * - ``@[url]params``
-     - ``@[https://api.example.com]id=456``
-     - HTTP POST to specific URL with params as body
+     - Local filesystem path (absolute or relative to ``base_dir``)
+   * - ``endpoint``
+     - ``doc_id=123&version=2``
+     - HTTP POST to tenant's attachment endpoint with params as body
+   * - ``http_url``
+     - ``https://storage.example.com/file.pdf``
+     - HTTP GET from external URL
 
 **MD5 cache marker**: Filenames can include an MD5 hash marker for cache lookup:
 
@@ -178,9 +175,9 @@ Example attachment payload:
 
    {
      "attachments": [
-       {"filename": "logo.png", "storage_path": "base64:iVBORw0KGgo..."},
-       {"filename": "invoice_{MD5:abc123}.pdf", "storage_path": "@doc_id=456"},
-       {"filename": "local.txt", "storage_path": "/var/attachments/local.txt"}
+       {"filename": "logo.png", "storage_path": "iVBORw0KGgo...", "fetch_mode": "base64"},
+       {"filename": "invoice.pdf", "storage_path": "doc_id=456", "fetch_mode": "endpoint"},
+       {"filename": "local.txt", "storage_path": "/var/attachments/local.txt", "fetch_mode": "filesystem"}
      ]
    }
 

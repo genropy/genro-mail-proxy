@@ -203,7 +203,7 @@ Flask application
            attachments=[
                {
                    "filename": f"invoice_{invoice.number}.pdf",
-                   "storage_path": f"@invoice_id={invoice.id}",
+                   "storage_path": f"invoice_id={invoice.id}",
                    "fetch_mode": "endpoint",
                }
            ],

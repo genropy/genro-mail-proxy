@@ -214,7 +214,7 @@ Express application
          attachments: [
            {
              filename: `invoice_${invoice.number}.pdf`,
-             storage_path: `@invoice_id=${invoice.id}`,
+             storage_path: `invoice_id=${invoice.id}`,
              fetch_mode: 'endpoint',
            },
          ],
