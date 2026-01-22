@@ -7,6 +7,7 @@ Configuration
 
 Configuration is managed via the ``mail-proxy`` CLI. Each instance stores its
 settings in a SQLite database at ``~/.mail-proxy/<name>/mail_service.db``.
+PostgreSQL is also supported for high-concurrency deployments.
 
 CLI Setup (recommended)
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -60,6 +61,9 @@ Available environment variables::
   GMP_DELIVERY_REPORT_RETENTION_SECONDS   - Retention time for delivery reports (default: 604800)
   GMP_BATCH_SIZE_PER_ACCOUNT              - Batch size per account (default: 50)
   GMP_LOG_DELIVERY_ACTIVITY               - Log delivery activity (default: false)
+  GMP_CACHE_DISK_DIR                      - Directory for disk cache (optional)
+  GMP_CACHE_MEMORY_MAX_MB                 - Max memory cache size (default: 50)
+  GMP_CACHE_DISK_MAX_MB                   - Max disk cache size (default: 500)
 
 Docker Workflow
 ~~~~~~~~~~~~~~~
@@ -166,6 +170,74 @@ This opens a Python shell with pre-configured objects:
 
 Type ``exit()`` or press Ctrl+D to quit the REPL.
 
+PostgreSQL Backend
+------------------
+
+For high-concurrency deployments, use PostgreSQL instead of SQLite:
+
+.. code-block:: bash
+
+   pip install genro-mail-proxy[postgresql]
+
+Configure via environment variable:
+
+.. code-block:: bash
+
+   export GMP_DATABASE_URL="postgresql://user:pass@localhost:5432/mailproxy"
+
+Or via CLI when starting an instance:
+
+.. code-block:: bash
+
+   mail-proxy start myserver --database-url "postgresql://..."
+
+The PostgreSQL adapter uses psycopg3 with connection pooling for efficient
+concurrent access.
+
+Large File Handling
+-------------------
+
+Attachments exceeding a size threshold can be automatically uploaded to external
+storage and replaced with download links in the email body. This prevents memory
+issues and SMTP size limits.
+
+**Installation:**
+
+.. code-block:: bash
+
+   pip install genro-mail-proxy[large-files]
+
+**Configuration (per-tenant):**
+
+.. code-block:: json
+
+   {
+     "large_file_config": {
+       "enabled": true,
+       "max_size_mb": 10,
+       "storage_url": "s3://my-bucket/mail-attachments",
+       "file_ttl_days": 30,
+       "action": "rewrite"
+     }
+   }
+
+**Supported storage backends (via fsspec):**
+
+- **S3/MinIO**: ``s3://bucket/path``
+- **Google Cloud Storage**: ``gs://bucket/path``
+- **Azure Blob**: ``az://container/path``
+- **Local filesystem**: ``file:///var/www/downloads`` (requires ``public_base_url``)
+
+**Actions:**
+
+- ``warn``: Log a warning but send the attachment normally (default)
+- ``reject``: Reject the message with an error
+- ``rewrite``: Upload to storage and replace with download link
+
+For local filesystem storage, set ``public_base_url`` to the URL where files are
+served (e.g., ``https://files.example.com``). The download URL will include a
+signed token for security.
+
 Proxy sync exchange
 -------------------
 
@@ -213,7 +285,7 @@ Test mode
 ---------
 
 Unit tests and maintenance scripts can instantiate
-``async_mail_service.core.AsyncMailCore`` with ``test_mode=True`` (or set
+``mail_proxy.core.MailProxy`` with ``test_mode=True`` (or set
 ``GMP_TEST_MODE=true``). In this mode the dispatcher and reporting tasks are
 still created, but their send interval is stretched to infinity so they wait
 for an explicit wake-up. Calling ``/commands/run-now`` (or

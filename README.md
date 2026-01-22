@@ -13,12 +13,14 @@ A microservice that decouples email delivery from your application.
 
 genro-mail-proxy sits between your application and SMTP servers. Your application sends messages to the proxy via REST API; the proxy handles delivery with:
 
-- **Persistent queue**: Messages are stored in SQLite and survive restarts
+- **Persistent queue**: Messages are stored in SQLite or PostgreSQL and survive restarts
 - **Automatic retry**: Failed deliveries are retried with exponential backoff
 - **Rate limiting**: Per-account limits (minute/hour/day) shared across instances
 - **Priority queuing**: Four levels (immediate, high, medium, low) with FIFO within each
 - **Delivery reports**: Results are posted back to your application via HTTP callback
 - **Multi-tenancy**: Multiple organizations can share one instance with separate accounts
+- **Large file handling**: Auto-upload attachments to S3/GCS/Azure and replace with download links
+- **Connection pooling**: SMTP connections are pooled with acquire/release semantics
 
 ```text
 ┌─────────────┐      REST       ┌──────────────────┐      SMTP      ┌─────────────┐
@@ -122,6 +124,27 @@ The proxy supports multiple attachment sources via explicit `fetch_mode`:
 
 A two-tiered cache (memory + disk) reduces redundant fetches. Filenames can include an MD5 hash marker (`report_{MD5:abc123}.pdf`) for cache lookup.
 
+### Large file offloading
+
+For attachments exceeding a size threshold, the proxy can upload them to external storage (S3, GCS, Azure, or local filesystem) and replace them with download links in the email body.
+
+```bash
+pip install genro-mail-proxy[large-files]
+```
+
+Configure per-tenant via `large_file_config`:
+
+```json
+{
+  "enabled": true,
+  "max_size_mb": 10,
+  "storage_url": "s3://bucket/mail-attachments",
+  "action": "rewrite"
+}
+```
+
+Actions: `warn` (log only), `reject` (fail message), `rewrite` (upload and replace with link).
+
 ## Configuration
 
 Configuration is managed via the CLI. Each instance stores its settings in `~/.mail-proxy/<name>/mail_service.db`.
@@ -157,7 +180,13 @@ See [Usage](https://genro-mail-proxy.readthedocs.io/en/latest/usage.html) for al
 - **Throughput**: Limited by SMTP provider rate limits, not the proxy
 - **Memory**: Attachment content is held in memory during send; use HTTP endpoints for large files
 
-The SQLite database handles typical workloads but doesn't scale well under high concurrency. For high-volume deployments, consider running multiple instances with separate databases.
+The SQLite database handles typical workloads but doesn't scale well under high concurrency. For high-volume deployments, use PostgreSQL:
+
+```bash
+pip install genro-mail-proxy[postgresql]
+```
+
+Then configure the DSN via environment variable or CLI.
 
 ## Development
 

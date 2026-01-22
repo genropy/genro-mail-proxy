@@ -23,8 +23,8 @@ General
    Python 3.10 and later.
 
 **What database does it use?**
-   SQLite via aiosqlite. The database stores messages, accounts, tenants, and
-   send logs. Use a persistent volume in production.
+   SQLite (via aiosqlite) or PostgreSQL. The database stores messages, accounts,
+   tenants, and send logs. Use a persistent volume in production.
 
 Configuration
 -------------
@@ -105,6 +105,12 @@ Attachments
    starting the instance. Small files go to memory cache, large files to disk.
    See :doc:`usage` for all cache options.
 
+**How do I handle large attachments?**
+   Install the large-files extra: ``pip install genro-mail-proxy[large-files]``.
+   Configure ``large_file_config`` on the tenant with ``storage_url`` pointing
+   to S3, GCS, Azure, or a local filesystem. Set ``action: "rewrite"`` to
+   automatically upload and replace with download links.
+
 Multi-tenancy
 -------------
 
@@ -154,11 +160,11 @@ Monitoring
 ----------
 
 **What metrics are available?**
-   - ``asyncmail_sent_total{account_id}``: Successfully sent messages
-   - ``asyncmail_errors_total{account_id}``: Failed messages
-   - ``asyncmail_deferred_total{account_id}``: Rate-limited messages
-   - ``asyncmail_rate_limited_total{account_id}``: Rate limit hits
-   - ``asyncmail_pending_messages``: Current queue size
+   - ``gmp_sent_total{account_id}``: Successfully sent messages
+   - ``gmp_errors_total{account_id}``: Failed messages
+   - ``gmp_deferred_total{account_id}``: Rate-limited messages
+   - ``gmp_rate_limited_total{account_id}``: Rate limit hits
+   - ``gmp_pending_messages``: Current queue size
 
 **How do I access metrics?**
    GET ``/metrics`` returns Prometheus exposition format. No authentication
@@ -197,6 +203,7 @@ Troubleshooting
    - Reduce ``batch_size_per_account``
    - Increase ``send_loop_interval``
    - Use a single instance instead of multiple
+   - Switch to PostgreSQL: ``pip install genro-mail-proxy[postgresql]``
 
 **Memory usage is high**
    Large attachments are held in memory. Mitigations:

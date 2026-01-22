@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genro-mail-proxy"
-version = "0.4.0"
+version = "0.5.0"
 description = "Asynchronous email dispatcher microservice with scheduling, rate limiting, attachments, and a FastAPI REST API."
 readme = "README.md"
 license = "Apache-2.0"
@@ -74,8 +74,16 @@ docs = [
     "myst-parser>=4.0.0",
     "sphinxcontrib-mermaid>=1.0.0",
 ]
+postgresql = [
+    "psycopg[binary]>=3.1.0",
+    "psycopg-pool>=3.1.0",
+]
+large-files = [
+    "fsspec>=2024.1.0",
+    "s3fs>=2024.1.0",
+]
 all = [
-    "genro-mail-proxy[dev,docs]",
+    "genro-mail-proxy[dev,docs,postgresql,large-files]",
 ]
 
 [project.urls]

@@ -1,8 +1,8 @@
 Protocols and APIs
 ==================
 
-This page consolidates the information required to integrate with the async
-mail service, covering both the REST command surface and the outbound
+This page consolidates the information required to integrate with genro-mail-proxy,
+covering both the REST command surface and the outbound
 ``proxy_sync`` communication channel.
 
 Authentication and base URL
@@ -44,7 +44,7 @@ REST command surface
      - ``{"ok": true, "active": <bool>}``
    * - ``POST /account`` / ``GET /accounts`` / ``DELETE /account/{id}``
      - Manage SMTP account definitions
-     - :class:`async_mail_service.api.AccountPayload`
+     - :class:`mail_proxy.api.AccountPayload`
      - Confirmation plus account list
    * - ``POST /commands/delete-messages``
      - Remove messages from the queue
@@ -92,7 +92,7 @@ Message batch payload
      "default_priority": 1
    }
 
-Each entry mirrors :class:`async_mail_service.api.MessagePayload`. Key fields:
+Each entry mirrors :class:`mail_proxy.api.MessagePayload`. Key fields:
 
 .. list-table::
    :header-rows: 1
@@ -228,7 +228,7 @@ per-tenant via CLI or environment variables). A typical exchange:
    :caption: proxy_sync HTTP exchange
 
    sequenceDiagram
-     participant Core as AsyncMailCore
+     participant Core as MailProxy
      participant Upstream as Genropy / client
 
      Core->>Upstream: POST client_sync_url<br/>delivery_report array

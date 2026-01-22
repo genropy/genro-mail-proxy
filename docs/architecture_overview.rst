@@ -348,20 +348,20 @@ The proxy exposes Prometheus metrics at ``GET /metrics``:
 
 .. code-block:: text
 
-   # HELP mail_sent_total Total emails sent
-   mail_sent_total{account_id="smtp-main"} 1523
+   # HELP gmp_sent_total Total emails sent
+   gmp_sent_total{account_id="smtp-main"} 1523
 
-   # HELP mail_error_total Total emails failed
-   mail_error_total{account_id="smtp-main"} 12
+   # HELP gmp_errors_total Total emails failed
+   gmp_errors_total{account_id="smtp-main"} 12
 
-   # HELP mail_deferred_total Total emails deferred
-   mail_deferred_total{account_id="smtp-main"} 45
+   # HELP gmp_deferred_total Total emails deferred
+   gmp_deferred_total{account_id="smtp-main"} 45
 
-   # HELP mail_rate_limited_total Rate limit hits
-   mail_rate_limited_total{account_id="smtp-main"} 45
+   # HELP gmp_rate_limited_total Rate limit hits
+   gmp_rate_limited_total{account_id="smtp-main"} 45
 
-   # HELP mail_pending Current queue size
-   mail_pending 3
+   # HELP gmp_pending_messages Current queue size
+   gmp_pending_messages 3
 
 **Grafana Dashboard Example:**
 
@@ -393,12 +393,12 @@ The proxy exposes Prometheus metrics at ``GET /metrics``:
    # Alert if error rate > 5%
    - alert: HighEmailErrorRate
      expr: |
-       rate(mail_error_total[5m]) /
-       rate(mail_sent_total[5m]) > 0.05
+       rate(gmp_errors_total[5m]) /
+       rate(gmp_sent_total[5m]) > 0.05
 
    # Alert if queue growing
    - alert: EmailQueueBacklog
-     expr: mail_pending > 100
+     expr: gmp_pending_messages > 100
 
 **With Direct SMTP:** No centralized visibility, must check logs on each server ❌
 
