@@ -1,9 +1,11 @@
-[![Documentation Status](https://readthedocs.org/projects/genro-mail-proxy/badge/?version=latest)](https://genro-mail-proxy.readthedocs.io/en/latest/)
-
 # genro-mail-proxy
 
-**Authors:** Softwell S.r.l. - Giovanni Porcari  
-**License:** MIT
+[![PyPI version](https://img.shields.io/pypi/v/genro-mail-proxy)](https://pypi.org/project/genro-mail-proxy/)
+[![Tests](https://github.com/genropy/genro-mail-proxy/actions/workflows/tests.yml/badge.svg)](https://github.com/genropy/genro-mail-proxy/actions/workflows/tests.yml)
+[![codecov](https://codecov.io/gh/genropy/genro-mail-proxy/branch/main/graph/badge.svg)](https://codecov.io/gh/genropy/genro-mail-proxy)
+[![Documentation](https://readthedocs.org/projects/genro-mail-proxy/badge/?version=latest)](https://genro-mail-proxy.readthedocs.io/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 Asynchronous email dispatcher microservice with scheduling, rate limiting, attachments (S3/URL/base64), REST API (FastAPI), and Prometheus metrics.
 
@@ -152,3 +154,16 @@ cache_memory_max_size_bytes = 1048576  # 1MB
 - **Large files**: stored on disk if `cache_disk_dir` is configured
 - **Cache lookup**: if filename contains `{MD5:hash}`, cache is checked before fetching
 - **Cache population**: after fetch, content is cached using computed MD5
+
+## Development
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE) for details.
+
+Copyright 2025 Softwell S.r.l. — Genropy Team
