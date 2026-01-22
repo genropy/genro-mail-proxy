@@ -33,9 +33,36 @@ CLIENT_TENANT2_URL = "http://localhost:8082"
 
 
 def docker_compose_available() -> bool:
-    """Check if docker-compose is available."""
+    """Check if docker compose is available."""
     import shutil
-    return shutil.which("docker-compose") is not None or shutil.which("docker") is not None
+    import subprocess
+
+    # Try docker-compose (legacy)
+    if shutil.which("docker-compose") is not None:
+        return True
+
+    # Try docker compose (new style)
+    if shutil.which("docker") is not None:
+        try:
+            result = subprocess.run(
+                ["docker", "compose", "version"],
+                capture_output=True,
+                timeout=5,
+            )
+            return result.returncode == 0
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+    return False
+
+
+def get_compose_command() -> list[str]:
+    """Get the appropriate docker compose command."""
+    import shutil
+
+    if shutil.which("docker-compose") is not None:
+        return ["docker-compose"]
+    return ["docker", "compose"]
 
 
 @pytest.fixture(scope="module")
@@ -45,23 +72,25 @@ def docker_services():
         pytest.skip("Docker/docker-compose not available")
 
     import subprocess
+    import time
+
+    compose_cmd = get_compose_command()
 
     # Start services
     subprocess.run(
-        ["docker-compose", "-f", str(COMPOSE_FILE), "up", "-d"],
+        [*compose_cmd, "-f", str(COMPOSE_FILE), "up", "-d"],
         check=True,
         capture_output=True,
     )
 
     # Wait for services to be ready
-    import time
     time.sleep(5)
 
     yield
 
     # Stop services
     subprocess.run(
-        ["docker-compose", "-f", str(COMPOSE_FILE), "down", "-v"],
+        [*compose_cmd, "-f", str(COMPOSE_FILE), "down", "-v"],
         check=True,
         capture_output=True,
     )
