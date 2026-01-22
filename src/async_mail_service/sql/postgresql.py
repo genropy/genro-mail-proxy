@@ -12,9 +12,10 @@ if TYPE_CHECKING:
 
 
 class PostgresAdapter(DbAdapter):
-    """PostgreSQL async adapter. Queries with ? are converted to %s automatically."""
+    """PostgreSQL async adapter using psycopg3 with connection pooling.
 
-    placeholder = "%s"
+    Converts :name placeholders to %(name)s for psycopg compatibility.
+    """
 
     def __init__(self, dsn: str, pool_size: int = 10):
         """Initialize PostgreSQL adapter.
@@ -40,8 +41,9 @@ class PostgresAdapter(DbAdapter):
             ) from e
 
     def _convert_placeholders(self, query: str) -> str:
-        """Convert ? placeholders to %s for psycopg."""
-        return query.replace("?", "%s")
+        """Convert :name placeholders to %(name)s for psycopg."""
+        import re
+        return re.sub(r":(\w+)", r"%(\1)s", query)
 
     async def connect(self) -> None:
         """Establish connection pool."""
@@ -61,17 +63,17 @@ class PostgresAdapter(DbAdapter):
             await self._pool.close()
             self._pool = None
 
-    async def execute(self, query: str, params: Sequence[Any] | None = None) -> int:
+    async def execute(self, query: str, params: dict[str, Any] | None = None) -> int:
         """Execute query, return affected row count."""
         query = self._convert_placeholders(query)
         async with self._pool.connection() as conn:
             async with conn.cursor() as cur:
-                await cur.execute(query, params or ())
+                await cur.execute(query, params or {})
                 await conn.commit()
                 return cur.rowcount
 
     async def fetch_one(
-        self, query: str, params: Sequence[Any] | None = None
+        self, query: str, params: dict[str, Any] | None = None
     ) -> dict[str, Any] | None:
         """Execute query, return single row as dict or None."""
         from psycopg.rows import dict_row
@@ -79,11 +81,11 @@ class PostgresAdapter(DbAdapter):
         query = self._convert_placeholders(query)
         async with self._pool.connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(query, params or ())
+                await cur.execute(query, params or {})
                 return await cur.fetchone()
 
     async def fetch_all(
-        self, query: str, params: Sequence[Any] | None = None
+        self, query: str, params: dict[str, Any] | None = None
     ) -> list[dict[str, Any]]:
         """Execute query, return all rows as list of dicts."""
         from psycopg.rows import dict_row
@@ -91,17 +93,38 @@ class PostgresAdapter(DbAdapter):
         query = self._convert_placeholders(query)
         async with self._pool.connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(query, params or ())
+                await cur.execute(query, params or {})
                 return await cur.fetchall()
 
     async def execute_script(self, script: str) -> None:
         """Execute multiple statements (for schema creation)."""
-        # PostgreSQL can execute multiple statements in one call
-        script = self._convert_placeholders(script)
         async with self._pool.connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(script)
             await conn.commit()
+
+    async def upsert(
+        self,
+        table: str,
+        data: dict[str, Any],
+        conflict_columns: Sequence[str],
+    ) -> int:
+        """Insert or update using PostgreSQL ON CONFLICT DO UPDATE."""
+        columns = list(data.keys())
+        placeholders = ", ".join(f"%({c})s" for c in columns)
+        col_list = ", ".join(columns)
+        conflict_cols = ", ".join(conflict_columns)
+        update_cols = ", ".join(f"{c} = EXCLUDED.{c}" for c in columns if c not in conflict_columns)
+
+        query = f"""
+            INSERT INTO {table} ({col_list}) VALUES ({placeholders})
+            ON CONFLICT ({conflict_cols}) DO UPDATE SET {update_cols}
+        """
+        async with self._pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(query, data)
+                await conn.commit()
+                return cur.rowcount
 
     async def commit(self) -> None:
         """Commit is handled per-operation with connection pooling."""

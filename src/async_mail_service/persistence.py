@@ -39,8 +39,8 @@ if TYPE_CHECKING:
 class Persistence:
     """Async persistence layer for mail service state management.
 
-    Supports SQLite and PostgreSQL via adapter pattern. All queries use ?
-    placeholders which are converted to %s for PostgreSQL automatically.
+    Supports SQLite and PostgreSQL via adapter pattern.
+    All queries use :name placeholders (supported by both databases).
 
     Attributes:
         adapter: The database adapter instance.
@@ -158,29 +158,27 @@ class Persistence:
     # Tenants
     # -------------------------------------------------------------------------
     async def add_tenant(self, tenant: dict[str, Any]) -> None:
-        """Insert or replace a tenant configuration."""
-        await self.adapter.execute(
-            """
-            INSERT OR REPLACE INTO tenants
-            (id, name, client_auth, client_base_url, client_sync_path, client_attachment_path, rate_limits, active, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """,
-            (
-                tenant["id"],
-                tenant.get("name"),
-                json.dumps(tenant.get("client_auth")) if tenant.get("client_auth") else None,
-                tenant.get("client_base_url"),
-                tenant.get("client_sync_path"),
-                tenant.get("client_attachment_path"),
-                json.dumps(tenant.get("rate_limits")) if tenant.get("rate_limits") else None,
-                1 if tenant.get("active", True) else 0,
-            ),
+        """Insert or update a tenant configuration."""
+        await self.adapter.upsert(
+            "tenants",
+            {
+                "id": tenant["id"],
+                "name": tenant.get("name"),
+                "client_auth": json.dumps(tenant.get("client_auth")) if tenant.get("client_auth") else None,
+                "client_base_url": tenant.get("client_base_url"),
+                "client_sync_path": tenant.get("client_sync_path"),
+                "client_attachment_path": tenant.get("client_attachment_path"),
+                "rate_limits": json.dumps(tenant.get("rate_limits")) if tenant.get("rate_limits") else None,
+                "active": 1 if tenant.get("active", True) else 0,
+            },
+            conflict_columns=["id"],
         )
 
     async def get_tenant(self, tenant_id: str) -> dict[str, Any] | None:
         """Fetch a tenant configuration by ID."""
         tenant = await self.adapter.fetch_one(
-            "SELECT * FROM tenants WHERE id=?", (tenant_id,)
+            "SELECT * FROM tenants WHERE id = :tenant_id",
+            {"tenant_id": tenant_id},
         )
         if not tenant:
             return None
@@ -201,27 +199,26 @@ class Persistence:
             return False
 
         set_parts = []
-        values: list[Any] = []
+        params: dict[str, Any] = {"tenant_id": tenant_id}
         for key, value in updates.items():
             if key in ("client_auth", "rate_limits"):
-                set_parts.append(f"{key} = ?")
-                values.append(json.dumps(value) if value else None)
+                set_parts.append(f"{key} = :{key}")
+                params[key] = json.dumps(value) if value else None
             elif key == "active":
-                set_parts.append("active = ?")
-                values.append(1 if value else 0)
+                set_parts.append("active = :active")
+                params["active"] = 1 if value else 0
             elif key in ("name", "client_base_url", "client_sync_path", "client_attachment_path"):
-                set_parts.append(f"{key} = ?")
-                values.append(value)
+                set_parts.append(f"{key} = :{key}")
+                params[key] = value
 
         if not set_parts:
             return False
 
         set_parts.append("updated_at = CURRENT_TIMESTAMP")
-        values.append(tenant_id)
 
         rowcount = await self.adapter.execute(
-            f"UPDATE tenants SET {', '.join(set_parts)} WHERE id = ?",
-            tuple(values),
+            f"UPDATE tenants SET {', '.join(set_parts)} WHERE id = :tenant_id",
+            params,
         )
         return rowcount > 0
 
@@ -229,18 +226,29 @@ class Persistence:
         """Delete a tenant and all associated accounts/messages."""
         # Get accounts for this tenant
         accounts = await self.adapter.fetch_all(
-            "SELECT id FROM accounts WHERE tenant_id = ?", (tenant_id,)
+            "SELECT id FROM accounts WHERE tenant_id = :tenant_id",
+            {"tenant_id": tenant_id},
         )
 
         # Delete related data
         for acc in accounts:
             account_id = acc["id"]
-            await self.adapter.execute("DELETE FROM messages WHERE account_id = ?", (account_id,))
-            await self.adapter.execute("DELETE FROM send_log WHERE account_id = ?", (account_id,))
-            await self.adapter.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+            await self.adapter.execute(
+                "DELETE FROM messages WHERE account_id = :account_id",
+                {"account_id": account_id},
+            )
+            await self.adapter.execute(
+                "DELETE FROM send_log WHERE account_id = :account_id",
+                {"account_id": account_id},
+            )
+            await self.adapter.execute(
+                "DELETE FROM accounts WHERE id = :account_id",
+                {"account_id": account_id},
+            )
 
         rowcount = await self.adapter.execute(
-            "DELETE FROM tenants WHERE id = ?", (tenant_id,)
+            "DELETE FROM tenants WHERE id = :tenant_id",
+            {"tenant_id": tenant_id},
         )
         return rowcount > 0
 
@@ -250,9 +258,9 @@ class Persistence:
             """
             SELECT t.* FROM tenants t
             JOIN accounts a ON a.tenant_id = t.id
-            WHERE a.id = ?
+            WHERE a.id = :account_id
             """,
-            (account_id,),
+            {"account_id": account_id},
         )
         if not tenant:
             return None
@@ -270,28 +278,25 @@ class Persistence:
     # Accounts
     # -------------------------------------------------------------------------
     async def add_account(self, acc: dict[str, Any]) -> None:
-        """Insert or overwrite an SMTP account definition."""
-        await self.adapter.execute(
-            """
-            INSERT OR REPLACE INTO accounts
-            (id, tenant_id, host, port, user, password, ttl, limit_per_minute, limit_per_hour, limit_per_day, limit_behavior, use_tls, batch_size, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """,
-            (
-                acc["id"],
-                acc.get("tenant_id"),
-                acc["host"],
-                int(acc["port"]),
-                acc.get("user"),
-                acc.get("password"),
-                int(acc.get("ttl", 300)),
-                acc.get("limit_per_minute"),
-                acc.get("limit_per_hour"),
-                acc.get("limit_per_day"),
-                acc.get("limit_behavior", "defer"),
-                None if acc.get("use_tls") is None else (1 if acc.get("use_tls") else 0),
-                acc.get("batch_size"),
-            ),
+        """Insert or update an SMTP account definition."""
+        await self.adapter.upsert(
+            "accounts",
+            {
+                "id": acc["id"],
+                "tenant_id": acc.get("tenant_id"),
+                "host": acc["host"],
+                "port": int(acc["port"]),
+                "user": acc.get("user"),
+                "password": acc.get("password"),
+                "ttl": int(acc.get("ttl", 300)),
+                "limit_per_minute": acc.get("limit_per_minute"),
+                "limit_per_hour": acc.get("limit_per_hour"),
+                "limit_per_day": acc.get("limit_per_day"),
+                "limit_behavior": acc.get("limit_behavior", "defer"),
+                "use_tls": None if acc.get("use_tls") is None else (1 if acc.get("use_tls") else 0),
+                "batch_size": acc.get("batch_size"),
+            },
+            conflict_columns=["id"],
         )
 
     async def list_accounts(self, tenant_id: str | None = None) -> list[dict[str, Any]]:
@@ -300,10 +305,10 @@ class Persistence:
             query = """
                 SELECT id, tenant_id, host, port, user, ttl, limit_per_minute, limit_per_hour,
                        limit_per_day, limit_behavior, use_tls, batch_size, created_at, updated_at
-                FROM accounts WHERE tenant_id = ?
+                FROM accounts WHERE tenant_id = :tenant_id
                 ORDER BY id
             """
-            rows = await self.adapter.fetch_all(query, (tenant_id,))
+            rows = await self.adapter.fetch_all(query, {"tenant_id": tenant_id})
         else:
             query = """
                 SELECT id, tenant_id, host, port, user, ttl, limit_per_minute, limit_per_hour,
@@ -319,14 +324,24 @@ class Persistence:
 
     async def delete_account(self, account_id: str) -> None:
         """Remove a previously stored SMTP account and related state."""
-        await self.adapter.execute("DELETE FROM accounts WHERE id=?", (account_id,))
-        await self.adapter.execute("DELETE FROM messages WHERE account_id=?", (account_id,))
-        await self.adapter.execute("DELETE FROM send_log WHERE account_id=?", (account_id,))
+        await self.adapter.execute(
+            "DELETE FROM accounts WHERE id = :account_id",
+            {"account_id": account_id},
+        )
+        await self.adapter.execute(
+            "DELETE FROM messages WHERE account_id = :account_id",
+            {"account_id": account_id},
+        )
+        await self.adapter.execute(
+            "DELETE FROM send_log WHERE account_id = :account_id",
+            {"account_id": account_id},
+        )
 
     async def get_account(self, account_id: str) -> dict[str, Any]:
         """Fetch a single SMTP account or raise if it does not exist."""
         account = await self.adapter.fetch_one(
-            "SELECT * FROM accounts WHERE id=?", (account_id,)
+            "SELECT * FROM accounts WHERE id = :account_id",
+            {"account_id": account_id},
         )
         if not account:
             raise ValueError(f"Account '{account_id}' not found")
@@ -366,7 +381,7 @@ class Persistence:
             rowcount = await self.adapter.execute(
                 """
                 INSERT INTO messages (id, account_id, priority, payload, deferred_ts)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (:id, :account_id, :priority, :payload, :deferred_ts)
                 ON CONFLICT(id) DO UPDATE SET
                     account_id = excluded.account_id,
                     priority = excluded.priority,
@@ -378,7 +393,13 @@ class Persistence:
                     updated_at = CURRENT_TIMESTAMP
                 WHERE sent_ts IS NULL
                 """,
-                (msg_id, account_id, priority, payload, deferred_ts),
+                {
+                    "id": msg_id,
+                    "account_id": account_id,
+                    "priority": priority,
+                    "payload": payload,
+                    "deferred_ts": deferred_ts,
+                },
             )
 
             if rowcount:
@@ -398,25 +419,23 @@ class Persistence:
         conditions = [
             "sent_ts IS NULL",
             "error_ts IS NULL",
-            "(deferred_ts IS NULL OR deferred_ts <= ?)",
+            "(deferred_ts IS NULL OR deferred_ts <= :now_ts)",
         ]
-        params: list[Any] = [now_ts]
+        params: dict[str, Any] = {"now_ts": now_ts, "limit": limit}
 
         if priority is not None:
-            conditions.append("priority = ?")
-            params.append(priority)
+            conditions.append("priority = :priority")
+            params["priority"] = priority
         elif min_priority is not None:
-            conditions.append("priority >= ?")
-            params.append(min_priority)
-
-        params.append(limit)
+            conditions.append("priority >= :min_priority")
+            params["min_priority"] = min_priority
 
         query = f"""
             SELECT id, account_id, priority, payload, deferred_ts
             FROM messages
             WHERE {' AND '.join(conditions)}
             ORDER BY priority ASC, created_at ASC, id ASC
-            LIMIT ?
+            LIMIT :limit
         """
 
         rows = await self.adapter.fetch_all(query, params)
@@ -427,10 +446,10 @@ class Persistence:
         await self.adapter.execute(
             """
             UPDATE messages
-            SET deferred_ts=?, updated_at=CURRENT_TIMESTAMP
-            WHERE id=? AND sent_ts IS NULL AND error_ts IS NULL
+            SET deferred_ts = :deferred_ts, updated_at = CURRENT_TIMESTAMP
+            WHERE id = :msg_id AND sent_ts IS NULL AND error_ts IS NULL
             """,
-            (deferred_ts, msg_id),
+            {"deferred_ts": deferred_ts, "msg_id": msg_id},
         )
 
     async def clear_deferred(self, msg_id: str) -> None:
@@ -438,10 +457,10 @@ class Persistence:
         await self.adapter.execute(
             """
             UPDATE messages
-            SET deferred_ts=NULL, updated_at=CURRENT_TIMESTAMP
-            WHERE id=?
+            SET deferred_ts = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE id = :msg_id
             """,
-            (msg_id,),
+            {"msg_id": msg_id},
         )
 
     async def mark_sent(self, msg_id: str, sent_ts: int) -> None:
@@ -449,10 +468,11 @@ class Persistence:
         await self.adapter.execute(
             """
             UPDATE messages
-            SET sent_ts=?, error_ts=NULL, error=NULL, deferred_ts=NULL, reported_ts=NULL, updated_at=CURRENT_TIMESTAMP
-            WHERE id=?
+            SET sent_ts = :sent_ts, error_ts = NULL, error = NULL, deferred_ts = NULL,
+                reported_ts = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE id = :msg_id
             """,
-            (sent_ts, msg_id),
+            {"sent_ts": sent_ts, "msg_id": msg_id},
         )
 
     async def mark_error(self, msg_id: str, error_ts: int, error: str) -> None:
@@ -460,10 +480,11 @@ class Persistence:
         await self.adapter.execute(
             """
             UPDATE messages
-            SET error_ts=?, error=?, sent_ts=NULL, deferred_ts=NULL, reported_ts=NULL, updated_at=CURRENT_TIMESTAMP
-            WHERE id=?
+            SET error_ts = :error_ts, error = :error, sent_ts = NULL, deferred_ts = NULL,
+                reported_ts = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE id = :msg_id
             """,
-            (error_ts, error, msg_id),
+            {"error_ts": error_ts, "error": error, "msg_id": msg_id},
         )
 
     async def update_message_payload(self, msg_id: str, payload: dict[str, Any]) -> None:
@@ -471,23 +492,25 @@ class Persistence:
         await self.adapter.execute(
             """
             UPDATE messages
-            SET payload=?, updated_at=CURRENT_TIMESTAMP
-            WHERE id=?
+            SET payload = :payload, updated_at = CURRENT_TIMESTAMP
+            WHERE id = :msg_id
             """,
-            (json.dumps(payload), msg_id),
+            {"payload": json.dumps(payload), "msg_id": msg_id},
         )
 
     async def delete_message(self, msg_id: str) -> bool:
         """Remove a message regardless of its state."""
         rowcount = await self.adapter.execute(
-            "DELETE FROM messages WHERE id=?", (msg_id,)
+            "DELETE FROM messages WHERE id = :msg_id",
+            {"msg_id": msg_id},
         )
         return rowcount > 0
 
     async def purge_messages_for_account(self, account_id: str) -> None:
         """Delete every message linked to the given account."""
         await self.adapter.execute(
-            "DELETE FROM messages WHERE account_id=?", (account_id,)
+            "DELETE FROM messages WHERE account_id = :account_id",
+            {"account_id": account_id},
         )
 
     async def existing_message_ids(self, ids: Iterable[str]) -> set[str]:
@@ -495,10 +518,12 @@ class Persistence:
         id_list = [mid for mid in ids if mid]
         if not id_list:
             return set()
-        placeholders = ",".join("?" for _ in id_list)
+        # Build dynamic query with named params
+        params = {f"id_{i}": mid for i, mid in enumerate(id_list)}
+        placeholders = ", ".join(f":id_{i}" for i in range(len(id_list)))
         rows = await self.adapter.fetch_all(
             f"SELECT id FROM messages WHERE id IN ({placeholders})",
-            id_list,
+            params,
         )
         return {row["id"] for row in rows}
 
@@ -513,9 +538,9 @@ class Persistence:
             WHERE m.reported_ts IS NULL
               AND (m.sent_ts IS NOT NULL OR m.error_ts IS NOT NULL)
             ORDER BY m.updated_at ASC, m.id ASC
-            LIMIT ?
+            LIMIT :limit
             """,
-            (limit,),
+            {"limit": limit},
         )
         return [self._decode_message_row(row) for row in rows]
 
@@ -524,14 +549,17 @@ class Persistence:
         ids = [mid for mid in message_ids if mid]
         if not ids:
             return
-        placeholders = ",".join("?" for _ in ids)
+        # Build dynamic query with named params
+        params: dict[str, Any] = {"reported_ts": reported_ts}
+        params.update({f"id_{i}": mid for i, mid in enumerate(ids)})
+        placeholders = ", ".join(f":id_{i}" for i in range(len(ids)))
         await self.adapter.execute(
             f"""
             UPDATE messages
-            SET reported_ts=?, updated_at=CURRENT_TIMESTAMP
+            SET reported_ts = :reported_ts, updated_at = CURRENT_TIMESTAMP
             WHERE id IN ({placeholders})
             """,
-            (reported_ts, *ids),
+            params,
         )
 
     async def remove_reported_before(self, threshold_ts: int) -> int:
@@ -540,10 +568,10 @@ class Persistence:
             """
             DELETE FROM messages
             WHERE reported_ts IS NOT NULL
-              AND reported_ts < ?
+              AND reported_ts < :threshold_ts
               AND (sent_ts IS NOT NULL OR error_ts IS NOT NULL)
             """,
-            (threshold_ts,),
+            {"threshold_ts": threshold_ts},
         )
 
     async def list_messages(self, *, active_only: bool = False) -> list[dict[str, Any]]:
@@ -576,15 +604,15 @@ class Persistence:
     async def log_send(self, account_id: str, timestamp: int) -> None:
         """Record a delivery event for rate limiting purposes."""
         await self.adapter.execute(
-            "INSERT INTO send_log (account_id, timestamp) VALUES (?, ?)",
-            (account_id, timestamp),
+            "INSERT INTO send_log (account_id, timestamp) VALUES (:account_id, :timestamp)",
+            {"account_id": account_id, "timestamp": timestamp},
         )
 
     async def count_sends_since(self, account_id: str, since_ts: int) -> int:
         """Count messages sent after since_ts for the given account."""
         row = await self.adapter.fetch_one(
-            "SELECT COUNT(*) as cnt FROM send_log WHERE account_id=? AND timestamp > ?",
-            (account_id, since_ts),
+            "SELECT COUNT(*) as cnt FROM send_log WHERE account_id = :account_id AND timestamp > :since_ts",
+            {"account_id": account_id, "since_ts": since_ts},
         )
         return int(row["cnt"]) if row else 0
 
@@ -594,18 +622,17 @@ class Persistence:
     async def get_config(self, key: str, default: str | None = None) -> str | None:
         """Get a configuration value by key."""
         row = await self.adapter.fetch_one(
-            "SELECT value FROM instance_config WHERE key = ?", (key,)
+            "SELECT value FROM instance_config WHERE key = :key",
+            {"key": key},
         )
         return row["value"] if row else default
 
     async def set_config(self, key: str, value: str) -> None:
         """Set a configuration value."""
-        await self.adapter.execute(
-            """
-            INSERT OR REPLACE INTO instance_config (key, value, updated_at)
-            VALUES (?, ?, CURRENT_TIMESTAMP)
-            """,
-            (key, value),
+        await self.adapter.upsert(
+            "instance_config",
+            {"key": key, "value": value},
+            conflict_columns=["key"],
         )
 
     async def get_all_config(self) -> dict[str, str]:

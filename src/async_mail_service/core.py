@@ -699,6 +699,7 @@ class AsyncMailCore:
             *(task for task in [self._task_smtp, self._task_client, self._task_cleanup] if task),
             return_exceptions=True,
         )
+        await self.persistence.adapter.close()
 
     # --------------------------------------------------------------- SMTP logic
     async def _smtp_dispatch_loop(self) -> None:

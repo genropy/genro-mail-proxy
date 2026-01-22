@@ -6,7 +6,10 @@ Usage:
     adapter = create_adapter("postgresql://user:pass@host/db")  # PostgreSQL
 
     await adapter.connect()
-    rows = await adapter.fetch_all("SELECT * FROM users WHERE active = ?", (1,))
+    rows = await adapter.fetch_all(
+        "SELECT * FROM users WHERE active = :active",
+        {"active": 1}
+    )
     await adapter.close()
 """
 

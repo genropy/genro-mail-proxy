@@ -13,11 +13,8 @@ if TYPE_CHECKING:
 class DbAdapter(ABC):
     """Abstract base class for async database adapters.
 
-    Handles dialect-specific differences (placeholders, connection management).
-    All queries use ? placeholders, converted automatically for PostgreSQL.
+    All queries use :name placeholders (supported by both SQLite and PostgreSQL).
     """
-
-    placeholder: str = "?"  # Override in subclass
 
     @abstractmethod
     async def connect(self) -> None:
@@ -30,20 +27,20 @@ class DbAdapter(ABC):
         ...
 
     @abstractmethod
-    async def execute(self, query: str, params: Sequence[Any] | None = None) -> int:
+    async def execute(self, query: str, params: dict[str, Any] | None = None) -> int:
         """Execute query, return affected row count."""
         ...
 
     @abstractmethod
     async def fetch_one(
-        self, query: str, params: Sequence[Any] | None = None
+        self, query: str, params: dict[str, Any] | None = None
     ) -> dict[str, Any] | None:
         """Execute query, return single row as dict or None."""
         ...
 
     @abstractmethod
     async def fetch_all(
-        self, query: str, params: Sequence[Any] | None = None
+        self, query: str, params: dict[str, Any] | None = None
     ) -> list[dict[str, Any]]:
         """Execute query, return all rows as list of dicts."""
         ...
@@ -51,6 +48,25 @@ class DbAdapter(ABC):
     @abstractmethod
     async def execute_script(self, script: str) -> None:
         """Execute multiple statements (for schema creation)."""
+        ...
+
+    @abstractmethod
+    async def upsert(
+        self,
+        table: str,
+        data: dict[str, Any],
+        conflict_columns: Sequence[str],
+    ) -> int:
+        """Insert or update row on conflict.
+
+        Args:
+            table: Table name.
+            data: Column-value pairs to insert/update.
+            conflict_columns: Columns that define uniqueness (typically PK).
+
+        Returns:
+            Affected row count.
+        """
         ...
 
     @abstractmethod
