@@ -636,7 +636,7 @@ Messages Stuck in "submitted" State
 
 **Solutions**:
 
-See main `TROUBLESHOOTING.md <../TROUBLESHOOTING.md>`_ for detailed diagnostics.
+See the :doc:`faq` for common issues and solutions.
 
 Adapting for Your Application
 ------------------------------
@@ -707,6 +707,6 @@ See Also
 
 - :doc:`multi_tenancy` - Multi-tenant architecture and configuration
 - :doc:`architecture_overview` - Why use an email proxy
-- `TROUBLESHOOTING.md <../TROUBLESHOOTING.md>`_ - Diagnostic procedures
+- :doc:`faq` - Troubleshooting and common issues
 - :doc:`api_reference` - Complete REST API documentation
 - :doc:`protocol` - Message format and delivery reports

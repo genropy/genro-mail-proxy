@@ -32,10 +32,10 @@ class AttachmentPayload(BaseModel):
     Attributes:
         filename: Attachment filename (may contain MD5 marker).
         storage_path: Content location. Format depends on fetch_mode:
-            - endpoint: query params (e.g., "doc_id=123")
-            - http_url: full URL (e.g., "https://example.com/file.pdf")
+            - endpoint: query params (e.g., ``doc_id=123``)
+            - http_url: full URL (e.g., ``https://files.myserver.local/file.pdf``)
             - base64: base64-encoded content
-            - filesystem: absolute path (e.g., "/var/attachments/file.pdf")
+            - filesystem: absolute path (e.g., ``/var/attachments/file.pdf``)
         mime_type: Optional MIME type override.
         fetch_mode: Explicit fetch mode (endpoint, http_url, base64, filesystem).
             Required for determining how to retrieve the content.
