@@ -1,38 +1,30 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
-"""Configuration loader for attachment settings.
+"""Configuration loader for cache settings.
 
-This module provides utilities for loading attachment settings from
-INI-style configuration files.
+This module provides utilities for loading cache settings from
+INI-style configuration files or environment variables.
 
 Example:
     Configuration file format (config.ini)::
 
-        [attachments]
-        # Filesystem base directory for relative paths
-        base_dir = /var/mail-service/files
+        [cache]
+        memory_max_mb = 50
+        memory_ttl_seconds = 300
+        disk_dir = /var/mail-service/cache
+        disk_max_mb = 500
+        disk_ttl_seconds = 3600
+        disk_threshold_kb = 100
 
-        # HTTP endpoint for @params paths
-        default_endpoint = https://api.example.com/attachments
-        auth_method = bearer
-        auth_token = my-secret-token
+    Loading cache configuration::
 
-        # Cache settings
-        cache_memory_max_mb = 50
-        cache_memory_ttl_seconds = 300
-        cache_disk_dir = /var/mail-service/cache
-        cache_disk_max_mb = 500
-        cache_disk_ttl_seconds = 3600
-        cache_disk_threshold_kb = 100
-
-    Loading attachment configuration::
-
-        config = load_attachment_config("/etc/mail-proxy/config.ini")
-        # Returns AttachmentConfig dataclass
+        config = load_cache_config("/etc/mail-proxy/config.ini")
+        # Returns CacheConfig dataclass
 """
 
 from __future__ import annotations
 
 import configparser
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,130 +32,107 @@ from async_mail_service.logger import get_logger
 
 
 @dataclass
-class AttachmentConfig:
-    """Configuration for attachment handling.
+class CacheConfig:
+    """Configuration for attachment cache.
 
     Attributes:
-        base_dir: Base directory for relative filesystem paths.
-        http_endpoint: Default HTTP endpoint for @params paths.
-        http_auth_method: Authentication method (none, bearer, basic).
-        http_auth_token: Bearer token for HTTP auth.
-        http_auth_user: Username for HTTP basic auth.
-        http_auth_password: Password for HTTP basic auth.
-        cache_memory_max_mb: Max memory cache size in MB.
-        cache_memory_ttl_seconds: Memory cache TTL in seconds.
-        cache_disk_dir: Directory for disk cache.
-        cache_disk_max_mb: Max disk cache size in MB.
-        cache_disk_ttl_seconds: Disk cache TTL in seconds.
-        cache_disk_threshold_kb: Size threshold for disk vs memory.
+        memory_max_mb: Max memory cache size in MB.
+        memory_ttl_seconds: Memory cache TTL in seconds.
+        disk_dir: Directory for disk cache.
+        disk_max_mb: Max disk cache size in MB.
+        disk_ttl_seconds: Disk cache TTL in seconds.
+        disk_threshold_kb: Size threshold for disk vs memory.
     """
 
-    # Filesystem
-    base_dir: str | None = None
+    # Memory cache
+    memory_max_mb: float = 50.0
+    memory_ttl_seconds: int = 300
 
-    # HTTP
-    http_endpoint: str | None = None
-    http_auth_method: str = "none"
-    http_auth_token: str | None = None
-    http_auth_user: str | None = None
-    http_auth_password: str | None = None
-
-    # Cache - Memory
-    cache_memory_max_mb: float = 50.0
-    cache_memory_ttl_seconds: int = 300
-
-    # Cache - Disk
-    cache_disk_dir: str | None = None
-    cache_disk_max_mb: float = 500.0
-    cache_disk_ttl_seconds: int = 3600
-    cache_disk_threshold_kb: float = 100.0
+    # Disk cache
+    disk_dir: str | None = None
+    disk_max_mb: float = 500.0
+    disk_ttl_seconds: int = 3600
+    disk_threshold_kb: float = 100.0
 
     @property
-    def http_auth_config(self) -> dict[str, str] | None:
-        """Build HTTP auth config dict for HttpFetcher."""
-        if self.http_auth_method == "none":
-            return None
-        config = {"method": self.http_auth_method}
-        if self.http_auth_method == "bearer" and self.http_auth_token:
-            config["token"] = self.http_auth_token
-        elif self.http_auth_method == "basic":
-            if self.http_auth_user:
-                config["user"] = self.http_auth_user
-            if self.http_auth_password:
-                config["password"] = self.http_auth_password
-        return config
-
-    @property
-    def cache_enabled(self) -> bool:
+    def enabled(self) -> bool:
         """Check if caching is enabled (disk dir configured)."""
-        return self.cache_disk_dir is not None
+        return self.disk_dir is not None
 
 
 logger = get_logger("config_loader")
 
 
-def load_attachment_config(config_path: str) -> AttachmentConfig:
-    """Load attachment configuration from config file.
+def load_cache_config(config_path: str | None = None) -> CacheConfig:
+    """Load cache configuration from config file or environment.
 
-    Reads the [attachments] section from an INI configuration file
-    and returns an AttachmentConfig dataclass.
+    Priority: config file > environment variables > defaults.
+
+    Environment variables:
+        GMP_CACHE_MEMORY_MAX_MB: Max memory cache size in MB
+        GMP_CACHE_MEMORY_TTL_SECONDS: Memory cache TTL in seconds
+        GMP_CACHE_DISK_DIR: Directory for disk cache
+        GMP_CACHE_DISK_MAX_MB: Max disk cache size in MB
+        GMP_CACHE_DISK_TTL_SECONDS: Disk cache TTL in seconds
+        GMP_CACHE_DISK_THRESHOLD_KB: Size threshold for disk vs memory
 
     Args:
-        config_path: Path to config.ini file
+        config_path: Optional path to config.ini file
 
     Returns:
-        AttachmentConfig with parsed settings, using defaults for
-        any missing values.
-
-    Raises:
-        FileNotFoundError: If config file doesn't exist.
+        CacheConfig with parsed settings, using defaults for missing values.
     """
-    if not Path(config_path).exists():
-        raise FileNotFoundError(f"Config file not found: {config_path}")
+    # Start with defaults
+    config_values: dict = {}
 
-    config = configparser.ConfigParser()
-    config.read(config_path)
+    # Load from environment variables
+    env_mapping = {
+        "memory_max_mb": ("GMP_CACHE_MEMORY_MAX_MB", float, 50.0),
+        "memory_ttl_seconds": ("GMP_CACHE_MEMORY_TTL_SECONDS", int, 300),
+        "disk_dir": ("GMP_CACHE_DISK_DIR", str, None),
+        "disk_max_mb": ("GMP_CACHE_DISK_MAX_MB", float, 500.0),
+        "disk_ttl_seconds": ("GMP_CACHE_DISK_TTL_SECONDS", int, 3600),
+        "disk_threshold_kb": ("GMP_CACHE_DISK_THRESHOLD_KB", float, 100.0),
+    }
 
-    if not config.has_section("attachments"):
-        logger.info("No [attachments] section in config, using defaults")
-        return AttachmentConfig()
+    for key, (env_var, type_fn, default) in env_mapping.items():
+        env_value = os.environ.get(env_var)
+        if env_value is not None:
+            try:
+                config_values[key] = type_fn(env_value)
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid value for {env_var}, using default")
+                config_values[key] = default
+        else:
+            config_values[key] = default
 
-    def get_str(key: str, default: str | None = None) -> str | None:
-        value = config.get("attachments", key, fallback=default)
-        return value.strip() if value else default
+    # Override with config file if provided
+    if config_path and Path(config_path).exists():
+        config = configparser.ConfigParser()
+        config.read(config_path)
 
-    def get_float(key: str, default: float) -> float:
-        try:
-            return config.getfloat("attachments", key, fallback=default)
-        except ValueError:
-            logger.warning(f"Invalid float for {key}, using default {default}")
-            return default
+        if config.has_section("cache"):
+            def get_float(key: str, default: float) -> float:
+                try:
+                    return config.getfloat("cache", key, fallback=default)
+                except ValueError:
+                    return default
 
-    def get_int(key: str, default: int) -> int:
-        try:
-            return config.getint("attachments", key, fallback=default)
-        except ValueError:
-            logger.warning(f"Invalid int for {key}, using default {default}")
-            return default
+            def get_int(key: str, default: int) -> int:
+                try:
+                    return config.getint("cache", key, fallback=default)
+                except ValueError:
+                    return default
 
-    return AttachmentConfig(
-        # Filesystem
-        base_dir=get_str("base_dir"),
+            def get_str(key: str, default: str | None = None) -> str | None:
+                value = config.get("cache", key, fallback=default)
+                return value.strip() if value else default
 
-        # HTTP
-        http_endpoint=get_str("default_endpoint"),
-        http_auth_method=get_str("auth_method", "none") or "none",
-        http_auth_token=get_str("auth_token"),
-        http_auth_user=get_str("auth_user"),
-        http_auth_password=get_str("auth_password"),
+            config_values["memory_max_mb"] = get_float("memory_max_mb", config_values["memory_max_mb"])
+            config_values["memory_ttl_seconds"] = get_int("memory_ttl_seconds", config_values["memory_ttl_seconds"])
+            config_values["disk_dir"] = get_str("disk_dir", config_values["disk_dir"])
+            config_values["disk_max_mb"] = get_float("disk_max_mb", config_values["disk_max_mb"])
+            config_values["disk_ttl_seconds"] = get_int("disk_ttl_seconds", config_values["disk_ttl_seconds"])
+            config_values["disk_threshold_kb"] = get_float("disk_threshold_kb", config_values["disk_threshold_kb"])
 
-        # Cache - Memory
-        cache_memory_max_mb=get_float("cache_memory_max_mb", 50.0),
-        cache_memory_ttl_seconds=get_int("cache_memory_ttl_seconds", 300),
-
-        # Cache - Disk
-        cache_disk_dir=get_str("cache_disk_dir"),
-        cache_disk_max_mb=get_float("cache_disk_max_mb", 500.0),
-        cache_disk_ttl_seconds=get_int("cache_disk_ttl_seconds", 3600),
-        cache_disk_threshold_kb=get_float("cache_disk_threshold_kb", 100.0),
-    )
+    return CacheConfig(**config_values)

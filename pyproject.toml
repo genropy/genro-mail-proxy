@@ -132,6 +132,11 @@ files = ["src/async_mail_service"]
 [tool.coverage.run]
 source = ["src/async_mail_service"]
 branch = true
+omit = [
+    "src/async_mail_service/forms.py",   # Interactive REPL forms
+    "src/async_mail_service/server.py",  # Uvicorn entry point
+    "src/async_mail_service/cli.py",     # Interactive CLI commands
+]
 
 [tool.coverage.report]
 exclude_lines = [

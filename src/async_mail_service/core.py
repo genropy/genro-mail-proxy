@@ -54,7 +54,7 @@ import aiosmtplib
 
 from .attachments import AttachmentManager
 from .attachments.cache import TieredCache
-from .config_loader import AttachmentConfig, load_attachment_config
+from .config_loader import CacheConfig, load_cache_config
 from .logger import get_logger
 from .models import get_tenant_attachment_url, get_tenant_sync_url
 from .persistence import Persistence
@@ -295,7 +295,7 @@ class AsyncMailCore:
 
         # Attachments and cache will be initialized in init()
         self._attachment_cache: TieredCache | None = None
-        self._attachment_config: AttachmentConfig | None = None
+        self._cache_config: CacheConfig | None = None
         self.attachments: AttachmentManager | None = None
         priority_value, _ = self._normalise_priority(default_priority, DEFAULT_PRIORITY)
         self._default_priority = priority_value
@@ -328,48 +328,34 @@ class AsyncMailCore:
 
         Performs the following initialization steps:
         1. Initialize SQLite database schema
-        2. Load attachment configuration (cache settings, paths)
+        2. Load cache configuration (from env vars or config file)
         3. Initialize attachment cache (memory and disk tiers)
-        4. Create the AttachmentManager with all backends
+        4. Create the AttachmentManager
         """
         await self.persistence.init_db()
         await self._refresh_queue_gauge()
 
-        # Load attachment configuration from config.ini
-        if self._config_path:
-            try:
-                self._attachment_config = load_attachment_config(self._config_path)
-            except FileNotFoundError:
-                self._attachment_config = AttachmentConfig()
-            except Exception as e:
-                self.logger.warning(f"Failed to load attachment config: {e}")
-                self._attachment_config = AttachmentConfig()
-        else:
-            self._attachment_config = AttachmentConfig()
+        # Load cache configuration from environment or config file
+        self._cache_config = load_cache_config(self._config_path)
 
         # Initialize attachment cache if configured
-        if self._attachment_config.cache_enabled:
+        if self._cache_config.enabled:
             self._attachment_cache = TieredCache(
-                memory_max_mb=self._attachment_config.cache_memory_max_mb,
-                memory_ttl_seconds=self._attachment_config.cache_memory_ttl_seconds,
-                disk_dir=self._attachment_config.cache_disk_dir,
-                disk_max_mb=self._attachment_config.cache_disk_max_mb,
-                disk_ttl_seconds=self._attachment_config.cache_disk_ttl_seconds,
-                disk_threshold_kb=self._attachment_config.cache_disk_threshold_kb,
+                memory_max_mb=self._cache_config.memory_max_mb,
+                memory_ttl_seconds=self._cache_config.memory_ttl_seconds,
+                disk_dir=self._cache_config.disk_dir,
+                disk_max_mb=self._cache_config.disk_max_mb,
+                disk_ttl_seconds=self._cache_config.disk_ttl_seconds,
+                disk_threshold_kb=self._cache_config.disk_threshold_kb,
             )
             await self._attachment_cache.init()
             self.logger.info(
-                f"Attachment cache initialized (memory={self._attachment_config.cache_memory_max_mb}MB, "
-                f"disk={self._attachment_config.cache_disk_dir})"
+                f"Attachment cache initialized (memory={self._cache_config.memory_max_mb}MB, "
+                f"disk={self._cache_config.disk_dir})"
             )
 
-        # Initialize attachment manager with all configured backends
-        self.attachments = AttachmentManager(
-            base_dir=self._attachment_config.base_dir,
-            http_endpoint=self._attachment_config.http_endpoint,
-            http_auth_config=self._attachment_config.http_auth_config,
-            cache=self._attachment_cache,
-        )
+        # Initialize attachment manager (tenant-specific config applied per-message)
+        self.attachments = AttachmentManager(cache=self._attachment_cache)
 
     def _normalise_priority(self, value: Any, default: Any = DEFAULT_PRIORITY) -> tuple[int, str]:
         """Convert a priority value to internal numeric representation.
@@ -1462,15 +1448,15 @@ class AsyncMailCore:
         if not tenant:
             return self.attachments
 
-        # Check if tenant has any custom attachment settings
+        # Check if tenant has custom attachment settings
         tenant_attachment_url = get_tenant_attachment_url(tenant)
         tenant_auth = tenant.get("client_auth")
 
-        # If no custom settings, use global manager
+        # If no tenant-specific settings, use global manager
         if not tenant_attachment_url and not tenant_auth:
             return self.attachments
 
-        # Build http_auth_config from tenant's common auth
+        # Build http_auth_config from tenant's auth config
         http_auth_config = None
         if tenant_auth:
             http_auth_config = {
@@ -1480,11 +1466,10 @@ class AsyncMailCore:
                 "password": tenant_auth.get("password"),
             }
 
-        # Create tenant-specific manager with fallback to global config
+        # Create tenant-specific manager
         return AttachmentManager(
-            base_dir=self._attachment_config.base_dir,
-            http_endpoint=tenant_attachment_url or self._attachment_config.http_endpoint,
-            http_auth_config=http_auth_config or self._attachment_config.http_auth_config,
+            http_endpoint=tenant_attachment_url,
+            http_auth_config=http_auth_config,
             cache=self._attachment_cache,
         )
 

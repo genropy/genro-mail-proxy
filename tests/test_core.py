@@ -784,3 +784,186 @@ async def test_tenant_attachment_config_fallback_to_global(tmp_path):
     # Verify global manager was used
     assert "global" in fetch_called
     assert len(core.pool.smtp.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_account_configuration_error():
+    """Test AccountConfigurationError exception."""
+    from async_mail_service.core import AccountConfigurationError
+
+    # Default message
+    exc = AccountConfigurationError()
+    assert str(exc) == "Missing SMTP account configuration"
+    assert exc.code == "missing_account_configuration"
+
+    # Custom message
+    exc2 = AccountConfigurationError("Custom error message")
+    assert str(exc2) == "Custom error message"
+    assert exc2.code == "missing_account_configuration"
+
+
+@pytest.mark.asyncio
+async def test_classify_smtp_error_timeout():
+    """Test SMTP error classification for timeout errors."""
+    from async_mail_service.core import _classify_smtp_error
+
+    # Timeout errors are temporary
+    is_temp, code = _classify_smtp_error(asyncio.TimeoutError())
+    assert is_temp is True
+    assert code is None
+
+    is_temp, code = _classify_smtp_error(TimeoutError("connection timed out"))
+    assert is_temp is True
+
+    is_temp, code = _classify_smtp_error(ConnectionError("refused"))
+    assert is_temp is True
+
+
+@pytest.mark.asyncio
+async def test_classify_smtp_error_permanent():
+    """Test SMTP error classification for permanent errors."""
+    from async_mail_service.core import _classify_smtp_error
+
+    # SSL errors are permanent
+    is_temp, code = _classify_smtp_error(Exception("wrong_version_number"))
+    assert is_temp is False
+
+    is_temp, code = _classify_smtp_error(Exception("authentication failed"))
+    assert is_temp is False
+
+    is_temp, code = _classify_smtp_error(Exception("535 Authentication failed"))
+    assert is_temp is False
+
+
+@pytest.mark.asyncio
+async def test_calculate_retry_delay():
+    """Test retry delay calculation."""
+    from async_mail_service.core import _calculate_retry_delay, DEFAULT_RETRY_DELAYS
+
+    # Use default delays
+    assert _calculate_retry_delay(0) == DEFAULT_RETRY_DELAYS[0]
+    assert _calculate_retry_delay(1) == DEFAULT_RETRY_DELAYS[1]
+
+    # Beyond the list uses last value
+    assert _calculate_retry_delay(100) == DEFAULT_RETRY_DELAYS[-1]
+
+    # Custom delays
+    custom = [10, 20, 30]
+    assert _calculate_retry_delay(0, custom) == 10
+    assert _calculate_retry_delay(2, custom) == 30
+    assert _calculate_retry_delay(5, custom) == 30  # last value
+
+
+@pytest.mark.asyncio
+async def test_normalise_priority_edge_cases(tmp_path):
+    """Test priority normalization with edge cases."""
+    core = await make_core(tmp_path)
+
+    # String priority labels
+    priority, label = core._normalise_priority("immediate")
+    assert priority == 0
+    assert label == "immediate"
+
+    priority, label = core._normalise_priority("HIGH")  # case insensitive
+    assert priority == 1
+    assert label == "high"
+
+    # Invalid string falls back to default
+    priority, label = core._normalise_priority("invalid")
+    assert priority == 2  # default
+    assert label == "medium"
+
+    # String number
+    priority, label = core._normalise_priority("1")
+    assert priority == 1
+    assert label == "high"
+
+    # Out of range clamps
+    priority, label = core._normalise_priority(100)
+    assert priority == 3  # max
+
+    priority, label = core._normalise_priority(-5)
+    assert priority == 0  # min
+
+    # None uses default
+    priority, label = core._normalise_priority(None)
+    assert priority == 2
+
+    # Custom default as string
+    priority, label = core._normalise_priority(None, "low")
+    assert priority == 3
+
+    # Invalid default falls back to DEFAULT_PRIORITY
+    priority, label = core._normalise_priority(None, "invalid_default")
+    assert priority == 2
+
+
+@pytest.mark.asyncio
+async def test_init_with_cache_config(tmp_path, monkeypatch):
+    """Test core initialization with cache configuration."""
+    # Set cache env vars
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    monkeypatch.setenv("GMP_CACHE_DISK_DIR", str(cache_dir))
+    monkeypatch.setenv("GMP_CACHE_MEMORY_MAX_MB", "25")
+
+    db_path = tmp_path / "core-cache.db"
+    core = AsyncMailCore(db_path=str(db_path), start_active=False, test_mode=True)
+    await core.init()
+
+    # Verify cache was initialized
+    assert core._cache_config is not None
+    assert core._cache_config.enabled is True
+    assert core._cache_config.disk_dir == str(cache_dir)
+    assert core._cache_config.memory_max_mb == 25.0
+    assert core._attachment_cache is not None
+
+
+@pytest.mark.asyncio
+async def test_summarise_addresses():
+    """Test address summarization helper."""
+    from async_mail_service.core import AsyncMailCore
+
+    # Empty returns "-"
+    assert AsyncMailCore._summarise_addresses(None) == "-"
+    assert AsyncMailCore._summarise_addresses("") == "-"
+    assert AsyncMailCore._summarise_addresses([]) == "-"
+
+    # Single address
+    assert AsyncMailCore._summarise_addresses("test@example.com") == "test@example.com"
+
+    # List of addresses
+    result = AsyncMailCore._summarise_addresses(["a@b.com", "c@d.com"])
+    assert "a@b.com" in result
+    assert "c@d.com" in result
+
+
+@pytest.mark.asyncio
+async def test_message_without_account_uses_default(tmp_path):
+    """Test that messages without account_id use default SMTP settings."""
+    core = await make_core(tmp_path)
+
+    # Set default SMTP settings
+    core.default_host = "default.smtp.local"
+    core.default_port = 587
+
+    # Add message WITHOUT account_id
+    payload = {
+        "messages": [{
+            "id": "msg-no-account",
+            "from": "sender@example.com",
+            "to": ["dest@example.com"],
+            "subject": "No Account",
+            "body": "Body",
+        }]
+    }
+    result = await core.handle_command("addMessages", payload)
+    assert result["ok"] is True
+
+    await core._process_smtp_cycle()
+
+    # Should have used default host
+    assert len(core.pool.requests) == 1
+    host, port, _, _, _ = core.pool.requests[0]
+    assert host == "default.smtp.local"
+    assert port == 587
