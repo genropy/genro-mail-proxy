@@ -1072,3 +1072,41 @@ async def test_parallel_dispatch_custom_concurrency(tmp_path):
 
     assert core._max_concurrent_sends == 5
     assert core._max_concurrent_per_account == 2
+
+
+@pytest.mark.asyncio
+async def test_priority_immediate_processed_first(tmp_path):
+    """Test that immediate priority messages are processed before regular ones."""
+    core = await make_core(tmp_path)
+
+    # Track dispatch order
+    dispatch_order = []
+    original_dispatch = core._dispatch_message
+
+    async def tracking_dispatch(entry, now_ts):
+        dispatch_order.append(entry["id"])
+        await original_dispatch(entry, now_ts)
+
+    core._dispatch_message = tracking_dispatch
+
+    # Add messages: some regular, some immediate
+    messages = [
+        {"id": "regular1", "account_id": "acc", "priority": 2, "from": "a@x.com", "to": ["b@x.com"], "body": "r1"},
+        {"id": "regular2", "account_id": "acc", "priority": 2, "from": "a@x.com", "to": ["b@x.com"], "body": "r2"},
+        {"id": "immediate1", "account_id": "acc", "priority": 0, "from": "a@x.com", "to": ["b@x.com"], "body": "i1"},
+        {"id": "regular3", "account_id": "acc", "priority": 3, "from": "a@x.com", "to": ["b@x.com"], "body": "r3"},
+        {"id": "immediate2", "account_id": "acc", "priority": 0, "from": "a@x.com", "to": ["b@x.com"], "body": "i2"},
+    ]
+    await core.handle_command("addMessages", {"messages": messages})
+
+    # Process messages
+    await core._process_smtp_cycle()
+
+    # Immediate messages should be processed first (order within each batch may vary due to parallel dispatch)
+    immediate_indices = [dispatch_order.index(m) for m in ["immediate1", "immediate2"]]
+    regular_indices = [dispatch_order.index(m) for m in ["regular1", "regular2", "regular3"]]
+
+    # All immediate messages should have lower indices than all regular messages
+    assert max(immediate_indices) < min(regular_indices), (
+        f"Immediate messages should be processed first. Order: {dispatch_order}"
+    )

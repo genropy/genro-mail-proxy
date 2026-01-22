@@ -108,3 +108,40 @@ async def test_get_account_missing_raises(tmp_path):
     await p.init_db()
     with pytest.raises(ValueError):
         await p.get_account("unknown")
+
+
+@pytest.mark.asyncio
+async def test_fetch_ready_messages_priority_filter(tmp_path):
+    """Test fetch_ready_messages with priority and min_priority filters."""
+    db = tmp_path / "priority.db"
+    p = Persistence(str(db))
+    await p.init_db()
+    now = int(time.time())
+
+    # Insert messages with different priorities
+    await p.insert_messages([
+        {"id": "immediate1", "account_id": "acc", "priority": 0, "payload": {"id": "immediate1", "body": "a"}},
+        {"id": "immediate2", "account_id": "acc", "priority": 0, "payload": {"id": "immediate2", "body": "b"}},
+        {"id": "high", "account_id": "acc", "priority": 1, "payload": {"id": "high", "body": "c"}},
+        {"id": "normal", "account_id": "acc", "priority": 2, "payload": {"id": "normal", "body": "d"}},
+        {"id": "low", "account_id": "acc", "priority": 3, "payload": {"id": "low", "body": "e"}},
+    ])
+
+    # Fetch only immediate priority (priority=0)
+    immediate = await p.fetch_ready_messages(limit=10, now_ts=now, priority=0)
+    assert len(immediate) == 2
+    assert all(m["priority"] == 0 for m in immediate)
+
+    # Fetch only min_priority >= 1 (non-immediate)
+    regular = await p.fetch_ready_messages(limit=10, now_ts=now, min_priority=1)
+    assert len(regular) == 3
+    assert all(m["priority"] >= 1 for m in regular)
+
+    # Verify ordering by priority
+    assert regular[0]["priority"] == 1  # high
+    assert regular[1]["priority"] == 2  # normal
+    assert regular[2]["priority"] == 3  # low
+
+    # Fetch all (no filter)
+    all_msgs = await p.fetch_ready_messages(limit=10, now_ts=now)
+    assert len(all_msgs) == 5

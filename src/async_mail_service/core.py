@@ -737,11 +737,11 @@ class AsyncMailCore:
         return self._account_semaphores[account_id]
 
     async def _process_smtp_cycle(self) -> bool:
-        """Execute one SMTP dispatch cycle with parallel message dispatch.
+        """Execute one SMTP dispatch cycle with priority-aware parallel dispatch.
 
-        Fetches ready messages from the database, groups them by account,
-        and processes messages in parallel respecting global and per-account
-        concurrency limits.
+        Immediate priority messages (priority=0) are always fetched and processed
+        first, followed by regular messages. This ensures high-priority messages
+        get truly immediate processing.
 
         Concurrency is controlled by:
         - Global semaphore: max_concurrent_sends (default 10)
@@ -751,22 +751,49 @@ class AsyncMailCore:
             True if any messages were processed, False otherwise.
         """
         now_ts = self._utc_now_epoch()
-        self.logger.debug(f"Fetching ready messages (now_ts={now_ts}, limit={self._smtp_batch_size})")
-        batch = await self.persistence.fetch_ready_messages(limit=self._smtp_batch_size, now_ts=now_ts)
-        self.logger.debug(f"Fetched {len(batch)} ready messages")
-        if not batch:
-            await self._refresh_queue_gauge()
-            return False
+        processed_any = False
+
+        # First, process immediate priority messages (priority=0)
+        immediate_batch = await self.persistence.fetch_ready_messages(
+            limit=self._smtp_batch_size, now_ts=now_ts, priority=0
+        )
+        if immediate_batch:
+            self.logger.debug(f"Processing {len(immediate_batch)} immediate priority messages")
+            await self._dispatch_batch(immediate_batch, now_ts)
+            processed_any = True
+
+        # Then, process regular priority messages (priority >= 1)
+        regular_batch = await self.persistence.fetch_ready_messages(
+            limit=self._smtp_batch_size, now_ts=now_ts, min_priority=1
+        )
+        if regular_batch:
+            self.logger.debug(f"Processing {len(regular_batch)} regular priority messages")
+            await self._dispatch_batch(regular_batch, now_ts)
+            processed_any = True
+
+        await self._refresh_queue_gauge()
+        return processed_any
+
+    async def _dispatch_batch(self, batch: list[dict[str, Any]], now_ts: int) -> None:
+        """Dispatch a batch of messages in parallel with concurrency limits.
+
+        Groups messages by account and applies per-account batch limits
+        before dispatching in parallel.
+
+        Args:
+            batch: List of message entries to dispatch.
+            now_ts: Current UTC timestamp.
+        """
+        from collections import defaultdict
 
         # Group messages by account_id and apply per-account batch limit
-        from collections import defaultdict
-        messages_by_account = defaultdict(list)
+        messages_by_account: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for entry in batch:
             account_id = entry.get("message", {}).get("account_id") or "default"
             messages_by_account[account_id].append(entry)
 
         # Collect all messages to send, respecting per-account batch limits
-        all_messages_to_send: list[tuple[dict, str]] = []  # (entry, account_id)
+        all_messages_to_send: list[tuple[dict, str]] = []
 
         for account_id, account_messages in messages_by_account.items():
             # Get account-specific batch_size if available, otherwise use global default
@@ -793,8 +820,7 @@ class AsyncMailCore:
                 all_messages_to_send.append((entry, account_id))
 
         if not all_messages_to_send:
-            await self._refresh_queue_gauge()
-            return False
+            return
 
         # Global semaphore to limit overall concurrency
         global_semaphore = asyncio.Semaphore(self._max_concurrent_sends)
@@ -818,9 +844,6 @@ class AsyncMailCore:
                 self.logger.exception(
                     f"Unexpected error dispatching message {entry.get('id')} for account {account_id}: {result}"
                 )
-
-        await self._refresh_queue_gauge()
-        return len(all_messages_to_send) > 0
 
     async def _dispatch_message(self, entry: dict[str, Any], now_ts: int) -> None:
         """Attempt to deliver a single message via SMTP.

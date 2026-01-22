@@ -495,7 +495,14 @@ class Persistence:
             await db.commit()
         return inserted
 
-    async def fetch_ready_messages(self, *, limit: int, now_ts: int) -> list[dict[str, Any]]:
+    async def fetch_ready_messages(
+        self,
+        *,
+        limit: int,
+        now_ts: int,
+        priority: int | None = None,
+        min_priority: int | None = None,
+    ) -> list[dict[str, Any]]:
         """Fetch messages ready for SMTP delivery.
 
         Returns messages that are not sent, not deferred past now_ts,
@@ -504,22 +511,37 @@ class Persistence:
         Args:
             limit: Maximum number of messages to return.
             now_ts: Current Unix timestamp for deferred_ts comparison.
+            priority: If set, fetch only messages with this exact priority.
+            min_priority: If set, fetch only messages with priority >= this value.
 
         Returns:
             List of message dicts with id, account_id, priority, payload, message.
         """
-        async with aiosqlite.connect(self.db_path) as db, db.execute(
-            """
-                SELECT id, account_id, priority, payload, deferred_ts
-                FROM messages
-                WHERE sent_ts IS NULL
-                  AND error_ts IS NULL
-                  AND (deferred_ts IS NULL OR deferred_ts <= ?)
-                ORDER BY priority ASC, created_at ASC, id ASC
-                LIMIT ?
-                """,
-            (now_ts, limit),
-        ) as cur:
+        conditions = [
+            "sent_ts IS NULL",
+            "error_ts IS NULL",
+            "(deferred_ts IS NULL OR deferred_ts <= ?)",
+        ]
+        params: list[int] = [now_ts]
+
+        if priority is not None:
+            conditions.append("priority = ?")
+            params.append(priority)
+        elif min_priority is not None:
+            conditions.append("priority >= ?")
+            params.append(min_priority)
+
+        params.append(limit)
+
+        query = f"""
+            SELECT id, account_id, priority, payload, deferred_ts
+            FROM messages
+            WHERE {' AND '.join(conditions)}
+            ORDER BY priority ASC, created_at ASC, id ASC
+            LIMIT ?
+        """
+
+        async with aiosqlite.connect(self.db_path) as db, db.execute(query, params) as cur:
             rows = await cur.fetchall()
             cols = [c[0] for c in cur.description]
         return [self._decode_message_row(row, cols) for row in rows]
