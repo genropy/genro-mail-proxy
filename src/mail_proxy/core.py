@@ -244,6 +244,7 @@ class MailProxy:
         retry_delays: list[int] | None = None,
         max_concurrent_sends: int = 10,
         max_concurrent_per_account: int = 3,
+        max_concurrent_attachments: int = 3,
     ):
         """Initialize the mail dispatcher core with configuration options.
 
@@ -274,6 +275,8 @@ class MailProxy:
             retry_delays: Custom list of retry delay intervals in seconds.
             max_concurrent_sends: Maximum concurrent SMTP sends globally.
             max_concurrent_per_account: Maximum concurrent sends per SMTP account.
+            max_concurrent_attachments: Maximum concurrent attachment fetches to
+                limit memory pressure from large attachments.
         """
         self.default_host = None
         self.default_port = None
@@ -327,7 +330,9 @@ class MailProxy:
         self._batch_size_per_account = max(1, int(batch_size_per_account))
         self._max_concurrent_sends = max(1, int(max_concurrent_sends))
         self._max_concurrent_per_account = max(1, int(max_concurrent_per_account))
+        self._max_concurrent_attachments = max(1, int(max_concurrent_attachments))
         self._account_semaphores: dict[str, asyncio.Semaphore] = {}
+        self._attachment_semaphore: asyncio.Semaphore | None = None
 
     # --------------------------------------------------------------------- utils
     @staticmethod
@@ -381,6 +386,9 @@ class MailProxy:
 
         # Initialize attachment manager (tenant-specific config applied per-message)
         self.attachments = AttachmentManager(cache=self._attachment_cache)
+
+        # Initialize attachment fetch semaphore to limit memory pressure
+        self._attachment_semaphore = asyncio.Semaphore(self._max_concurrent_attachments)
 
     def _normalise_priority(self, value: Any, default: Any = DEFAULT_PRIORITY) -> tuple[int, str]:
         """Convert a priority value to internal numeric representation.
@@ -1766,6 +1774,9 @@ class MailProxy:
     ) -> tuple[bytes, str] | None:
         """Fetch an attachment using the configured timeout budget.
 
+        Uses a semaphore to limit concurrent attachment fetches, reducing
+        memory pressure when processing messages with large attachments.
+
         The AttachmentManager.fetch() now returns Tuple[bytes, clean_filename]
         where clean_filename has any MD5 marker stripped.
 
@@ -1774,12 +1785,15 @@ class MailProxy:
             attachment_manager: Optional manager to use. If None, uses self.attachments.
         """
         manager = attachment_manager or self.attachments
-        try:
-            result = await asyncio.wait_for(manager.fetch(att), timeout=self._attachment_timeout)
-        except asyncio.TimeoutError as exc:
-            raise TimeoutError(f"Attachment {att.get('filename', 'file.bin')} fetch timed out") from exc
-        # result is Optional[Tuple[bytes, str]] - content and clean filename
-        return result
+        # Use semaphore to limit concurrent fetches and reduce memory pressure
+        semaphore = self._attachment_semaphore or asyncio.Semaphore(self._max_concurrent_attachments)
+        async with semaphore:
+            try:
+                result = await asyncio.wait_for(manager.fetch(att), timeout=self._attachment_timeout)
+            except asyncio.TimeoutError as exc:
+                raise TimeoutError(f"Attachment {att.get('filename', 'file.bin')} fetch timed out") from exc
+            # result is Optional[Tuple[bytes, str]] - content and clean filename
+            return result
 
     # ------------------------------------------------------------ client bridge
     async def _send_delivery_reports(self, payloads: list[dict[str, Any]]) -> tuple[list[str], int]:
