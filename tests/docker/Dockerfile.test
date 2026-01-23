@@ -14,5 +14,5 @@ RUN pip install --no-cache-dir -e ".[postgresql,large-files]"
 VOLUME ["/data"]
 EXPOSE 8000
 
-# Start the server
-CMD ["uvicorn", "mail_proxy.server:app", "--host", "0.0.0.0", "--port", "8000"]
+# Start the server with graceful shutdown timeout
+CMD ["uvicorn", "mail_proxy.server:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "10"]

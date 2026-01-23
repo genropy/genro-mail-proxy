@@ -17,15 +17,20 @@ Environment variables:
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
+import signal
 import sqlite3
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
 from .api import create_app
 from .core import MailProxy
+
+_logger = logging.getLogger(__name__)
 
 
 def _get_config_from_db(connection_string: str) -> dict[str, str]:
@@ -62,10 +67,9 @@ def _get_config_from_postgres(dsn: str) -> dict[str, str]:
     except ImportError:
         return {}
     try:
-        with psycopg.connect(dsn) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT key, value FROM instance_config")
-                return {row[0]: row[1] for row in cur.fetchall()}
+        with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+            cur.execute("SELECT key, value FROM instance_config")
+            return {row[0]: row[1] for row in cur.fetchall()}
     except (psycopg.OperationalError, psycopg.errors.UndefinedTable):
         # Database or table doesn't exist yet
         return {}
@@ -85,12 +89,55 @@ _core = MailProxy(
 )
 
 
+_shutdown_event: asyncio.Event | None = None
+
+
+def _handle_signal(signum: int) -> None:
+    """Handle SIGTERM/SIGINT by triggering graceful shutdown."""
+    sig_name = signal.Signals(signum).name
+    _logger.info("Received %s, initiating graceful shutdown...", sig_name)
+    # Wake up any waiting tasks in the core service
+    if _core._stop is not None:
+        _core._stop.set()
+    if _core._wake_event is not None:
+        _core._wake_event.set()
+    if _core._wake_client_event is not None:
+        _core._wake_client_event.set()
+    # Signal the lifespan to exit
+    if _shutdown_event is not None:
+        _shutdown_event.set()
+
+
+def _make_signal_handler(signum: int) -> Callable[[], None]:
+    """Create a signal handler closure for the given signal."""
+    def handler() -> None:
+        _handle_signal(signum)
+    return handler
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan handler - starts and stops the core service."""
+    global _shutdown_event
+
+    # Set up signal handlers for graceful shutdown
+    loop = asyncio.get_running_loop()
+    _shutdown_event = asyncio.Event()
+
+    # Install signal handlers
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, _make_signal_handler(sig))
+
+    _logger.info("Starting mail-proxy service...")
     await _core.start()
-    yield
-    await _core.stop()
+    _logger.info("Mail-proxy service started")
+
+    try:
+        yield
+    finally:
+        _logger.info("Stopping mail-proxy service...")
+        await _core.stop()
+        _logger.info("Mail-proxy service stopped")
 
 
 # Create the configured application
