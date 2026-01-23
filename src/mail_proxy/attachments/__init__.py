@@ -12,9 +12,10 @@ Supported fetch_mode values:
 - filesystem - Local filesystem path (absolute or relative to base_dir)
 
 If fetch_mode is not specified, it is inferred from storage_path format:
-- "base64:..." prefix → base64 (prefix is stripped)
-- "http://" or "https://" → http_url
-- "/" (absolute path) → filesystem
+
+- ``base64:...`` prefix → base64 (prefix is stripped)
+- ``http://`` or ``https://`` prefix → http_url
+- ``/`` (absolute path) → filesystem
 - otherwise → endpoint (default)
 
 Additional attachment parameters:
@@ -135,9 +136,10 @@ class AttachmentManager:
         Args:
             path: The storage_path value from attachment dict.
             fetch_mode: Explicit fetch mode. If None, inferred from path format:
-                - "base64:" prefix → base64
-                - "http://" or "https://" → http_url
-                - absolute path starting with "/" → filesystem
+
+                - ``base64:`` prefix → base64
+                - ``http://`` or ``https://`` prefix → http_url
+                - absolute path starting with ``/`` → filesystem
                 - otherwise → endpoint (default)
 
         Returns:

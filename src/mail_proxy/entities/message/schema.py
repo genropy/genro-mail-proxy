@@ -42,7 +42,7 @@ class AttachmentPayload(BaseModel):
         fetch_mode: Explicit fetch mode (endpoint, http_url, base64, filesystem).
             If not provided, inferred from storage_path format:
             - ``base64:`` prefix → base64
-            - ``http://`` or ``https://`` → http_url
+            - ``http://`` or ``https://`` prefix → http_url
             - ``/`` (absolute path) → filesystem
             - otherwise → endpoint (default)
         content_md5: MD5 hash for cache lookup. Alternative to embedding
@@ -59,7 +59,7 @@ class AttachmentPayload(BaseModel):
     ]
     storage_path: Annotated[
         str,
-        Field(min_length=1, description="Storage path (base64:, http://, /path, or endpoint params)")
+        Field(min_length=1, description="Storage path (base64:, URL, /path, or endpoint params)")
     ]
     mime_type: Annotated[
         str | None,
