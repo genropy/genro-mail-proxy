@@ -21,33 +21,85 @@ Build and run:
    docker build -t genro-mail-proxy .
    docker run -p 8000:8000 -v mail-data:/data genro-mail-proxy
 
-The container stores its SQLite database at ``/data/mail_service.db``. Mount a volume
-to persist data across container restarts.
-
 Environment variables:
 
-- ``GMP_DB_PATH``: Database file path (default: ``/data/mail_service.db``)
+- ``GMP_DB_PATH``: Database connection string. Formats:
 
-Docker Compose
---------------
+  - ``/path/to/db.sqlite`` - SQLite file (default: ``/data/mail_service.db``)
+  - ``postgresql://user:pass@host:5432/db`` - PostgreSQL
+
+Docker Compose with PostgreSQL
+------------------------------
+
+The default ``docker-compose.yml`` includes PostgreSQL:
 
 .. code-block:: yaml
 
    # docker-compose.yml
    services:
-     mail-proxy:
+     db:
+       image: postgres:16-alpine
+       environment:
+         POSTGRES_USER: mailproxy
+         POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+         POSTGRES_DB: mailproxy
+       volumes:
+         - pgdata:/var/lib/postgresql/data
+       healthcheck:
+         test: ["CMD-SHELL", "pg_isready -U mailproxy"]
+         interval: 5s
+         timeout: 5s
+         retries: 5
+
+     mailservice:
        build: .
+       image: genro-mail-proxy:latest
+       environment:
+         - GMP_DB_PATH=postgresql://mailproxy:${POSTGRES_PASSWORD:-changeme}@db:5432/mailproxy
        ports:
          - "8000:8000"
-       volumes:
-         - mail-data:/data
+       depends_on:
+         db:
+           condition: service_healthy
+       restart: unless-stopped
 
    volumes:
-     mail-data:
+     pgdata:
 
 .. code-block:: bash
 
+   # Start with default password
    docker compose up -d
+
+   # Or set a custom password
+   POSTGRES_PASSWORD=mysecret docker compose up -d
+
+Docker Compose with SQLite
+--------------------------
+
+For simpler deployments using SQLite:
+
+.. code-block:: yaml
+
+   # docker-compose-sqlite.yml
+   services:
+     mailservice:
+       build: .
+       image: genro-mail-proxy:latest
+       environment:
+         - GMP_DB_PATH=/data/mail_service.db
+       ports:
+         - "8000:8000"
+       volumes:
+         - maildata:/data
+       restart: unless-stopped
+
+   volumes:
+     maildata:
+
+.. code-block:: bash
+
+   docker compose -f docker-compose-sqlite.yml up -d
 
 Local Development
 -----------------

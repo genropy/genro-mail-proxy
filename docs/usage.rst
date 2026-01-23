@@ -50,7 +50,7 @@ For containerized deployments, use environment variables prefixed with ``GMP_``:
 Available environment variables::
 
   GMP_LOG_LEVEL                           - Logging level (default: INFO)
-  GMP_DB_PATH                             - Database path (default: /data/mail_service.db)
+  GMP_DB_PATH                             - Database connection string (SQLite path or postgresql://...)
   GMP_HOST                                - Server host (default: 0.0.0.0)
   GMP_PORT                                - Server port (default: 8000)
   GMP_SCHEDULER_ACTIVE                    - Enable scheduler (default: false)
