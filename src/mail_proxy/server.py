@@ -58,6 +58,7 @@ def _get_config_from_postgres(dsn: str) -> dict[str, str]:
     """Read configuration from PostgreSQL database."""
     try:
         import psycopg
+        import psycopg.errors
     except ImportError:
         return {}
     try:
@@ -65,7 +66,7 @@ def _get_config_from_postgres(dsn: str) -> dict[str, str]:
             with conn.cursor() as cur:
                 cur.execute("SELECT key, value FROM instance_config")
                 return {row[0]: row[1] for row in cur.fetchall()}
-    except psycopg.OperationalError:
+    except (psycopg.OperationalError, psycopg.errors.UndefinedTable):
         # Database or table doesn't exist yet
         return {}
 

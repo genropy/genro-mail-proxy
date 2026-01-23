@@ -102,9 +102,10 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
 
     account = {"id": "acc", "host": "smtp.local", "port": 25}
     assert client.post("/account", json=account).json()["ok"] is True
-    assert client.get("/accounts").json()["ok"] is True
+    # tenant_id is now required for /accounts and /messages
+    assert client.get("/accounts?tenant_id=test-tenant").json()["ok"] is True
     assert client.delete("/account/acc").json()["ok"] is True
-    assert client.get("/messages").json()["ok"] is True
+    assert client.get("/messages?tenant_id=test-tenant").json()["ok"] is True
 
     expected_calls = [
         ("run now", {}),
@@ -128,9 +129,9 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
         ),
         ("deleteMessages", {"ids": ["msg-bulk"]}),
         ("addAccount", {"id": "acc", "tenant_id": None, "host": "smtp.local", "port": 25, "user": None, "password": None, "ttl": 300, "limit_per_minute": None, "limit_per_hour": None, "limit_per_day": None, "limit_behavior": "defer", "use_tls": None, "batch_size": None}),
-        ("listAccounts", {}),
+        ("listAccounts", {"tenant_id": "test-tenant"}),
         ("deleteAccount", {"id": "acc"}),
-        ("listMessages", {}),
+        ("listMessages", {"tenant_id": "test-tenant", "active_only": False}),
     ]
     assert svc.calls == expected_calls
 
@@ -261,9 +262,9 @@ def test_service_not_initialized_all_commands():
         ("POST", "/commands/delete-messages", {"ids": []}),
         ("POST", "/commands/cleanup-messages", {}),
         ("POST", "/account", {"id": "a", "host": "h", "port": 25}),
-        ("GET", "/accounts", None),
+        ("GET", "/accounts?tenant_id=test-tenant", None),
         ("DELETE", "/account/test", None),
-        ("GET", "/messages", None),
+        ("GET", "/messages?tenant_id=test-tenant", None),
         ("GET", "/metrics", None),
     ]
 
@@ -543,3 +544,206 @@ def test_create_tenant_with_valid_token_succeeds():
     # Verify the service was called
     assert len(svc.calls) == 1
     assert svc.calls[0][0] == "addTenant"
+
+
+# ============================================================================
+# Cross-Tenant Isolation Security Tests (Issue #28)
+# ============================================================================
+
+def test_accounts_endpoint_requires_tenant_id():
+    """Test that /accounts endpoint requires tenant_id parameter."""
+    svc = DummyService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
+
+    # Request without tenant_id should fail
+    response = client.get("/accounts")
+    assert response.status_code == 422  # Validation error - missing required param
+
+
+def test_messages_endpoint_requires_tenant_id():
+    """Test that /messages endpoint requires tenant_id parameter."""
+    svc = DummyService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
+
+    # Request without tenant_id should fail
+    response = client.get("/messages")
+    assert response.status_code == 422  # Validation error - missing required param
+
+
+def test_accounts_filtered_by_tenant_id():
+    """Test that /accounts returns only accounts for the specified tenant."""
+    class MultiTenantService(DummyService):
+        def __init__(self):
+            super().__init__()
+            self.accounts_by_tenant = {
+                "tenant-a": [
+                    {"id": "acc-a1", "tenant_id": "tenant-a", "host": "smtp-a.com", "port": 587, "ttl": 300},
+                    {"id": "acc-a2", "tenant_id": "tenant-a", "host": "smtp-a2.com", "port": 587, "ttl": 300},
+                ],
+                "tenant-b": [
+                    {"id": "acc-b1", "tenant_id": "tenant-b", "host": "smtp-b.com", "port": 587, "ttl": 300},
+                ],
+            }
+
+        async def handle_command(self, cmd, payload):
+            self.calls.append((cmd, payload))
+            if cmd == "listAccounts":
+                tenant_id = payload.get("tenant_id")
+                accounts = self.accounts_by_tenant.get(tenant_id, [])
+                return {"ok": True, "accounts": accounts}
+            return await super().handle_command(cmd, payload)
+
+    svc = MultiTenantService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
+
+    # Request accounts for tenant-a
+    response_a = client.get("/accounts?tenant_id=tenant-a")
+    assert response_a.status_code == 200
+    data_a = response_a.json()
+    assert data_a["ok"] is True
+    assert len(data_a["accounts"]) == 2
+    assert all(acc["tenant_id"] == "tenant-a" for acc in data_a["accounts"])
+
+    # Request accounts for tenant-b
+    response_b = client.get("/accounts?tenant_id=tenant-b")
+    assert response_b.status_code == 200
+    data_b = response_b.json()
+    assert data_b["ok"] is True
+    assert len(data_b["accounts"]) == 1
+    assert data_b["accounts"][0]["tenant_id"] == "tenant-b"
+
+    # Verify tenant_id was passed correctly to service
+    assert svc.calls[0] == ("listAccounts", {"tenant_id": "tenant-a"})
+    assert svc.calls[1] == ("listAccounts", {"tenant_id": "tenant-b"})
+
+
+def test_messages_filtered_by_tenant_id():
+    """Test that /messages returns only messages for the specified tenant."""
+    class MultiTenantService(DummyService):
+        def __init__(self):
+            super().__init__()
+            self.messages_by_tenant = {
+                "tenant-a": [
+                    {"id": "msg-a1", "account_id": "acc-a1", "priority": 2, "message": {}},
+                    {"id": "msg-a2", "account_id": "acc-a1", "priority": 2, "message": {}},
+                ],
+                "tenant-b": [
+                    {"id": "msg-b1", "account_id": "acc-b1", "priority": 2, "message": {}},
+                ],
+            }
+
+        async def handle_command(self, cmd, payload):
+            self.calls.append((cmd, payload))
+            if cmd == "listMessages":
+                tenant_id = payload.get("tenant_id")
+                messages = self.messages_by_tenant.get(tenant_id, [])
+                return {"ok": True, "messages": messages}
+            return await super().handle_command(cmd, payload)
+
+    svc = MultiTenantService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
+
+    # Request messages for tenant-a
+    response_a = client.get("/messages?tenant_id=tenant-a")
+    assert response_a.status_code == 200
+    data_a = response_a.json()
+    assert data_a["ok"] is True
+    assert len(data_a["messages"]) == 2
+
+    # Request messages for tenant-b
+    response_b = client.get("/messages?tenant_id=tenant-b")
+    assert response_b.status_code == 200
+    data_b = response_b.json()
+    assert data_b["ok"] is True
+    assert len(data_b["messages"]) == 1
+
+    # Verify tenant_id was passed correctly to service
+    assert svc.calls[0] == ("listMessages", {"tenant_id": "tenant-a", "active_only": False})
+    assert svc.calls[1] == ("listMessages", {"tenant_id": "tenant-b", "active_only": False})
+
+
+def test_cross_tenant_isolation_accounts():
+    """Test that tenant-a cannot access tenant-b's accounts."""
+    class IsolationService(DummyService):
+        async def handle_command(self, cmd, payload):
+            self.calls.append((cmd, payload))
+            if cmd == "listAccounts":
+                tenant_id = payload.get("tenant_id")
+                # Simulate proper isolation - only return accounts for requested tenant
+                if tenant_id == "tenant-a":
+                    return {"ok": True, "accounts": [{"id": "acc-a", "tenant_id": "tenant-a", "host": "smtp-a.com", "port": 587, "ttl": 300}]}
+                elif tenant_id == "tenant-b":
+                    return {"ok": True, "accounts": [{"id": "acc-b", "tenant_id": "tenant-b", "host": "smtp-b.com", "port": 587, "ttl": 300}]}
+                return {"ok": True, "accounts": []}
+            return await super().handle_command(cmd, payload)
+
+    svc = IsolationService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
+
+    # Tenant-a requests their accounts
+    response = client.get("/accounts?tenant_id=tenant-a")
+    assert response.status_code == 200
+    accounts = response.json()["accounts"]
+
+    # Verify no tenant-b accounts are returned
+    tenant_b_accounts = [a for a in accounts if a.get("tenant_id") == "tenant-b"]
+    assert len(tenant_b_accounts) == 0, "Cross-tenant data leak: tenant-b accounts visible to tenant-a"
+
+
+def test_cross_tenant_isolation_messages():
+    """Test that tenant-a cannot access tenant-b's messages."""
+    class IsolationService(DummyService):
+        async def handle_command(self, cmd, payload):
+            self.calls.append((cmd, payload))
+            if cmd == "listMessages":
+                tenant_id = payload.get("tenant_id")
+                # Simulate proper isolation - only return messages for requested tenant
+                if tenant_id == "tenant-a":
+                    return {"ok": True, "messages": [{"id": "msg-a", "account_id": "acc-a", "priority": 2, "message": {}}]}
+                elif tenant_id == "tenant-b":
+                    return {"ok": True, "messages": [{"id": "msg-b", "account_id": "acc-b", "priority": 2, "message": {}}]}
+                return {"ok": True, "messages": []}
+            return await super().handle_command(cmd, payload)
+
+    svc = IsolationService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
+
+    # Tenant-a requests their messages
+    response = client.get("/messages?tenant_id=tenant-a")
+    assert response.status_code == 200
+    messages = response.json()["messages"]
+
+    # Should only have tenant-a messages
+    assert len(messages) == 1
+    assert messages[0]["id"] == "msg-a"
+
+
+def test_nonexistent_tenant_returns_empty():
+    """Test that requesting data for non-existent tenant returns empty results."""
+    class EmptyService(DummyService):
+        async def handle_command(self, cmd, payload):
+            self.calls.append((cmd, payload))
+            if cmd == "listAccounts":
+                return {"ok": True, "accounts": []}
+            if cmd == "listMessages":
+                return {"ok": True, "messages": []}
+            return await super().handle_command(cmd, payload)
+
+    svc = EmptyService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
+
+    # Request for non-existent tenant
+    response_accounts = client.get("/accounts?tenant_id=nonexistent")
+    assert response_accounts.status_code == 200
+    assert response_accounts.json()["accounts"] == []
+
+    response_messages = client.get("/messages?tenant_id=nonexistent")
+    assert response_messages.status_code == 200
+    assert response_messages.json()["messages"] == []

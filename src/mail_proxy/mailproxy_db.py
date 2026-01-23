@@ -186,8 +186,10 @@ class MailProxyDb(SqlDb):
     async def remove_reported_before(self, threshold_ts: int) -> int:
         return await self.messages.remove_reported_before(threshold_ts)
 
-    async def list_messages(self, *, active_only: bool = False) -> list[dict[str, Any]]:
-        return await self.messages.list_all(active_only=active_only)
+    async def list_messages(
+        self, *, tenant_id: str | None = None, active_only: bool = False
+    ) -> list[dict[str, Any]]:
+        return await self.messages.list_all(tenant_id=tenant_id, active_only=active_only)
 
     async def count_active_messages(self) -> int:
         return await self.messages.count_active()

@@ -487,7 +487,10 @@ class MailProxy:
                 await self.db.add_account(payload)
                 return {"ok": True}
             case "listAccounts":
-                accounts = await self.db.list_accounts()
+                tenant_id = payload.get("tenant_id") if isinstance(payload, dict) else None
+                if not tenant_id:
+                    return {"ok": False, "error": "tenant_id is required"}
+                accounts = await self.db.list_accounts(tenant_id=tenant_id)
                 return {"ok": True, "accounts": accounts}
             case "deleteAccount":
                 account_id = payload.get("id")
@@ -500,8 +503,11 @@ class MailProxy:
                 await self._refresh_queue_gauge()
                 return {"ok": True, "removed": removed, "not_found": not_found}
             case "listMessages":
+                tenant_id = payload.get("tenant_id") if isinstance(payload, dict) else None
+                if not tenant_id:
+                    return {"ok": False, "error": "tenant_id is required"}
                 active_only = bool(payload.get("active_only", False)) if isinstance(payload, dict) else False
-                messages = await self.db.list_messages(active_only=active_only)
+                messages = await self.db.list_messages(tenant_id=tenant_id, active_only=active_only)
                 return {"ok": True, "messages": messages}
             case "addMessages":
                 return await self._handle_add_messages(payload)

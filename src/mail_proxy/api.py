@@ -505,21 +505,27 @@ def create_app(
         return BasicOkResponse.model_validate(result)
 
     @api.get("/accounts", response_model=AccountsResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
-    async def list_accounts():
-        """Retrieve all configured SMTP accounts.
+    async def list_accounts(tenant_id: str):
+        """Retrieve SMTP accounts for a specific tenant.
 
-        Returns the list of registered SMTP accounts with their configuration,
-        excluding sensitive data like passwords.
+        Returns the list of registered SMTP accounts with their configuration
+        for the specified tenant, excluding sensitive data like passwords.
+
+        Args:
+            tenant_id: Tenant identifier (required for security isolation).
 
         Returns:
             AccountsResponse: List of account configurations with ``ok=True``.
 
         Raises:
+            HTTPException: 400 if tenant_id is missing.
             HTTPException: 500 if the service is not initialized.
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
-        result = await service.handle_command("listAccounts", {})
+        if not tenant_id:
+            raise HTTPException(400, "tenant_id is required")
+        result = await service.handle_command("listAccounts", {"tenant_id": tenant_id})
         return AccountsResponse.model_validate(result)
 
     @api.delete("/account/{account_id}", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
@@ -544,21 +550,31 @@ def create_app(
         return BasicOkResponse.model_validate(result)
 
     @api.get("/messages", response_model=MessagesResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
-    async def all_messages():
-        """List all messages currently in the dispatch queue.
+    async def all_messages(tenant_id: str, active_only: bool = False):
+        """List messages for a specific tenant.
 
-        Returns complete message records including payload, status timestamps,
+        Returns message records including payload, status timestamps,
         and error information for debugging and monitoring purposes.
+
+        Args:
+            tenant_id: Tenant identifier (required for security isolation).
+            active_only: If True, returns only messages pending delivery.
 
         Returns:
             MessagesResponse: List of message records with ``ok=True``.
 
         Raises:
+            HTTPException: 400 if tenant_id is missing.
             HTTPException: 500 if the service is not initialized.
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
-        result = await service.handle_command("listMessages", {})
+        if not tenant_id:
+            raise HTTPException(400, "tenant_id is required")
+        result = await service.handle_command("listMessages", {
+            "tenant_id": tenant_id,
+            "active_only": active_only
+        })
         return MessagesResponse.model_validate(result)
 
     @api.get("/metrics", dependencies=[auth_dependency])

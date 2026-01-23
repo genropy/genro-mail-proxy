@@ -372,7 +372,7 @@ class InstanceGroup(click.Group):
 
 
 @click.group(cls=InstanceGroup)
-@click.version_option()
+@click.version_option(package_name="genro-mail-proxy")
 def main() -> None:
     """genro-mail-proxy CLI - Manage email dispatch instances.
 

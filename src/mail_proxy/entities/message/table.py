@@ -244,18 +244,52 @@ class MessagesTable(Table):
             {"threshold_ts": threshold_ts},
         )
 
-    async def list_all(self, *, active_only: bool = False) -> list[dict[str, Any]]:
-        """Return messages for inspection purposes."""
-        query = """
-            SELECT id, account_id, priority, payload, deferred_ts, sent_ts, error_ts,
-                   error, reported_ts, created_at, updated_at
-            FROM messages
-        """
-        if active_only:
-            query += " WHERE sent_ts IS NULL AND error_ts IS NULL"
-        query += " ORDER BY priority ASC, created_at ASC, id ASC"
+    async def list_all(
+        self, *, tenant_id: str | None = None, active_only: bool = False
+    ) -> list[dict[str, Any]]:
+        """Return messages for inspection purposes, optionally filtered by tenant.
 
-        rows = await self.db.adapter.fetch_all(query)
+        Args:
+            tenant_id: If provided, filter messages to those belonging to this tenant
+                (via the account's tenant_id).
+            active_only: If True, only return messages pending delivery.
+        """
+        params: dict[str, Any] = {}
+        where_clauses: list[str] = []
+
+        if tenant_id:
+            # Join with accounts to filter by tenant_id
+            query = """
+                SELECT m.id, m.account_id, m.priority, m.payload, m.deferred_ts,
+                       m.sent_ts, m.error_ts, m.error, m.reported_ts,
+                       m.created_at, m.updated_at
+                FROM messages m
+                LEFT JOIN accounts a ON m.account_id = a.id
+            """
+            where_clauses.append("a.tenant_id = :tenant_id")
+            params["tenant_id"] = tenant_id
+        else:
+            query = """
+                SELECT id, account_id, priority, payload, deferred_ts, sent_ts, error_ts,
+                       error, reported_ts, created_at, updated_at
+                FROM messages
+            """
+
+        if active_only:
+            if tenant_id:
+                where_clauses.append("m.sent_ts IS NULL AND m.error_ts IS NULL")
+            else:
+                where_clauses.append("sent_ts IS NULL AND error_ts IS NULL")
+
+        if where_clauses:
+            query += " WHERE " + " AND ".join(where_clauses)
+
+        if tenant_id:
+            query += " ORDER BY m.priority ASC, m.created_at ASC, m.id ASC"
+        else:
+            query += " ORDER BY priority ASC, created_at ASC, id ASC"
+
+        rows = await self.db.adapter.fetch_all(query, params)
         return [self._decode_payload(row) for row in rows]
 
     async def count_active(self) -> int:
