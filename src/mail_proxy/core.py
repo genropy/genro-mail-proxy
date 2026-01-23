@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import uuid
 from collections.abc import Awaitable, Callable, Iterable
 from datetime import datetime, timezone
 from email.message import EmailMessage
@@ -54,10 +55,15 @@ import aiosmtplib
 
 from .attachments import AttachmentManager
 from .attachments.cache import TieredCache
+from .attachments.large_file_storage import LargeFileStorage, LargeFileStorageError
 from .config_loader import CacheConfig, load_cache_config
 from .logger import get_logger
 from .mailproxy_db import MailProxyDb
-from .entities.tenant.schema import get_tenant_attachment_url, get_tenant_sync_url
+from .entities.tenant.schema import (
+    LargeFileAction,
+    get_tenant_attachment_url,
+    get_tenant_sync_url,
+)
 from .prometheus import MailMetrics
 from .rate_limit import RateLimiter
 from .smtp_pool import SMTPPool
@@ -82,6 +88,18 @@ class AccountConfigurationError(RuntimeError):
     def __init__(self, message: str = "Missing SMTP account configuration"):
         super().__init__(message)
         self.code = "missing_account_configuration"
+
+
+class AttachmentTooLargeError(ValueError):
+    """Raised when an attachment exceeds the size limit and action is 'reject'."""
+
+    def __init__(self, filename: str, size_mb: float, max_size_mb: float):
+        self.filename = filename
+        self.size_mb = size_mb
+        self.max_size_mb = max_size_mb
+        super().__init__(
+            f"Attachment '{filename}' ({size_mb:.1f} MB) exceeds limit ({max_size_mb} MB)"
+        )
 
 
 def _classify_smtp_error(exc: Exception) -> tuple[bool, int | None]:
@@ -1417,6 +1435,10 @@ class MailProxy:
         Constructs headers (From, To, Cc, Bcc, Subject, etc.), sets the body
         content with appropriate MIME type, and fetches/attaches any attachments.
 
+        For large attachments (when tenant has large_file_config enabled with
+        action='rewrite'), uploads them to external storage and replaces them
+        with download links in the email body.
+
         Args:
             data: Message payload with from, to, subject, body, attachments, etc.
 
@@ -1426,6 +1448,7 @@ class MailProxy:
         Raises:
             KeyError: If required fields (from, to) are missing.
             ValueError: If attachment fetching fails.
+            AttachmentTooLargeError: If attachment exceeds limit and action is 'reject'.
         """
 
         def _format_addresses(value: Any) -> str | None:
@@ -1455,8 +1478,9 @@ class MailProxy:
         if message_id := data.get("message_id"):
             msg["Message-ID"] = message_id
         envelope_from = data.get("return_path") or data["from"]
-        subtype = "html" if data.get("content_type", "plain") == "html" else "plain"
-        msg.set_content(data.get("body", ""), subtype=subtype)
+        content_subtype = "html" if data.get("content_type", "plain") == "html" else "plain"
+        body_content = data.get("body", "")
+        msg.set_content(body_content, subtype=content_subtype)
         for header, value in (data.get("headers") or {}).items():
             if value is None:
                 continue
@@ -1468,12 +1492,22 @@ class MailProxy:
 
         attachments = data.get("attachments", []) or []
         if attachments:
+            # Get tenant configuration for large file handling
+            large_file_config = await self._get_large_file_config_for_message(data)
+            large_file_storage = None
+            if large_file_config and large_file_config.get("enabled"):
+                large_file_storage = self._create_large_file_storage(large_file_config)
+
             # Determine which attachment manager to use (tenant-specific or global)
             attachment_manager = await self._get_attachment_manager_for_message(data)
             results = await asyncio.gather(
                 *[self._fetch_attachment_with_timeout(att, attachment_manager) for att in attachments],
                 return_exceptions=True,
             )
+
+            # Track attachments that were converted to download links
+            rewritten_attachments: list[dict[str, Any]] = []
+
             for att, result in zip(attachments, results, strict=True):
                 filename = att.get("filename", "file.bin")
                 if isinstance(result, Exception):
@@ -1483,14 +1517,151 @@ class MailProxy:
                     self.logger.error("Attachment without data (filename=%s) - message will not be sent", filename)
                     raise ValueError(f"Attachment {filename} returned no data")
                 content, resolved_filename = result
-                # Use explicit mime_type if provided, otherwise guess from filename
-                mime_type_override = att.get("mime_type")
-                if mime_type_override and "/" in mime_type_override:
-                    maintype, subtype = mime_type_override.split("/", 1)
-                else:
-                    maintype, subtype = self.attachments.guess_mime(resolved_filename)
-                msg.add_attachment(content, maintype=maintype, subtype=subtype, filename=resolved_filename)
+                size_mb = len(content) / (1024 * 1024)
+
+                # Check if we need to handle this as a large file
+                should_rewrite = False
+                if large_file_config and large_file_config.get("enabled"):
+                    max_size_mb = large_file_config.get("max_size_mb", 10.0)
+                    action = large_file_config.get("action", "warn")
+
+                    if size_mb > max_size_mb:
+                        if action == LargeFileAction.REJECT.value:
+                            raise AttachmentTooLargeError(resolved_filename, size_mb, max_size_mb)
+                        elif action == LargeFileAction.REWRITE.value and large_file_storage:
+                            should_rewrite = True
+                        else:  # warn
+                            self.logger.warning(
+                                "Large attachment %s (%.1f MB) exceeds limit (%.1f MB) - sending anyway",
+                                resolved_filename, size_mb, max_size_mb
+                            )
+
+                if should_rewrite and large_file_storage:
+                    # Upload to external storage and generate download link
+                    file_id = str(uuid.uuid4())
+                    try:
+                        await large_file_storage.upload(file_id, content, resolved_filename)
+                        ttl_days = large_file_config.get("file_ttl_days", 30)
+                        download_url = large_file_storage.get_download_url(
+                            file_id, resolved_filename, expires_in=ttl_days * 86400
+                        )
+                        rewritten_attachments.append({
+                            "filename": resolved_filename,
+                            "size_mb": size_mb,
+                            "url": download_url,
+                        })
+                        self.logger.info(
+                            "Large attachment %s (%.1f MB) uploaded to storage, link generated",
+                            resolved_filename, size_mb
+                        )
+                    except LargeFileStorageError as e:
+                        self.logger.error(
+                            "Failed to upload large attachment %s: %s - attaching normally",
+                            resolved_filename, e
+                        )
+                        # Fall back to normal attachment
+                        should_rewrite = False
+
+                if not should_rewrite:
+                    # Normal attachment: add to email
+                    mime_type_override = att.get("mime_type")
+                    if mime_type_override and "/" in mime_type_override:
+                        maintype, subtype = mime_type_override.split("/", 1)
+                    else:
+                        maintype, subtype = self.attachments.guess_mime(resolved_filename)
+                    msg.add_attachment(content, maintype=maintype, subtype=subtype, filename=resolved_filename)
+
+            # If we have rewritten attachments, append download links to the body
+            if rewritten_attachments:
+                msg = self._append_download_links_to_email(msg, rewritten_attachments, content_subtype)
+
         return msg, envelope_from
+
+    def _append_download_links_to_email(
+        self,
+        msg: EmailMessage,
+        rewritten_attachments: list[dict[str, Any]],
+        content_subtype: str,
+    ) -> EmailMessage:
+        """Append download links for rewritten attachments to the email body.
+
+        Args:
+            msg: The email message to modify.
+            rewritten_attachments: List of dicts with filename, size_mb, url.
+            content_subtype: 'html' or 'plain' indicating body type.
+
+        Returns:
+            Modified EmailMessage with download links appended.
+        """
+        if content_subtype == "html":
+            links_html = []
+            for att in rewritten_attachments:
+                links_html.append(
+                    f'<li><a href="{att["url"]}">{att["filename"]}</a> '
+                    f'({att["size_mb"]:.1f} MB)</li>'
+                )
+            footer = (
+                '<hr style="margin-top: 20px;">'
+                '<p><strong>Large attachments available for download:</strong></p>'
+                f'<ul>{"".join(links_html)}</ul>'
+                '<p><em>Links will expire after the configured retention period.</em></p>'
+            )
+        else:
+            links_text = []
+            for att in rewritten_attachments:
+                links_text.append(f"  - {att['filename']} ({att['size_mb']:.1f} MB): {att['url']}")
+            footer = (
+                "\n\n---\n"
+                "Large attachments available for download:\n"
+                f"{chr(10).join(links_text)}\n"
+                "(Links will expire after the configured retention period.)"
+            )
+
+        # Get current body and append footer
+        current_body = msg.get_content()
+        new_body = current_body + footer
+
+        # Replace the content
+        msg.set_content(new_body, subtype=content_subtype)
+
+        return msg
+
+    async def _get_large_file_config_for_message(self, data: dict[str, Any]) -> dict[str, Any] | None:
+        """Get the large file configuration for a message's tenant.
+
+        Args:
+            data: Message payload dictionary containing account_id.
+
+        Returns:
+            Large file config dict or None if not configured.
+        """
+        account_id = data.get("account_id")
+        if not account_id:
+            return None
+
+        tenant = await self.db.get_tenant_for_account(account_id)
+        if not tenant:
+            return None
+
+        return tenant.get("large_file_config")
+
+    def _create_large_file_storage(self, config: dict[str, Any]) -> LargeFileStorage | None:
+        """Create a LargeFileStorage instance from tenant config.
+
+        Args:
+            config: Large file configuration dict.
+
+        Returns:
+            LargeFileStorage instance or None if not properly configured.
+        """
+        storage_url = config.get("storage_url")
+        if not storage_url:
+            return None
+
+        return LargeFileStorage(
+            storage_url=storage_url,
+            public_base_url=config.get("public_base_url"),
+        )
 
     async def _get_attachment_manager_for_message(self, data: dict[str, Any]) -> AttachmentManager:
         """Get the appropriate AttachmentManager for a message.
