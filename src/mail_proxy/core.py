@@ -306,6 +306,7 @@ class MailProxy:
         self._send_loop_interval = math.inf if self._test_mode else base_send_interval
         self._wake_event = asyncio.Event()  # Wake event for SMTP dispatch loop
         self._wake_client_event = asyncio.Event()  # Wake event for client report loop
+        self._wake_cleanup_event = asyncio.Event()  # Wake event for cleanup loop
         self._run_now_tenant_id: str | None = None  # Tenant to sync on run-now (None = all)
         self._result_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=result_queue_size)
         self._task_smtp: asyncio.Task | None = None
@@ -769,6 +770,7 @@ class MailProxy:
         self._stop.set()
         self._wake_event.set()
         self._wake_client_event.set()
+        self._wake_cleanup_event.set()
         await asyncio.gather(
             *(task for task in [self._task_smtp, self._task_client, self._task_cleanup] if task),
             return_exceptions=True,
@@ -1305,8 +1307,15 @@ class MailProxy:
         Periodically removes idle or expired connections from the pool
         to prevent resource leaks and connection timeouts.
         """
+        cleanup_interval = 150  # seconds
         while not self._stop.is_set():
-            await asyncio.sleep(150)
+            try:
+                await asyncio.wait_for(self._wake_cleanup_event.wait(), timeout=cleanup_interval)
+                self._wake_cleanup_event.clear()
+            except asyncio.TimeoutError:
+                pass  # Normal timeout, proceed with cleanup
+            if self._stop.is_set():
+                break
             await self.pool.cleanup()
 
     async def _refresh_queue_gauge(self) -> None:
