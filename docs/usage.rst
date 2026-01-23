@@ -242,7 +242,8 @@ Proxy sync exchange
 -------------------
 
 When the scheduler has delivery results to report, it POSTs to
-``proxy_sync_url`` with basic auth:
+the tenant's sync URL (``base_url`` + ``client_sync_path``) with the
+configured authentication (bearer token or basic auth):
 
 .. code-block:: json
 

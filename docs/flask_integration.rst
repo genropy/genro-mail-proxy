@@ -226,11 +226,35 @@ Flask application
 Delivery reports endpoint
 -------------------------
 
+**Important**: Authenticate the request to ensure it comes from your mail proxy
+instance. The proxy sends the token configured in the tenant's ``auth_token`` field.
+
 .. code-block:: python
 
    # app.py (continued)
+   from functools import wraps
+
+   def verify_proxy_auth(f):
+       """Decorator to verify mail proxy authentication."""
+       @wraps(f)
+       def decorated(*args, **kwargs):
+           # Check Bearer token (configured in tenant's auth_token)
+           auth_header = request.headers.get("Authorization", "")
+           expected_token = current_app.config.get("MAIL_PROXY_SYNC_TOKEN")
+
+           if expected_token:
+               if not auth_header.startswith("Bearer "):
+                   return jsonify({"error": "Missing authorization"}), 403
+               token = auth_header[7:]  # Remove "Bearer " prefix
+               if token != expected_token:
+                   return jsonify({"error": "Invalid token"}), 403
+
+           return f(*args, **kwargs)
+       return decorated
+
 
    @app.route("/mail/delivery-report", methods=["POST"])
+   @verify_proxy_auth
    def delivery_report():
        """Receive delivery reports from the mail proxy."""
        data = request.get_json()

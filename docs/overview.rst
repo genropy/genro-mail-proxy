@@ -96,7 +96,8 @@ Client synchronisation
 ----------------------
 
 The client report loop periodically performs a ``POST`` using
-``proxy_sync_url`` (or a custom coroutine) whenever there are rows in
+the tenant's ``client_sync_url`` (built from ``base_url`` + ``client_sync_path``)
+whenever there are rows in
 ``messages`` with ``sent_ts`` / ``error_ts`` / ``deferred_ts`` but no
 ``reported_ts``.  The body contains a ``delivery_report`` array with the
 current lifecycle state for each message.  Once the upstream service confirms

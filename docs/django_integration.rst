@@ -233,20 +233,43 @@ Usage in views
 Receiving delivery reports
 --------------------------
 
-The proxy sends delivery reports to your configured ``client_sync_url``.
-Create an endpoint to receive them:
+The proxy sends delivery reports to your configured ``client_sync_path``.
+Create an endpoint to receive them. **Important**: Authenticate the request
+to ensure it comes from your mail proxy instance.
 
 .. code-block:: python
 
    # myapp/views.py
    import json
+   from functools import wraps
+   from django.conf import settings
    from django.views.decorators.csrf import csrf_exempt
    from django.views.decorators.http import require_POST
-   from django.http import JsonResponse
+   from django.http import JsonResponse, HttpResponseForbidden
+
+
+   def verify_proxy_auth(view_func):
+       """Decorator to verify mail proxy authentication."""
+       @wraps(view_func)
+       def wrapper(request, *args, **kwargs):
+           # Check Bearer token (configured in tenant's auth_token)
+           auth_header = request.headers.get("Authorization", "")
+           expected_token = getattr(settings, "MAIL_PROXY_SYNC_TOKEN", None)
+
+           if expected_token:
+               if not auth_header.startswith("Bearer "):
+                   return HttpResponseForbidden("Missing authorization")
+               token = auth_header[7:]  # Remove "Bearer " prefix
+               if token != expected_token:
+                   return HttpResponseForbidden("Invalid token")
+
+           return view_func(request, *args, **kwargs)
+       return wrapper
 
 
    @csrf_exempt
    @require_POST
+   @verify_proxy_auth
    def mail_delivery_report(request):
        """Receive delivery reports from the mail proxy."""
        data = json.loads(request.body)
