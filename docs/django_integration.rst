@@ -366,8 +366,10 @@ For reference, here's how the same functionality looks with Celery:
 
        return JsonResponse({"ok": True})
 
-The Celery approach is simpler to set up if you already have Celery, but you
-lose visibility into what happened after the message was queued.
+The Celery approach is simpler to set up if you already have Celery.
+With `django-celery-results <https://django-celery-results.readthedocs.io/>`_
+you can also track task results, though delivery reports require custom
+implementation rather than being built-in.
 
 Tracking email status
 ---------------------

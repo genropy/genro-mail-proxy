@@ -8,8 +8,16 @@ Flask has no built-in email system. The common solution is Flask-Mail, which
 is synchronous and blocks the request thread during SMTP delivery. For async
 delivery, you typically need Celery + Redis, which adds operational complexity.
 
-genro-mail-proxy provides an alternative: a single service that handles
-queuing, retry, and delivery reports without requiring a message broker.
+genro-mail-proxy provides an alternative: a dedicated email service that handles
+queuing, retry, and delivery reports. It acts as a specialized message broker
+for email, with built-in SMTP handling and delivery tracking.
+
+.. note::
+
+   The HTTP calls to enqueue messages are synchronous (blocking) in the examples
+   below. The "async" benefit is that SMTP delivery happens in the background
+   after the HTTP call returns. For truly non-blocking enqueue, use an async
+   HTTP client or a background thread.
 
 When to use the proxy with Flask
 --------------------------------
@@ -49,12 +57,16 @@ Comparison with Flask-Mail + Celery
    * - Rate limiting
      - Manual implementation
      - Built-in per account
-   * - Blocking
+   * - Blocking HTTP call
      - No (with Celery)
-     - No
+     - Yes (enqueue is sync)*
    * - Operational complexity
      - High (broker + worker)
      - Medium (one service)
+
+\* The HTTP call to enqueue messages blocks until the proxy accepts them,
+but SMTP delivery happens asynchronously. For non-blocking enqueue, use
+an async HTTP client (httpx with asyncio) or a background thread.
 
 Installation
 ------------
