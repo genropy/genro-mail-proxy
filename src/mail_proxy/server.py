@@ -17,12 +17,10 @@ Environment variables:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
-import signal
 import sqlite3
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -90,45 +88,14 @@ _core = MailProxy(
 )
 
 
-_shutdown_event: asyncio.Event | None = None
-
-
-def _handle_signal(signum: int) -> None:
-    """Handle SIGTERM/SIGINT by triggering graceful shutdown."""
-    sig_name = signal.Signals(signum).name
-    _logger.info("Received %s, initiating graceful shutdown...", sig_name)
-    # Wake up any waiting tasks in the core service
-    if _core._stop is not None:
-        _core._stop.set()
-    if _core._wake_event is not None:
-        _core._wake_event.set()
-    if _core._wake_client_event is not None:
-        _core._wake_client_event.set()
-    # Signal the lifespan to exit
-    if _shutdown_event is not None:
-        _shutdown_event.set()
-
-
-def _make_signal_handler(signum: int) -> Callable[[], None]:
-    """Create a signal handler closure for the given signal."""
-    def handler() -> None:
-        _handle_signal(signum)
-    return handler
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Application lifespan handler - starts and stops the core service."""
-    global _shutdown_event
+    """Application lifespan handler - starts and stops the core service.
 
-    # Set up signal handlers for graceful shutdown
-    loop = asyncio.get_running_loop()
-    _shutdown_event = asyncio.Event()
-
-    # Install signal handlers
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, _make_signal_handler(sig))
-
+    Signal handling is delegated to tini (Docker init) and uvicorn.
+    When uvicorn receives SIGTERM/SIGINT, it triggers the lifespan shutdown
+    which calls _core.stop() to gracefully terminate background tasks.
+    """
     _logger.info("Starting mail-proxy service...")
     await _core.start()
     _logger.info("Mail-proxy service started")
