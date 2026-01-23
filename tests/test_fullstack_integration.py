@@ -564,13 +564,15 @@ class TestAttachmentsBase64:
     async def test_base64_attachment(self, api_client, setup_test_tenants):
         """Send email with base64-encoded attachment."""
         await clear_mailhog(MAILHOG_TENANT1_API)
+        await asyncio.sleep(0.5)
 
         ts = int(time.time())
+        msg_id = f"base64-att-{ts}"
         content = "Hello, this is a test attachment content!"
         b64_content = base64.b64encode(content.encode()).decode()
 
         message = {
-            "id": f"base64-att-{ts}",
+            "id": msg_id,
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -586,10 +588,21 @@ class TestAttachmentsBase64:
         resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
+        # Trigger dispatch
         await trigger_dispatch(api_client)
 
-        messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
-        assert len(messages) >= 1
+        # Poll for message to be sent
+        for _ in range(15):
+            await asyncio.sleep(1)
+            resp = await api_client.get("/messages?tenant_id=test-tenant-1")
+            all_msgs = resp.json().get("messages", [])
+            found = [m for m in all_msgs if m.get("id") == msg_id]
+            if found and found[0].get("sent_ts"):
+                break
+
+        # Wait for message in MailHog
+        messages = await wait_for_messages(MAILHOG_TENANT1_API, 1, timeout=10)
+        assert len(messages) >= 1, f"Expected at least 1 message, got {len(messages)}"
 
         # Verify attachment is present
         msg = messages[0]
