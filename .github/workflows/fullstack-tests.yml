@@ -33,28 +33,41 @@ jobs:
       - name: Start infrastructure with docker-compose
         run: |
           cd tests/docker
-          docker compose -f docker-compose.fulltest.yml up -d --build --wait
+          docker compose -f docker-compose.fulltest.yml up -d --build
         timeout-minutes: 5
 
       - name: Wait for services to be ready
         run: |
-          echo "Waiting for mail-proxy..."
+          echo "Waiting for PostgreSQL..."
           for i in {1..30}; do
-            if curl -s http://localhost:8000/health | grep -q "ok"; then
-              echo "Mail-proxy is ready"
+            if docker compose -f tests/docker/docker-compose.fulltest.yml exec -T db pg_isready -U mailproxy 2>/dev/null; then
+              echo "PostgreSQL is ready"
               break
             fi
             echo "Attempt $i/30..."
             sleep 2
           done
 
+          echo "Waiting for mail-proxy..."
+          for i in {1..60}; do
+            if curl -s http://localhost:8000/health | grep -q "ok"; then
+              echo "Mail-proxy is ready"
+              break
+            fi
+            echo "Attempt $i/60..."
+            sleep 2
+          done
+
           echo "Waiting for MinIO bucket setup..."
-          sleep 5
+          sleep 10
 
           echo "Checking all services..."
-          curl -s http://localhost:8000/health
-          curl -s http://localhost:8025/api/v2/messages || true
-          curl -s http://localhost:9000/minio/health/live || true
+          curl -sf http://localhost:8000/health || echo "WARNING: mail-proxy not responding"
+          curl -sf http://localhost:8025/api/v2/messages || echo "WARNING: mailhog-tenant1 not responding"
+          curl -sf http://localhost:9000/minio/health/live || echo "WARNING: minio not responding"
+
+          echo "Service status:"
+          docker compose -f tests/docker/docker-compose.fulltest.yml ps
 
       - name: Run fullstack tests
         run: |
