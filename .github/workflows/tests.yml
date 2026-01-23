@@ -28,7 +28,7 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          pytest --cov=async_mail_service --cov-report=xml --cov-report=term
+          pytest -m "not fullstack" --cov=mail_proxy --cov-report=xml --cov-report=term
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.11'

@@ -100,6 +100,7 @@ testpaths = ["tests"]
 addopts = "-v --cov=mail_proxy --cov-report=term-missing"
 markers = [
     "network: marks tests as requiring network access (deselect with '-m \"not network\"')",
+    "fullstack: marks tests as requiring full Docker infrastructure (PostgreSQL, MailHog, MinIO)",
 ]
 
 [tool.black]
