@@ -9,7 +9,10 @@ Usage:
     uvicorn mail_proxy.server:app --host 0.0.0.0 --port 8000
 
 Environment variables:
-    GMP_DB_PATH: Path to SQLite database (default: /data/mail_service.db)
+    GMP_DB_PATH: Database connection string. Formats:
+        - /path/to/db.sqlite (SQLite file)
+        - postgresql://user:pass@host/db (PostgreSQL)
+        Default: /data/mail_service.db
 """
 
 from __future__ import annotations
@@ -25,12 +28,19 @@ from .api import create_app
 from .core import MailProxy
 
 
-def _get_config_from_db(db_path: str) -> dict[str, str]:
-    """Read configuration from database using sync SQLite.
+def _get_config_from_db(connection_string: str) -> dict[str, str]:
+    """Read configuration from database using sync connection.
 
-    Uses synchronous SQLite to avoid issues with asyncio.run() when
+    Uses synchronous connection to avoid issues with asyncio.run() when
     uvicorn already has an event loop running at module load time.
     """
+    if connection_string.startswith("postgresql://"):
+        return _get_config_from_postgres(connection_string)
+    return _get_config_from_sqlite(connection_string)
+
+
+def _get_config_from_sqlite(db_path: str) -> dict[str, str]:
+    """Read configuration from SQLite database."""
     if not os.path.exists(db_path):
         return {}
     conn = sqlite3.connect(db_path)
@@ -42,6 +52,22 @@ def _get_config_from_db(db_path: str) -> dict[str, str]:
         return {}
     finally:
         conn.close()
+
+
+def _get_config_from_postgres(dsn: str) -> dict[str, str]:
+    """Read configuration from PostgreSQL database."""
+    try:
+        import psycopg
+    except ImportError:
+        return {}
+    try:
+        with psycopg.connect(dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT key, value FROM instance_config")
+                return {row[0]: row[1] for row in cur.fetchall()}
+    except psycopg.OperationalError:
+        # Database or table doesn't exist yet
+        return {}
 
 
 # Initialize from database

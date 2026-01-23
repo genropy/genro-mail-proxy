@@ -4,12 +4,12 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 TZ=Europe/Rome
 
 WORKDIR /app
 
-# Install from PyPI
-RUN pip install --no-cache-dir genro-mail-proxy
+# Install with PostgreSQL support
+RUN pip install --no-cache-dir "genro-mail-proxy[postgresql]"
 
-# Database stored in /data by default (GMP_DB_PATH=/data/mail_service.db)
+# SQLite database stored in /data by default (when not using PostgreSQL)
 VOLUME ["/data"]
 EXPOSE 8000
 
 # Start the server
-CMD ["uvicorn", "async_mail_service.server:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "mail_proxy.server:app", "--host", "0.0.0.0", "--port", "8000"]

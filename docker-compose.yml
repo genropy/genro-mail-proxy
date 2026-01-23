@@ -1,21 +1,29 @@
-version: "3.9"
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mailproxy
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: mailproxy
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mailproxy"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   mailservice:
     build: .
     image: genro-mail-proxy:latest
     environment:
-      - SMTP_HOST=smtp.gmail.com
-      - SMTP_PORT=587
-      - SMTP_USER=${SMTP_USER}
-      - SMTP_PASSWORD=${SMTP_PASSWORD}
-      - FETCH_URL=${FETCH_URL}
-      - DB_PATH=/data/mail_service.db
-      - PORT=8000
+      - GMP_DB_PATH=postgresql://mailproxy:${POSTGRES_PASSWORD:-changeme}@db:5432/mailproxy
     ports:
       - "8000:8000"
-    volumes:
-      - maildata:/data
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
-  maildata:
+  pgdata:

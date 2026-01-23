@@ -26,4 +26,25 @@ When the user asks to show code lines:
 
 ---
 
+## Critical Safety Rules
+
+### NEVER Remove or Move Files Without Explicit Consent
+
+**RULE**: MAI MAI MAI rimuovere cartelle, spostare documenti o fare `rm -rf` senza consenso esplicito dell'utente.
+
+Prima di qualsiasi operazione distruttiva:
+1. **FERMARSI** e chiedere conferma esplicita
+2. **ELENCARE** esattamente cosa verrà rimosso/spostato
+3. **ASPETTARE** un "sì" o "ok" esplicito
+
+Questo include:
+- `rm`, `rm -rf`, `rm -r`
+- `mv` di cartelle
+- `git clean`
+- Qualsiasi comando che elimina o sposta file/cartelle
+
+**NON FARE MAI** assunzioni tipo "sistemo tutto" o "ripristino lo stato originale" che comportano eliminazioni.
+
+---
+
 **All general policies are inherited from the parent document.**
