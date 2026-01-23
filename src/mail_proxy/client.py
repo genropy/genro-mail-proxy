@@ -259,11 +259,36 @@ class MessagesAPI:
         """Add messages to the queue."""
         return self._client._post("/commands/add-messages", {"messages": messages})
 
-    def delete(self, message_ids: str | builtins.list[str]) -> dict[str, Any]:
-        """Delete messages from the queue."""
+    def delete(self, message_ids: str | builtins.list[str], tenant_id: str | None = None) -> dict[str, Any]:
+        """Delete messages from the queue.
+
+        Args:
+            message_ids: Single ID or list of message IDs to delete.
+            tenant_id: Tenant ID (required for multi-tenant mode).
+
+        Returns:
+            dict with 'ok', 'removed' count, 'not_found' and 'unauthorized' lists.
+        """
         if isinstance(message_ids, str):
             message_ids = [message_ids]
-        return self._client._post("/commands/delete-messages", {"ids": message_ids})
+        params = {"tenant_id": tenant_id} if tenant_id else None
+        return self._client._post("/commands/delete-messages", {"ids": message_ids}, params=params)
+
+    def cleanup(self, tenant_id: str, older_than_seconds: int | None = None) -> dict[str, Any]:
+        """Remove reported messages older than retention period.
+
+        Args:
+            tenant_id: Tenant ID (required).
+            older_than_seconds: Override retention period (optional).
+
+        Returns:
+            dict with 'ok' and 'removed' count.
+        """
+        params = {"tenant_id": tenant_id}
+        payload: dict[str, Any] = {}
+        if older_than_seconds is not None:
+            payload["older_than_seconds"] = older_than_seconds
+        return self._client._post("/commands/cleanup-messages", payload, params=params)
 
     def __repr__(self) -> str:
         return f"<MessagesAPI: {len(self.list())} messages>"
@@ -395,11 +420,11 @@ class MailProxyClient:
         resp.raise_for_status()
         return resp.json()
 
-    def _post(self, path: str, data: dict[str, Any] | None = None) -> Any:
+    def _post(self, path: str, data: dict[str, Any] | None = None, params: dict[str, Any] | None = None) -> Any:
         """Make a POST request."""
         import requests
         url = f"{self.url}{path}"
-        resp = requests.post(url, headers=self._headers(), json=data or {}, timeout=30)
+        resp = requests.post(url, headers=self._headers(), json=data or {}, params=params, timeout=30)
         resp.raise_for_status()
         return resp.json()
 

@@ -95,8 +95,8 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
     assert bulk_response_json["queued"] == 1
     assert bulk_response_json["rejected"] == []
 
-    delete_payload = {"tenant_id": "test-tenant", "ids": ["msg-bulk"]}
-    delete_resp = client.post("/commands/delete-messages", json=delete_payload)
+    delete_payload = {"ids": ["msg-bulk"]}
+    delete_resp = client.post("/commands/delete-messages?tenant_id=test-tenant", json=delete_payload)
     assert delete_resp.status_code == 200
     assert delete_resp.json()["removed"] == 1
 
@@ -259,8 +259,8 @@ def test_service_not_initialized_all_commands():
         ("POST", "/commands/suspend", None),
         ("POST", "/commands/activate", None),
         ("POST", "/commands/add-messages", {"messages": []}),
-        ("POST", "/commands/delete-messages", {"tenant_id": "test-tenant", "ids": []}),
-        ("POST", "/commands/cleanup-messages", {"tenant_id": "test-tenant"}),
+        ("POST", "/commands/delete-messages?tenant_id=test-tenant", {"ids": []}),
+        ("POST", "/commands/cleanup-messages?tenant_id=test-tenant", {}),
         ("POST", "/account", {"id": "a", "host": "h", "port": 25}),
         ("GET", "/accounts?tenant_id=test-tenant", None),
         ("DELETE", "/account/test?tenant_id=test-tenant", None),
@@ -412,8 +412,8 @@ def test_cleanup_messages_with_custom_retention():
     client = TestClient(create_app(svc, api_token=API_TOKEN))
     client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
 
-    # With custom older_than_seconds and required tenant_id
-    response = client.post("/commands/cleanup-messages", json={"tenant_id": "test-tenant", "older_than_seconds": 3600})
+    # With custom older_than_seconds and required tenant_id as query param
+    response = client.post("/commands/cleanup-messages?tenant_id=test-tenant", json={"older_than_seconds": 3600})
     assert response.status_code == 200
 
     cmd, data = svc.calls[-1]
@@ -435,8 +435,8 @@ def test_cleanup_messages_default_retention():
     client = TestClient(create_app(svc, api_token=API_TOKEN))
     client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
 
-    # tenant_id is required, older_than_seconds is optional
-    response = client.post("/commands/cleanup-messages", json={"tenant_id": "test-tenant"})
+    # tenant_id is required as query param, older_than_seconds is optional
+    response = client.post("/commands/cleanup-messages?tenant_id=test-tenant", json={})
     assert response.status_code == 200
 
     cmd, data = svc.calls[-1]
@@ -460,7 +460,7 @@ def test_delete_messages_empty_list(client_and_service):
     """Test deleting with empty ID list."""
     client, svc = client_and_service
 
-    response = client.post("/commands/delete-messages", json={"tenant_id": "test-tenant", "ids": []})
+    response = client.post("/commands/delete-messages?tenant_id=test-tenant", json={"ids": []})
     assert response.status_code == 200
     assert response.json()["removed"] == 0
 
@@ -803,8 +803,7 @@ def test_delete_messages_passes_tenant_id_to_service():
     client = TestClient(create_app(svc, api_token=API_TOKEN))
     client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
 
-    response = client.post("/commands/delete-messages", json={
-        "tenant_id": "tenant-beta",
+    response = client.post("/commands/delete-messages?tenant_id=tenant-beta", json={
         "ids": ["msg-1", "msg-2"]
     })
     assert response.status_code == 200
@@ -840,8 +839,7 @@ def test_cleanup_messages_passes_tenant_id_to_service():
     client = TestClient(create_app(svc, api_token=API_TOKEN))
     client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
 
-    response = client.post("/commands/cleanup-messages", json={
-        "tenant_id": "tenant-gamma",
+    response = client.post("/commands/cleanup-messages?tenant_id=tenant-gamma", json={
         "older_than_seconds": 7200
     })
     assert response.status_code == 200
@@ -917,8 +915,7 @@ def test_delete_messages_returns_unauthorized_list():
     client = TestClient(create_app(svc, api_token=API_TOKEN))
     client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
 
-    response = client.post("/commands/delete-messages", json={
-        "tenant_id": "tenant-alpha",
+    response = client.post("/commands/delete-messages?tenant_id=tenant-alpha", json={
         "ids": ["msg-1", "msg-2"]
     })
     assert response.status_code == 200

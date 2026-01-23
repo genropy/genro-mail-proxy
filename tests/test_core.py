@@ -242,6 +242,44 @@ async def test_add_messages_rejects_invalid(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_add_messages_all_rejected_returns_ok_false(tmp_path):
+    """Test that ok=False when ALL messages in a batch are rejected."""
+    core = await make_core(tmp_path)
+    # All messages have validation errors (missing id)
+    payload = {
+        "messages": [
+            {"from": "a@x.com", "to": ["b@x.com"], "subject": "No ID 1", "body": "Body"},
+            {"from": "c@x.com", "to": ["d@x.com"], "subject": "No ID 2", "body": "Body"},
+            {"from": "e@x.com", "to": ["f@x.com"], "subject": "No ID 3", "body": "Body"},
+        ]
+    }
+    result = await core.handle_command("addMessages", payload)
+    assert result["ok"] is False
+    assert result["queued"] == 0
+    assert len(result["rejected"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_add_messages_partial_rejection_returns_ok_true(tmp_path):
+    """Test that ok=True when at least one message is accepted."""
+    core = await make_core(tmp_path)
+    payload = {
+        "messages": [
+            # Valid message
+            {"id": "valid1", "account_id": "acc", "from": "a@x.com", "to": ["b@x.com"], "subject": "OK", "body": "Body"},
+            # Invalid - missing id
+            {"from": "c@x.com", "to": ["d@x.com"], "subject": "No ID", "body": "Body"},
+            # Invalid - missing id
+            {"from": "e@x.com", "to": ["f@x.com"], "subject": "No ID 2", "body": "Body"},
+        ]
+    }
+    result = await core.handle_command("addMessages", payload)
+    assert result["ok"] is True
+    assert result["queued"] == 1
+    assert len(result["rejected"]) == 2
+
+
+@pytest.mark.asyncio
 async def test_duplicate_messages_rejected(tmp_path):
     """Test that duplicate messages are replaced if not sent, rejected if already sent."""
     core = await make_core(tmp_path)

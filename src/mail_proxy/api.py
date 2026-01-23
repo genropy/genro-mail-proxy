@@ -216,7 +216,6 @@ class MessagesResponse(CommandStatus):
 
 class DeleteMessagesPayload(BaseModel):
     """Request payload for deleting messages."""
-    tenant_id: str
     ids: list[str] = Field(default_factory=list)
 
 
@@ -228,7 +227,6 @@ class DeleteMessagesResponse(CommandStatus):
 
 class CleanupMessagesPayload(BaseModel):
     """Request payload for manual cleanup of reported messages."""
-    tenant_id: str
     older_than_seconds: int | None = None
 
 
@@ -457,7 +455,7 @@ def create_app(
         return AddMessagesResponse.model_validate(result)
 
     @router.post("/delete-messages", response_model=DeleteMessagesResponse, response_model_exclude_none=True)
-    async def delete_messages(payload: DeleteMessagesPayload):
+    async def delete_messages(tenant_id: str, payload: DeleteMessagesPayload):
         """Remove messages from the queue by their IDs.
 
         Deletes specified messages from both the queue and tracking tables.
@@ -465,7 +463,8 @@ def create_app(
         Only messages belonging to the specified tenant will be deleted.
 
         Args:
-            payload: Request body containing tenant_id and list of message IDs to remove.
+            tenant_id: Tenant identifier (required for security isolation).
+            payload: Request body containing list of message IDs to remove.
 
         Returns:
             DeleteMessagesResponse: Count of removed messages, IDs not found,
@@ -477,20 +476,24 @@ def create_app(
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
-        result = await service.handle_command("deleteMessages", payload.model_dump())
+        if not tenant_id:
+            raise HTTPException(400, "tenant_id is required")
+        command_data = {"tenant_id": tenant_id, "ids": payload.ids}
+        result = await service.handle_command("deleteMessages", command_data)
         if not result.get("ok"):
             raise HTTPException(400, result.get("error", "Unknown error"))
         return DeleteMessagesResponse.model_validate(result)
 
     @router.post("/cleanup-messages", response_model=CleanupMessagesResponse, response_model_exclude_none=True)
-    async def cleanup_messages(payload: CleanupMessagesPayload):
+    async def cleanup_messages(tenant_id: str, payload: CleanupMessagesPayload):
         """Manually trigger cleanup of reported messages older than retention period.
 
         Only cleans up messages belonging to the specified tenant.
         Optionally specify older_than_seconds to override the retention period.
 
         Args:
-            payload: Request body containing tenant_id and optional older_than_seconds.
+            tenant_id: Tenant identifier (required for security isolation).
+            payload: Request body with optional older_than_seconds override.
 
         Raises:
             HTTPException: 400 if tenant_id is missing.
@@ -498,7 +501,12 @@ def create_app(
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
-        result = await service.handle_command("cleanupMessages", payload.model_dump())
+        if not tenant_id:
+            raise HTTPException(400, "tenant_id is required")
+        command_data = {"tenant_id": tenant_id}
+        if payload.older_than_seconds is not None:
+            command_data["older_than_seconds"] = payload.older_than_seconds
+        result = await service.handle_command("cleanupMessages", command_data)
         if not result.get("ok"):
             raise HTTPException(400, result.get("error", "Unknown error"))
         return CleanupMessagesResponse.model_validate(result)

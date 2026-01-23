@@ -138,9 +138,20 @@ This opens a Python shell with pre-configured objects:
 - ``proxy.status()`` - Server health and scheduler state
 - ``proxy.stats()`` - Queue statistics (tenants, accounts, pending/sent/error counts)
 - ``proxy.run_now()`` - Trigger immediate dispatch cycle
+- ``proxy.suspend()`` - Pause the scheduler (messages remain queued)
+- ``proxy.activate()`` - Resume the scheduler after suspension
 - ``proxy.tenants`` - Tenant management interface
 - ``proxy.accounts`` - Account management interface
 - ``proxy.messages`` - Message management interface
+
+**Message operations:**
+
+- ``proxy.messages.list()`` - List all messages
+- ``proxy.messages.pending()`` - List pending messages
+- ``proxy.messages.sent()`` - List sent messages
+- ``proxy.messages.errors()`` - List messages with errors
+- ``proxy.messages.delete(ids, tenant_id)`` - Delete messages by ID
+- ``proxy.messages.cleanup(tenant_id, older_than_seconds)`` - Remove old reported messages
 
 **Interactive forms:**
 

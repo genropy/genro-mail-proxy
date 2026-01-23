@@ -144,8 +144,12 @@ See :doc:`multi_tenancy` for full architecture details.
 Additional commands
 -------------------
 
-``POST /commands/delete-messages``
+``POST /commands/delete-messages?tenant_id=<tenant_id>``
    Remove messages from the queue by their IDs.
+
+   Query parameters:
+
+   - ``tenant_id`` (string, required): Tenant identifier for security isolation
 
    Request body:
 
@@ -162,11 +166,18 @@ Additional commands
       {
         "ok": true,
         "removed": 2,
-        "not_found": []
+        "not_found": [],
+        "unauthorized": []
       }
 
-``POST /commands/cleanup-messages``
+   The ``unauthorized`` field contains IDs of messages that belong to a different tenant.
+
+``POST /commands/cleanup-messages?tenant_id=<tenant_id>``
    Remove old reported messages based on retention policy.
+
+   Query parameters:
+
+   - ``tenant_id`` (string, required): Tenant identifier for security isolation
 
    Request body (optional):
 
