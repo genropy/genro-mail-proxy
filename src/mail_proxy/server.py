@@ -12,7 +12,7 @@ Environment variables:
     GMP_DB_PATH: Database connection string. Formats:
         - /path/to/db.sqlite (SQLite file)
         - postgresql://user:pass@host/db (PostgreSQL)
-        Default: /data/mail_service.db
+        Default: ./mail_service.db (local dev); Docker sets /data/mail_service.db
 """
 
 from __future__ import annotations
@@ -76,7 +76,8 @@ def _get_config_from_postgres(dsn: str) -> dict[str, str]:
 
 
 # Initialize from database and environment
-_db_path = os.environ.get("GMP_DB_PATH", "/data/mail_service.db")
+# Default to current directory for local development; Docker sets GMP_DB_PATH=/data/mail_service.db
+_db_path = os.environ.get("GMP_DB_PATH", "./mail_service.db")
 _config = _get_config_from_db(_db_path)
 # API token from env takes precedence over database config
 _api_token = os.environ.get("GMP_API_TOKEN") or _config.get("api_token")

@@ -16,7 +16,8 @@ def get_adapter(connection_string: str) -> DbAdapter:
     """Create database adapter from connection string.
 
     Connection string formats:
-        - "/path/to/db.sqlite" or just path → SQLite
+        - "/path/to/db.sqlite" → SQLite (absolute path)
+        - "./path/to/db.sqlite" → SQLite (relative path)
         - "sqlite:/path/to/db.sqlite" → SQLite
         - "sqlite::memory:" → SQLite in-memory
         - "postgresql://user:pass@host:port/dbname" → PostgreSQL
@@ -32,14 +33,19 @@ def get_adapter(connection_string: str) -> DbAdapter:
         ImportError: If postgresql requested but psycopg not installed.
     """
     # Handle bare paths as SQLite (backward compatibility)
-    if connection_string.startswith("/") or connection_string == ":memory:":
+    # Accept absolute paths (/path), relative paths (./path), and :memory:
+    if (
+        connection_string.startswith("/")
+        or connection_string.startswith("./")
+        or connection_string == ":memory:"
+    ):
         return SqliteAdapter(connection_string)
 
     # Parse "type:connection_info" format
     if ":" not in connection_string:
         raise ValueError(
             f"Invalid connection string: '{connection_string}'. "
-            "Expected 'type:connection_info' or absolute path."
+            "Expected 'type:connection_info' or path (absolute or relative)."
         )
 
     db_type, connection_info = connection_string.split(":", 1)
