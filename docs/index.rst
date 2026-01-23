@@ -134,6 +134,7 @@ with separate databases.
    installation
    network_requirements
    usage
+   cli_reference
    attachments
    example_client
    integrations
