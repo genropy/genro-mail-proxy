@@ -519,42 +519,40 @@ class TestBatchOperations:
         msgs = await wait_for_messages(MAILHOG_TENANT1_API, 5, timeout=15)
         assert len(msgs) == 5
 
-    async def test_deduplication(self, api_client, setup_test_tenants):
-        """Duplicate message IDs should be rejected."""
-        # Suspend service to prevent automatic dispatch during test
-        await api_client.post("/commands/suspend")
-        await asyncio.sleep(0.5)  # Give dispatcher time to stop
+    async def test_already_sent_rejected(self, api_client, setup_test_tenants):
+        """Resubmitting an already-sent message ID should be rejected."""
+        await clear_mailhog(MAILHOG_TENANT1_API)
 
         ts = int(time.time())
-        msg_id = f"dedup-test-{ts}"
+        msg_id = f"already-sent-test-{ts}"
 
         message = {
             "id": msg_id,
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
-            "subject": "Dedup Test",
+            "subject": "Already Sent Test",
             "body": "First message",
         }
 
-        try:
-            # First send - should be queued
-            resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
-            assert resp.status_code == 200
-            data1 = resp.json()
-            assert data1.get("queued") == 1
+        # First send - should be queued and sent
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        assert resp.status_code == 200
+        assert resp.json().get("queued") == 1
 
-            # Second send with same ID - should be rejected as duplicate
-            message["body"] = "Duplicate message"
-            resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
-            data2 = resp.json()
-            # Should be rejected as duplicate (queued=0) or explicitly in rejected list
-            rejected = data2.get("rejected", [])
-            queued = data2.get("queued", 0)
-            assert queued == 0 or len(rejected) >= 1, f"Expected duplicate rejection, got queued={queued}, rejected={rejected}"
-        finally:
-            # Re-activate service
-            await api_client.post("/commands/activate")
+        # Trigger dispatch and wait for message to be sent
+        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
+        await wait_for_messages(MAILHOG_TENANT1_API, 1, timeout=10)
+
+        # Second send with same ID - should be rejected as "already sent"
+        message["body"] = "Updated message"
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        data = resp.json()
+        # Should be rejected because message was already sent (sent_ts IS NOT NULL)
+        rejected = data.get("rejected", [])
+        queued = data.get("queued", 0)
+        assert queued == 0, f"Expected 0 queued (already sent), got {queued}"
+        assert any(r.get("reason") == "already sent" for r in rejected), f"Expected 'already sent' rejection, got {rejected}"
 
 
 # ============================================
@@ -1941,8 +1939,10 @@ class TestUnicodeEncoding:
     async def test_emoji_in_body(self, api_client, setup_test_tenants):
         """Emails with emoji in body should be sent correctly."""
         await clear_mailhog(MAILHOG_TENANT1_API)
+        await asyncio.sleep(0.5)  # Give MailHog time to clear
 
         ts = int(time.time())
+        msg_id = f"emoji-body-{ts}"
         emoji_body = """
         Hello! 👋
 
@@ -1958,7 +1958,7 @@ class TestUnicodeEncoding:
         """
 
         message = {
-            "id": f"emoji-body-{ts}",
+            "id": msg_id,
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -1969,12 +1969,21 @@ class TestUnicodeEncoding:
         resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
-        # Trigger dispatch
+        # Trigger dispatch and wait for processing
         await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
 
-        # Wait for message with longer timeout (emoji encoding may take longer)
-        messages = await wait_for_messages(MAILHOG_TENANT1_API, 1, timeout=15)
-        assert len(messages) >= 1
+        # Poll for message status to confirm it was processed
+        for _ in range(20):
+            await asyncio.sleep(1)
+            resp = await api_client.get("/messages?tenant_id=test-tenant-1")
+            all_msgs = resp.json().get("messages", [])
+            found = [m for m in all_msgs if m.get("id") == msg_id]
+            if found and found[0].get("sent_ts"):
+                break
+
+        # Wait for message in MailHog
+        messages = await wait_for_messages(MAILHOG_TENANT1_API, 1, timeout=10)
+        assert len(messages) >= 1, f"Expected at least 1 message in MailHog, found {len(messages)}"
 
     async def test_international_characters(self, api_client, setup_test_tenants):
         """Emails with international characters should be sent correctly."""
