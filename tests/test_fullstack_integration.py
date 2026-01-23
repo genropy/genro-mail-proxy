@@ -750,9 +750,10 @@ class TestMessageManagement:
         """Can list all messages."""
         resp = await api_client.get("/messages?tenant_id=test-tenant-1")
         assert resp.status_code == 200
-        # Response should be a list
+        # Response should be {"ok": True, "messages": [...]}
         data = resp.json()
-        assert isinstance(data, list)
+        assert data.get("ok") is True
+        assert isinstance(data.get("messages"), list)
 
     async def test_delete_messages(self, api_client, setup_test_tenants):
         """Can delete messages by ID."""

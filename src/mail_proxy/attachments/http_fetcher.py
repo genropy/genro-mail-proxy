@@ -67,10 +67,13 @@ class HttpFetcher:
         """Parse HTTP path into server URL and params.
 
         Args:
-            path: Path in format "[server]params" or just "params".
+            path: Path in one of these formats:
+                - "[server]params" - explicit server with params
+                - "http://..." or "https://..." - direct URL (returns empty params)
+                - "params" - uses default endpoint
 
         Returns:
-            Tuple of (server_url, params).
+            Tuple of (server_url, params). Empty params means direct URL fetch (GET).
 
         Raises:
             ValueError: If path format is invalid or no endpoint available.
@@ -81,6 +84,10 @@ class HttpFetcher:
             if not match:
                 raise ValueError(f"Invalid HTTP path format: {path}")
             return match.group(1), match.group(2)
+
+        # Direct URL (http_url mode)
+        if path.startswith(("http://", "https://")):
+            return path, ""
 
         # Use default endpoint
         if not self._default_endpoint:
@@ -118,10 +125,14 @@ class HttpFetcher:
     async def fetch(
         self, path: str, auth_override: dict[str, str] | None = None
     ) -> bytes:
-        """Fetch a single attachment via HTTP POST with JSON body.
+        """Fetch a single attachment via HTTP.
+
+        Uses GET for direct URLs (empty params) or POST with JSON body for
+        endpoint-based fetching.
 
         Args:
-            path: HTTP path (without the "@" prefix).
+            path: HTTP path in format "[url]" for direct fetch or "[endpoint]params"
+                for POST-based fetching.
             auth_override: Optional auth config to use instead of default.
 
         Returns:
@@ -134,13 +145,21 @@ class HttpFetcher:
         server_url, params = self._parse_path(path)
         headers = self._get_auth_headers(auth_override)
 
-        async with aiohttp.ClientSession() as session, session.post(
-            server_url,
-            json={"storage_path": params},
-            headers=headers,
-        ) as response:
-            response.raise_for_status()
-            return await response.read()
+        async with aiohttp.ClientSession() as session:
+            if not params:
+                # Direct URL fetch (http_url mode) - use GET
+                async with session.get(server_url, headers=headers) as response:
+                    response.raise_for_status()
+                    return await response.read()
+            else:
+                # Endpoint-based fetch - use POST with JSON body
+                async with session.post(
+                    server_url,
+                    json={"storage_path": params},
+                    headers=headers,
+                ) as response:
+                    response.raise_for_status()
+                    return await response.read()
 
     async def fetch_batch(
         self,
@@ -184,32 +203,53 @@ class HttpFetcher:
                 if len(items) == 1:
                     # Single item - use simple fetch
                     storage_path, params = items[0]
-                    async with session.post(
-                        server_url,
-                        json={"storage_path": params},
-                        headers=headers,
-                    ) as response:
-                        response.raise_for_status()
-                        results[storage_path] = await response.read()
+                    if not params:
+                        # Direct URL (http_url mode) - use GET
+                        async with session.get(server_url, headers=headers) as response:
+                            response.raise_for_status()
+                            results[storage_path] = await response.read()
+                    else:
+                        # Endpoint-based fetch - use POST with JSON body
+                        async with session.post(
+                            server_url,
+                            json={"storage_path": params},
+                            headers=headers,
+                        ) as response:
+                            response.raise_for_status()
+                            results[storage_path] = await response.read()
                 else:
-                    # Multiple items - try batch request
-                    params_list = [params for _, params in items]
-                    try:
-                        batch_results = await self._fetch_batch_from_server(
-                            session, server_url, params_list, headers
-                        )
-                        for (storage_path, _), content in zip(items, batch_results, strict=True):
-                            results[storage_path] = content
-                    except Exception:
-                        # Fallback to individual requests if batch fails
-                        for storage_path, params in items:
-                            async with session.post(
-                                server_url,
-                                json={"storage_path": params},
-                                headers=headers,
-                            ) as response:
+                    # Multiple items - check if all are direct URLs
+                    all_direct = all(not params for _, params in items)
+                    if all_direct:
+                        # All direct URLs - fetch individually with GET
+                        for storage_path, _ in items:
+                            async with session.get(server_url, headers=headers) as response:
                                 response.raise_for_status()
                                 results[storage_path] = await response.read()
+                    else:
+                        # Endpoint-based - try batch request
+                        params_list = [params for _, params in items]
+                        try:
+                            batch_results = await self._fetch_batch_from_server(
+                                session, server_url, params_list, headers
+                            )
+                            for (storage_path, _), content in zip(items, batch_results, strict=True):
+                                results[storage_path] = content
+                        except Exception:
+                            # Fallback to individual requests if batch fails
+                            for storage_path, params in items:
+                                if not params:
+                                    async with session.get(server_url, headers=headers) as response:
+                                        response.raise_for_status()
+                                        results[storage_path] = await response.read()
+                                else:
+                                    async with session.post(
+                                        server_url,
+                                        json={"storage_path": params},
+                                        headers=headers,
+                                    ) as response:
+                                        response.raise_for_status()
+                                        results[storage_path] = await response.read()
 
         return results
 

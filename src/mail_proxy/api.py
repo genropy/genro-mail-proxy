@@ -128,6 +128,12 @@ class BasicOkResponse(CommandStatus):
     pass
 
 
+class StatusResponse(CommandStatus):
+    """Response from /status endpoint."""
+
+    active: bool = Field(..., description="Whether the service is actively processing messages")
+
+
 # AttachmentPayload is imported from models.py for consistency and proper validation
 
 
@@ -362,17 +368,20 @@ def create_app(
         """
         return {"status": "ok"}
 
-    @api.get("/status", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
+    @api.get("/status", response_model=StatusResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
     async def status():
         """Return authenticated service status.
 
         Unlike ``/health``, this endpoint requires authentication and confirms
-        that the API token is valid.
+        that the API token is valid. Also returns whether the service is actively
+        processing messages.
 
         Returns:
-            BasicOkResponse: Status response with ``ok=True``.
+            StatusResponse: Status response with ``ok=True`` and ``active`` state.
         """
-        return BasicOkResponse(ok=True)
+        if not service:
+            raise HTTPException(500, "Service not initialized")
+        return StatusResponse(ok=True, active=service._active)
 
     @router.post("/run-now", response_model=BasicOkResponse, response_model_exclude_none=True)
     async def run_now(tenant_id: str):

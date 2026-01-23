@@ -14,6 +14,7 @@ class DummyService:
         self.calls = []
         self.metrics = types.SimpleNamespace(generate_latest=lambda: b"metrics-data")
         self.messages = []
+        self._active = True
 
     async def handle_command(self, cmd, payload):
         self.calls.append((cmd, payload))
@@ -70,7 +71,9 @@ def test_rejects_missing_token():
 def test_basic_endpoints_dispatch_to_service(client_and_service):
     client, svc = client_and_service
 
-    assert client.get("/status").json() == {"ok": True}
+    status = client.get("/status").json()
+    assert status["ok"] is True
+    assert status["active"] is True
 
     assert client.post("/commands/run-now?tenant_id=test-tenant").json()["ok"] is True
     assert client.post("/commands/suspend").json()["ok"] is True
