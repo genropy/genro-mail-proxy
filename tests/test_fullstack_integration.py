@@ -31,6 +31,7 @@ import time
 from typing import Any
 
 import pytest
+import pytest_asyncio
 
 # Skip if httpx not available
 httpx = pytest.importorskip("httpx")
@@ -75,12 +76,12 @@ SMTP_RANDOM_PORT = 1031
 def api_headers():
     """Standard API headers with auth token."""
     return {
-        "Authorization": f"Bearer {MAILPROXY_TOKEN}",
+        "X-API-Token": MAILPROXY_TOKEN,
         "Content-Type": "application/json",
     }
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def api_client(api_headers):
     """HTTP client for API calls."""
     async with httpx.AsyncClient(
@@ -91,7 +92,7 @@ async def api_client(api_headers):
         yield client
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def setup_test_tenants(api_client):
     """Setup two test tenants with their SMTP accounts."""
     # Create tenant1
@@ -194,29 +195,29 @@ class TestHealthAndBasics:
             resp = await client.get(f"{MAILPROXY_URL}/health")
             assert resp.status_code == 200
             data = resp.json()
-            assert data.get("status") == "healthy"
+            assert data.get("status") == "ok"
 
     async def test_status_endpoint_requires_auth(self):
         """Status endpoint should require authentication."""
         async with httpx.AsyncClient() as client:
             resp = await client.get(f"{MAILPROXY_URL}/status")
-            assert resp.status_code == 403
+            assert resp.status_code == 401
 
     async def test_status_endpoint_with_auth(self, api_client):
         """Status endpoint should work with valid token."""
         resp = await api_client.get("/status")
         assert resp.status_code == 200
         data = resp.json()
-        assert "active" in data
+        assert data.get("ok") is True
 
     async def test_invalid_token_rejected(self):
         """Invalid token should be rejected."""
         async with httpx.AsyncClient() as client:
             resp = await client.get(
                 f"{MAILPROXY_URL}/status",
-                headers={"Authorization": "Bearer wrong-token"},
+                headers={"X-API-Token": "wrong-token"},
             )
-            assert resp.status_code == 403
+            assert resp.status_code == 401
 
 
 # ============================================
@@ -807,7 +808,7 @@ class TestInfrastructureCheck:
 class TestSmtpErrorHandling:
     """Test SMTP error handling and retry logic using error-simulating SMTP servers."""
 
-    @pytest.fixture
+    @pytest_asyncio.fixture
     async def setup_error_accounts(self, api_client, setup_test_tenants):
         """Create accounts pointing to error-simulating SMTP servers."""
         accounts = [
@@ -1119,7 +1120,7 @@ class TestLargeFileStorage:
     MINIO_INTERNAL_URL = "http://minio:9000"
     MINIO_BUCKET = "mail-attachments"
 
-    @pytest.fixture
+    @pytest_asyncio.fixture
     async def setup_large_file_tenant(self, api_client):
         """Create a tenant configured for large file storage with MinIO."""
         tenant_data = {
@@ -1153,7 +1154,7 @@ class TestLargeFileStorage:
 
         return tenant_data
 
-    @pytest.fixture
+    @pytest_asyncio.fixture
     async def setup_reject_tenant(self, api_client):
         """Create a tenant configured to reject large files."""
         tenant_data = {
@@ -1184,7 +1185,7 @@ class TestLargeFileStorage:
 
         return tenant_data
 
-    @pytest.fixture
+    @pytest_asyncio.fixture
     async def setup_warn_tenant(self, api_client):
         """Create a tenant configured to warn but send large files normally."""
         tenant_data = {

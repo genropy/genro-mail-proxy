@@ -56,8 +56,14 @@ class Column:
         return self
 
     def to_sql(self) -> str:
-        """Generate SQL column definition."""
-        parts = [self.name, self.type_]
+        """Generate SQL column definition.
+
+        Column names are quoted with double quotes to handle reserved words
+        like 'user' which is reserved in PostgreSQL.
+        """
+        # Quote column name to handle reserved words (works for SQLite and PostgreSQL)
+        quoted_name = f'"{self.name}"'
+        parts = [quoted_name, self.type_]
 
         if self.primary_key:
             parts.append("PRIMARY KEY")

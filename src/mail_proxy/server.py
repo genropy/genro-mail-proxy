@@ -71,10 +71,11 @@ def _get_config_from_postgres(dsn: str) -> dict[str, str]:
         return {}
 
 
-# Initialize from database
+# Initialize from database and environment
 _db_path = os.environ.get("GMP_DB_PATH", "/data/mail_service.db")
 _config = _get_config_from_db(_db_path)
-_api_token = _config.get("api_token")
+# API token from env takes precedence over database config
+_api_token = os.environ.get("GMP_API_TOKEN") or _config.get("api_token")
 _instance_name = _config.get("name", "mail-proxy")
 
 # Create the core service

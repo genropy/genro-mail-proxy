@@ -82,7 +82,7 @@ class Table:
         for col in self.columns.values():
             if col.relation_sql and col.relation_table:
                 col_defs.append(
-                    f"FOREIGN KEY ({col.name}) REFERENCES {col.relation_table}({col.relation_pk})"
+                    f'FOREIGN KEY ("{col.name}") REFERENCES {col.relation_table}("{col.relation_pk}")'
                 )
 
         return f"CREATE TABLE IF NOT EXISTS {self.name} (\n    " + ",\n    ".join(col_defs) + "\n)"
