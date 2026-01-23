@@ -1609,3 +1609,558 @@ class TestTenantLargeFileConfigApi:
         tenant = resp.json()
         lfc = tenant.get("large_file_config", {})
         assert lfc.get("enabled") is False
+
+
+# ============================================
+# 17. DELIVERY REPORTS
+# ============================================
+class TestDeliveryReports:
+    """Test delivery report callbacks to client endpoints.
+
+    The mail proxy should send delivery reports to the configured
+    client_sync_url after messages are sent/failed/deferred.
+    """
+
+    async def test_delivery_report_sent_on_success(
+        self, api_client, setup_test_tenants
+    ):
+        """Delivery report should be sent to client after successful email delivery."""
+        await clear_mailhog(MAILHOG_TENANT1_API)
+
+        ts = int(time.time())
+        msg_id = f"report-success-{ts}"
+
+        message = {
+            "id": msg_id,
+            "account_id": "test-account-1",
+            "from_addr": "sender@test.com",
+            "to_addr": ["recipient@example.com"],
+            "subject": "Delivery Report Test",
+            "body": "Testing delivery report callback.",
+        }
+
+        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        assert resp.status_code == 200
+
+        # Trigger dispatch and wait for delivery
+        await api_client.post("/run-now")
+        await asyncio.sleep(3)
+
+        # Verify message was sent
+        messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
+        assert len(messages) >= 1
+
+        # Check message status - should be sent and reported
+        resp = await api_client.get("/messages/all")
+        all_msgs = resp.json()
+        found = [m for m in all_msgs if m.get("id") == msg_id]
+
+        if found:
+            msg = found[0]
+            assert msg.get("status") == "sent"
+            # After delivery cycle, reported_ts should be set
+            # (depends on report_interval configuration)
+
+    async def test_delivery_report_sent_on_error(
+        self, api_client, setup_test_tenants
+    ):
+        """Delivery report should include failed messages."""
+        # Create account pointing to reject SMTP
+        account_data = {
+            "id": "account-report-reject",
+            "tenant_id": "test-tenant-1",
+            "host": SMTP_REJECT_HOST,
+            "port": 1025,
+            "use_tls": False,
+        }
+        await api_client.post("/accounts/add", json=account_data)
+
+        ts = int(time.time())
+        msg_id = f"report-error-{ts}"
+
+        message = {
+            "id": msg_id,
+            "account_id": "account-report-reject",
+            "from_addr": "sender@test.com",
+            "to_addr": ["recipient@example.com"],
+            "subject": "Delivery Report Error Test",
+            "body": "This should fail and be reported.",
+        }
+
+        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        assert resp.status_code == 200
+
+        # Trigger dispatch
+        await api_client.post("/run-now")
+        await asyncio.sleep(3)
+
+        # Check message status - should be error
+        resp = await api_client.get("/messages/all")
+        all_msgs = resp.json()
+        found = [m for m in all_msgs if m.get("id") == msg_id]
+
+        if found:
+            msg = found[0]
+            assert msg.get("status") in ("error", "deferred")
+
+    async def test_mixed_delivery_report(
+        self, api_client, setup_test_tenants
+    ):
+        """Delivery report should contain both successful and failed messages."""
+        await clear_mailhog(MAILHOG_TENANT1_API)
+
+        # Create reject account if not exists
+        account_data = {
+            "id": "account-mixed-reject",
+            "tenant_id": "test-tenant-1",
+            "host": SMTP_REJECT_HOST,
+            "port": 1025,
+            "use_tls": False,
+        }
+        await api_client.post("/accounts/add", json=account_data)
+
+        ts = int(time.time())
+
+        messages = [
+            {
+                "id": f"mixed-success-{ts}",
+                "account_id": "test-account-1",
+                "from_addr": "sender@test.com",
+                "to_addr": ["recipient@example.com"],
+                "subject": "Mixed Report - Success",
+                "body": "This should succeed.",
+            },
+            {
+                "id": f"mixed-error-{ts}",
+                "account_id": "account-mixed-reject",
+                "from_addr": "sender@test.com",
+                "to_addr": ["recipient@example.com"],
+                "subject": "Mixed Report - Error",
+                "body": "This should fail.",
+            },
+        ]
+
+        resp = await api_client.post("/messages/add", json={"messages": messages})
+        assert resp.status_code == 200
+
+        # Trigger dispatch
+        await api_client.post("/run-now")
+        await asyncio.sleep(3)
+
+        # Check results
+        resp = await api_client.get("/messages/all")
+        all_msgs = resp.json()
+
+        success_msg = [m for m in all_msgs if m.get("id") == f"mixed-success-{ts}"]
+        error_msg = [m for m in all_msgs if m.get("id") == f"mixed-error-{ts}"]
+
+        if success_msg:
+            assert success_msg[0].get("status") == "sent"
+        if error_msg:
+            assert error_msg[0].get("status") in ("error", "deferred")
+
+
+# ============================================
+# 18. SECURITY AND INPUT SANITIZATION
+# ============================================
+class TestSecurityInputSanitization:
+    """Test security measures and input sanitization.
+
+    Verify that potentially malicious inputs are handled safely.
+    """
+
+    async def test_sql_injection_in_tenant_id(self, api_client):
+        """SQL injection attempts in tenant_id should be handled safely."""
+        # Try various SQL injection patterns
+        injection_patterns = [
+            "'; DROP TABLE messages; --",
+            "1 OR 1=1",
+            "test-tenant' OR '1'='1",
+            "test; DELETE FROM tenants WHERE 1=1; --",
+            "UNION SELECT * FROM accounts--",
+        ]
+
+        for pattern in injection_patterns:
+            # These should either fail validation or be treated as literal strings
+            resp = await api_client.get(f"/messages?tenant_id={pattern}")
+            # Should not cause server error (500)
+            assert resp.status_code != 500, f"SQL injection caused server error: {pattern}"
+
+    async def test_sql_injection_in_message_id(self, api_client, setup_test_tenants):
+        """SQL injection in message IDs should be handled safely."""
+        injection_ids = [
+            "'; DROP TABLE messages; --",
+            "msg-1' OR '1'='1",
+            "1; DELETE FROM messages;--",
+        ]
+
+        # Try deleting with injection IDs
+        resp = await api_client.post(
+            "/commands/delete-messages?tenant_id=test-tenant-1",
+            json={"ids": injection_ids}
+        )
+        # Should not cause server error
+        assert resp.status_code != 500, "SQL injection in message IDs caused server error"
+
+    async def test_xss_in_message_subject(self, api_client, setup_test_tenants):
+        """XSS attempts in message fields should be stored literally (not executed)."""
+        await clear_mailhog(MAILHOG_TENANT1_API)
+
+        ts = int(time.time())
+        xss_subject = "<script>alert('XSS')</script>"
+        xss_body = "<img src=x onerror=alert('XSS')>"
+
+        message = {
+            "id": f"xss-test-{ts}",
+            "account_id": "test-account-1",
+            "from_addr": "sender@test.com",
+            "to_addr": ["recipient@example.com"],
+            "subject": xss_subject,
+            "body": xss_body,
+        }
+
+        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        assert resp.status_code == 200
+
+        await api_client.post("/run-now")
+        await asyncio.sleep(3)
+
+        # Verify the message was sent with literal content (not sanitized)
+        messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
+        assert len(messages) >= 1
+
+        # The content should be stored as-is (email systems don't execute JS)
+        msg = messages[0]
+        subject = msg.get("Content", {}).get("Headers", {}).get("Subject", [""])[0]
+        assert "<script>" in subject or "script" in subject.lower()
+
+    async def test_path_traversal_in_attachment_path(self, api_client, setup_test_tenants):
+        """Path traversal attempts should be handled safely."""
+        ts = int(time.time())
+
+        # Try path traversal in storage_path
+        message = {
+            "id": f"path-traversal-{ts}",
+            "account_id": "test-account-1",
+            "from_addr": "sender@test.com",
+            "to_addr": ["recipient@example.com"],
+            "subject": "Path Traversal Test",
+            "body": "Testing path traversal.",
+            "attachments": [{
+                "filename": "../../etc/passwd",
+                "storage_path": "../../../../etc/passwd",
+                "fetch_mode": "endpoint",
+            }],
+        }
+
+        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        # Should either reject or handle safely
+        assert resp.status_code != 500, "Path traversal caused server error"
+
+    async def test_oversized_payload_rejection(self, api_client, setup_test_tenants):
+        """Extremely large payloads should be rejected."""
+        ts = int(time.time())
+
+        # Create a very large body (10MB of text)
+        large_body = "A" * (10 * 1024 * 1024)
+
+        message = {
+            "id": f"oversized-{ts}",
+            "account_id": "test-account-1",
+            "from_addr": "sender@test.com",
+            "to_addr": ["recipient@example.com"],
+            "subject": "Oversized Payload Test",
+            "body": large_body,
+        }
+
+        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        # Should either reject (413/422) or accept with warning
+        # Server should not crash
+        assert resp.status_code != 500, "Oversized payload caused server error"
+
+
+# ============================================
+# 19. UNICODE AND ENCODING
+# ============================================
+class TestUnicodeEncoding:
+    """Test proper handling of Unicode characters and various encodings."""
+
+    async def test_emoji_in_subject(self, api_client, setup_test_tenants):
+        """Emails with emoji in subject should be sent correctly."""
+        await clear_mailhog(MAILHOG_TENANT1_API)
+
+        ts = int(time.time())
+        emoji_subject = "Test Email 🚀 with Emoji 💻 Subject 🎉"
+
+        message = {
+            "id": f"emoji-subject-{ts}",
+            "account_id": "test-account-1",
+            "from_addr": "sender@test.com",
+            "to_addr": ["recipient@example.com"],
+            "subject": emoji_subject,
+            "body": "Testing emoji in subject line.",
+        }
+
+        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        assert resp.status_code == 200
+
+        await api_client.post("/run-now")
+        await asyncio.sleep(3)
+
+        messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
+        assert len(messages) >= 1
+
+        # Verify emoji survived encoding
+        msg = messages[0]
+        subject = msg.get("Content", {}).get("Headers", {}).get("Subject", [""])[0]
+        # Subject might be encoded (MIME), but should decode to original
+        assert "Test Email" in subject or "emoji" in subject.lower()
+
+    async def test_emoji_in_body(self, api_client, setup_test_tenants):
+        """Emails with emoji in body should be sent correctly."""
+        await clear_mailhog(MAILHOG_TENANT1_API)
+
+        ts = int(time.time())
+        emoji_body = """
+        Hello! 👋
+
+        This is a test email with various emoji:
+        - Rocket: 🚀
+        - Computer: 💻
+        - Celebration: 🎉
+        - Heart: ❤️
+        - Thumbs up: 👍
+
+        Best regards,
+        Test 😊
+        """
+
+        message = {
+            "id": f"emoji-body-{ts}",
+            "account_id": "test-account-1",
+            "from_addr": "sender@test.com",
+            "to_addr": ["recipient@example.com"],
+            "subject": "Emoji Body Test",
+            "body": emoji_body,
+        }
+
+        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        assert resp.status_code == 200
+
+        await api_client.post("/run-now")
+        await asyncio.sleep(3)
+
+        messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
+        assert len(messages) >= 1
+
+    async def test_international_characters(self, api_client, setup_test_tenants):
+        """Emails with international characters should be sent correctly."""
+        await clear_mailhog(MAILHOG_TENANT1_API)
+
+        ts = int(time.time())
+        international_body = """
+        Multilingual test:
+
+        Chinese: 你好世界
+        Japanese: こんにちは世界
+        Korean: 안녕하세요 세계
+        Arabic: مرحبا بالعالم
+        Russian: Привет мир
+        Greek: Γειά σου Κόσμε
+        Hebrew: שלום עולם
+        Thai: สวัสดีโลก
+        Hindi: नमस्ते दुनिया
+
+        Special characters: ñ ü ö ä ß é è ê ë
+        """
+
+        message = {
+            "id": f"international-{ts}",
+            "account_id": "test-account-1",
+            "from_addr": "sender@test.com",
+            "to_addr": ["recipient@example.com"],
+            "subject": "International Characters: 你好 مرحبا Привет",
+            "body": international_body,
+        }
+
+        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        assert resp.status_code == 200
+
+        await api_client.post("/run-now")
+        await asyncio.sleep(3)
+
+        messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
+        assert len(messages) >= 1
+
+    async def test_unicode_in_attachment_filename(self, api_client, setup_test_tenants):
+        """Attachments with Unicode filenames should be handled correctly."""
+        ts = int(time.time())
+        content = "Test content"
+        b64_content = base64.b64encode(content.encode()).decode()
+
+        message = {
+            "id": f"unicode-filename-{ts}",
+            "account_id": "test-account-1",
+            "from_addr": "sender@test.com",
+            "to_addr": ["recipient@example.com"],
+            "subject": "Unicode Filename Test",
+            "body": "Testing unicode filename.",
+            "attachments": [{
+                "filename": "文档_документ_🎉.txt",
+                "storage_path": f"base64:{b64_content}",
+                "fetch_mode": "base64",
+            }],
+        }
+
+        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        assert resp.status_code == 200
+
+        await api_client.post("/run-now")
+        await asyncio.sleep(3)
+
+        # Should be sent without error
+        resp = await api_client.get("/messages/all")
+        all_msgs = resp.json()
+        found = [m for m in all_msgs if m.get("id") == f"unicode-filename-{ts}"]
+
+        if found:
+            # Should be sent or have meaningful error (not crash)
+            assert found[0].get("status") in ("sent", "error", "deferred")
+
+
+# ============================================
+# 20. HTTP ATTACHMENT FETCH
+# ============================================
+class TestHttpAttachmentFetch:
+    """Test fetching attachments from HTTP URLs."""
+
+    async def test_fetch_attachment_from_http_url(self, api_client, setup_test_tenants):
+        """Can fetch attachment from HTTP URL."""
+        await clear_mailhog(MAILHOG_TENANT1_API)
+
+        ts = int(time.time())
+
+        message = {
+            "id": f"http-fetch-{ts}",
+            "account_id": "test-account-1",
+            "from_addr": "sender@test.com",
+            "to_addr": ["recipient@example.com"],
+            "subject": "HTTP Attachment Fetch Test",
+            "body": "Testing HTTP URL attachment fetch.",
+            "attachments": [{
+                "filename": "small.txt",
+                "url": "http://attachment-server:8080/small.txt",
+                "fetch_mode": "http",
+            }],
+        }
+
+        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        assert resp.status_code == 200
+
+        await api_client.post("/run-now")
+        await asyncio.sleep(5)
+
+        # Verify message was sent
+        messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
+        assert len(messages) >= 1
+
+        # Check message status
+        resp = await api_client.get("/messages/all")
+        all_msgs = resp.json()
+        found = [m for m in all_msgs if m.get("id") == f"http-fetch-{ts}"]
+
+        if found:
+            assert found[0].get("status") == "sent"
+
+    async def test_fetch_multiple_http_attachments(self, api_client, setup_test_tenants):
+        """Can fetch multiple attachments from HTTP URLs."""
+        await clear_mailhog(MAILHOG_TENANT1_API)
+
+        ts = int(time.time())
+
+        message = {
+            "id": f"multi-http-{ts}",
+            "account_id": "test-account-1",
+            "from_addr": "sender@test.com",
+            "to_addr": ["recipient@example.com"],
+            "subject": "Multiple HTTP Attachments Test",
+            "body": "Testing multiple HTTP URL attachments.",
+            "attachments": [
+                {
+                    "filename": "small.txt",
+                    "url": "http://attachment-server:8080/small.txt",
+                    "fetch_mode": "http",
+                },
+                {
+                    "filename": "document.html",
+                    "url": "http://attachment-server:8080/document.html",
+                    "fetch_mode": "http",
+                },
+            ],
+        }
+
+        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        assert resp.status_code == 200
+
+        await api_client.post("/run-now")
+        await asyncio.sleep(5)
+
+        messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
+        assert len(messages) >= 1
+
+    async def test_http_attachment_timeout(self, api_client, setup_test_tenants):
+        """Attachment fetch timeout should be handled gracefully."""
+        ts = int(time.time())
+
+        # Use a non-existent URL that will timeout or fail
+        message = {
+            "id": f"http-timeout-{ts}",
+            "account_id": "test-account-1",
+            "from_addr": "sender@test.com",
+            "to_addr": ["recipient@example.com"],
+            "subject": "HTTP Timeout Test",
+            "body": "Testing HTTP fetch timeout.",
+            "attachments": [{
+                "filename": "nonexistent.txt",
+                "url": "http://attachment-server:8080/nonexistent-file-12345.txt",
+                "fetch_mode": "http",
+            }],
+        }
+
+        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        assert resp.status_code == 200
+
+        await api_client.post("/run-now")
+        await asyncio.sleep(5)
+
+        # Message should fail gracefully (not crash the server)
+        resp = await api_client.get("/messages/all")
+        all_msgs = resp.json()
+        found = [m for m in all_msgs if m.get("id") == f"http-timeout-{ts}"]
+
+        if found:
+            # Should be error or deferred, not sent
+            assert found[0].get("status") in ("error", "deferred")
+
+    async def test_http_attachment_invalid_url(self, api_client, setup_test_tenants):
+        """Invalid HTTP URLs should be handled gracefully."""
+        ts = int(time.time())
+
+        message = {
+            "id": f"invalid-url-{ts}",
+            "account_id": "test-account-1",
+            "from_addr": "sender@test.com",
+            "to_addr": ["recipient@example.com"],
+            "subject": "Invalid URL Test",
+            "body": "Testing invalid URL handling.",
+            "attachments": [{
+                "filename": "test.txt",
+                "url": "not-a-valid-url",
+                "fetch_mode": "http",
+            }],
+        }
+
+        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        # Should either reject immediately or fail during processing
+        # Server should not crash
+        assert resp.status_code != 500

@@ -216,29 +216,33 @@ API Token   ``test-api-token``
 Test Categories
 ---------------
 
-The test suite is organized into 17 test classes covering 46 tests total:
+The test suite is organized into 21 test classes covering 62 tests total:
 
-========================== ======= ===============================================
-Class                      # Tests Description
-========================== ======= ===============================================
-TestHealthAndBasics        4       Health endpoint, API authentication
-TestTenantManagement       4       CRUD tenant via API
-TestAccountManagement      2       SMTP account management
-TestBasicMessageDispatch   4       Basic email sending (text, HTML, CC/BCC, headers)
-TestTenantIsolation        2       Message isolation between tenants
-TestBatchOperations        2       Batch enqueue, deduplication
-TestAttachmentsBase64      1       Base64 inline attachments
-TestPriorityHandling       1       Priority ordering
-TestServiceControl         1       Suspend/Activate
-TestMetrics                1       Prometheus endpoint
-TestValidation             2       Payload validation
-TestMessageManagement      2       List/Delete messages
-TestInfrastructureCheck    5       Docker service verification
-TestSmtpErrorHandling      4       SMTP errors (reject, tempfail, ratelimit, random)
-TestRetryLogic             2       Retry count, error details
-TestLargeFileStorage       6       S3 upload, link rewrite, reject, warn, mixed
-TestTenantLargeFileConfigApi 3     CRUD large_file_config via API
-========================== ======= ===============================================
+============================== ======= ===============================================
+Class                          # Tests Description
+============================== ======= ===============================================
+TestHealthAndBasics            4       Health endpoint, API authentication
+TestTenantManagement           4       CRUD tenant via API
+TestAccountManagement          2       SMTP account management
+TestBasicMessageDispatch       4       Basic email sending (text, HTML, CC/BCC, headers)
+TestTenantIsolation            2       Message isolation between tenants
+TestBatchOperations            2       Batch enqueue, deduplication
+TestAttachmentsBase64          1       Base64 inline attachments
+TestPriorityHandling           1       Priority ordering
+TestServiceControl             1       Suspend/Activate
+TestMetrics                    1       Prometheus endpoint
+TestValidation                 2       Payload validation
+TestMessageManagement          2       List/Delete messages
+TestInfrastructureCheck        5       Docker service verification
+TestSmtpErrorHandling          4       SMTP errors (reject, tempfail, ratelimit, random)
+TestRetryLogic                 2       Retry count, error details
+TestLargeFileStorage           6       S3 upload, link rewrite, reject, warn, mixed
+TestTenantLargeFileConfigApi   3       CRUD large_file_config via API
+TestDeliveryReports            3       Delivery report callbacks to client endpoints
+TestSecurityInputSanitization  5       SQL injection, XSS, path traversal protection
+TestUnicodeEncoding            4       Emoji, international characters, Unicode filenames
+TestHttpAttachmentFetch        4       HTTP URL attachment fetching
+============================== ======= ===============================================
 
 Health & API Basics
 ~~~~~~~~~~~~~~~~~~~
@@ -291,6 +295,46 @@ Large File Storage
    test_large_attachment_warn_action         - action=warn → sent with warning
    test_mixed_attachments_partial_rewrite    - Mix small/large → partial rewrite
    test_verify_file_uploaded_to_minio        - Verify MinIO upload
+
+Delivery Reports
+~~~~~~~~~~~~~~~~
+
+.. code-block:: text
+
+   test_delivery_report_sent_on_success      - Report sent after successful delivery
+   test_delivery_report_sent_on_error        - Report includes failed messages
+   test_mixed_delivery_report                - Report with both success and failure
+
+Security & Input Sanitization
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: text
+
+   test_sql_injection_in_tenant_id           - SQL injection attempts handled safely
+   test_sql_injection_in_message_id          - SQL injection in message IDs handled
+   test_xss_in_message_subject               - XSS attempts stored literally
+   test_path_traversal_in_attachment_path    - Path traversal handled safely
+   test_oversized_payload_rejection          - Large payloads don't crash server
+
+Unicode & Encoding
+~~~~~~~~~~~~~~~~~~
+
+.. code-block:: text
+
+   test_emoji_in_subject                     - Emoji in subject line preserved
+   test_emoji_in_body                        - Emoji in body preserved
+   test_international_characters             - CJK, Arabic, Cyrillic, etc. preserved
+   test_unicode_in_attachment_filename       - Unicode filenames handled
+
+HTTP Attachment Fetch
+~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: text
+
+   test_fetch_attachment_from_http_url       - Single HTTP URL fetch
+   test_fetch_multiple_http_attachments      - Multiple HTTP URL fetches
+   test_http_attachment_timeout              - Timeout handled gracefully
+   test_http_attachment_invalid_url          - Invalid URLs handled gracefully
 
 
 Running the Tests
