@@ -170,6 +170,9 @@ class AttachmentManager:
             # Wrap URL in brackets for HttpFetcher
             return ("http", f"[{path}]")
         if fetch_mode == "base64":
+            # Strip "base64:" prefix if present (handles explicit fetch_mode with prefixed path)
+            if path.startswith("base64:"):
+                path = path[7:]
             return ("base64", path)
         if fetch_mode == "filesystem":
             return ("filesystem", path)
