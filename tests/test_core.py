@@ -154,7 +154,9 @@ async def test_run_now_triggers_wakeup(tmp_path):
     db_path = tmp_path / "core-prod.db"
     core = MailProxy(db_path=str(db_path), start_active=True)
     await core.db.init_db()
-    result = await core.handle_command("run now", {})
+    # Create a tenant for the test
+    await core.handle_command("addTenant", {"id": "test-tenant", "name": "Test"})
+    result = await core.handle_command("run now", {"tenant_id": "test-tenant"})
     assert result["ok"] is True
     # "run now" wakes up both loops for immediate processing
     assert core._wake_event.is_set()  # SMTP dispatch loop
@@ -174,7 +176,9 @@ async def test_test_mode_start_waits_for_run_now(tmp_path):
         assert core._task_client is not None
         assert not core._task_smtp.done()
         assert not core._task_client.done()
-        result = await core.handle_command("run now", {})
+        # Create a tenant for the test
+        await core.handle_command("addTenant", {"id": "test-tenant", "name": "Test"})
+        result = await core.handle_command("run now", {"tenant_id": "test-tenant"})
         assert result["ok"] is True
         await asyncio.sleep(0)
         assert not core._wake_event.is_set()
@@ -538,6 +542,12 @@ async def test_cleanup_messages_command(tmp_path):
     """Test manual cleanup of reported messages via command."""
     core = await make_core(tmp_path)
 
+    # Create a tenant and associate the account with it (addAccount does upsert)
+    await core.handle_command("addTenant", {"id": "test-tenant", "name": "Test"})
+    await core.handle_command(
+        "addAccount", {"id": "acc", "tenant_id": "test-tenant", "host": "smtp.local", "port": 25}
+    )
+
     # Add and send a message
     payload = {
         "messages": [
@@ -563,7 +573,10 @@ async def test_cleanup_messages_command(tmp_path):
     assert len(messages) == 1
 
     # Cleanup with custom threshold (older than 5000 seconds)
-    result = await core.handle_command("cleanupMessages", {"older_than_seconds": 5000})
+    # tenant_id is required for security isolation
+    result = await core.handle_command(
+        "cleanupMessages", {"tenant_id": "test-tenant", "older_than_seconds": 5000}
+    )
     assert result["ok"] is True
     assert result["removed"] == 1
 

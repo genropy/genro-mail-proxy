@@ -197,6 +197,64 @@ class MessagesTable(Table):
         )
         return {row["id"] for row in rows}
 
+    async def get_ids_for_tenant(self, ids: list[str], tenant_id: str) -> set[str]:
+        """Return the subset of ids that belong to the specified tenant.
+
+        Validates ownership by joining with accounts table.
+
+        Args:
+            ids: List of message IDs to check.
+            tenant_id: Tenant ID to validate ownership against.
+
+        Returns:
+            Set of message IDs that belong to the tenant.
+        """
+        if not ids:
+            return set()
+
+        params: dict[str, Any] = {"tenant_id": tenant_id}
+        params.update({f"id_{i}": mid for i, mid in enumerate(ids)})
+        placeholders = ", ".join(f":id_{i}" for i in range(len(ids)))
+
+        rows = await self.db.adapter.fetch_all(
+            f"""
+            SELECT m.id
+            FROM messages m
+            JOIN accounts a ON m.account_id = a.id
+            WHERE m.id IN ({placeholders})
+              AND a.tenant_id = :tenant_id
+            """,
+            params,
+        )
+        return {row["id"] for row in rows}
+
+    async def remove_reported_before_for_tenant(
+        self, threshold_ts: int, tenant_id: str
+    ) -> int:
+        """Delete reported messages older than threshold_ts for a specific tenant.
+
+        Args:
+            threshold_ts: Unix timestamp threshold.
+            tenant_id: Only delete messages belonging to this tenant.
+
+        Returns:
+            Number of deleted messages.
+        """
+        return await self.execute(
+            """
+            DELETE FROM messages
+            WHERE id IN (
+                SELECT m.id FROM messages m
+                JOIN accounts a ON m.account_id = a.id
+                WHERE a.tenant_id = :tenant_id
+                  AND m.reported_ts IS NOT NULL
+                  AND m.reported_ts < :threshold_ts
+                  AND (m.sent_ts IS NOT NULL OR m.error_ts IS NOT NULL)
+            )
+            """,
+            {"threshold_ts": threshold_ts, "tenant_id": tenant_id},
+        )
+
     async def fetch_reports(self, limit: int) -> list[dict[str, Any]]:
         """Return messages that need to be reported back to the client."""
         rows = await self.db.adapter.fetch_all(

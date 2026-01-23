@@ -54,7 +54,7 @@ def test_returns_500_when_service_missing():
     create_app(DummyService(), api_token=API_TOKEN)
     api.service = None
     client = TestClient(api.app)
-    response = client.post("/commands/run-now", headers={API_TOKEN_HEADER_NAME: API_TOKEN})
+    response = client.post("/commands/run-now?tenant_id=test-tenant", headers={API_TOKEN_HEADER_NAME: API_TOKEN})
     assert response.status_code == 500
     assert response.json()["detail"] == "Service not initialized"
 
@@ -72,7 +72,7 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
 
     assert client.get("/status").json() == {"ok": True}
 
-    assert client.post("/commands/run-now").json()["ok"] is True
+    assert client.post("/commands/run-now?tenant_id=test-tenant").json()["ok"] is True
     assert client.post("/commands/suspend").json()["ok"] is True
     assert client.post("/commands/activate").json()["ok"] is True
 
@@ -95,7 +95,7 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
     assert bulk_response_json["queued"] == 1
     assert bulk_response_json["rejected"] == []
 
-    delete_payload = {"ids": ["msg-bulk"]}
+    delete_payload = {"tenant_id": "test-tenant", "ids": ["msg-bulk"]}
     delete_resp = client.post("/commands/delete-messages", json=delete_payload)
     assert delete_resp.status_code == 200
     assert delete_resp.json()["removed"] == 1
@@ -104,11 +104,11 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
     assert client.post("/account", json=account).json()["ok"] is True
     # tenant_id is now required for /accounts and /messages
     assert client.get("/accounts?tenant_id=test-tenant").json()["ok"] is True
-    assert client.delete("/account/acc").json()["ok"] is True
+    assert client.delete("/account/acc?tenant_id=test-tenant").json()["ok"] is True
     assert client.get("/messages?tenant_id=test-tenant").json()["ok"] is True
 
     expected_calls = [
-        ("run now", {}),
+        ("run now", {"tenant_id": "test-tenant"}),
         ("suspend", {}),
         ("activate", {}),
         (
@@ -127,10 +127,10 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
                 ]
             },
         ),
-        ("deleteMessages", {"ids": ["msg-bulk"]}),
+        ("deleteMessages", {"tenant_id": "test-tenant", "ids": ["msg-bulk"]}),
         ("addAccount", {"id": "acc", "tenant_id": None, "host": "smtp.local", "port": 25, "user": None, "password": None, "ttl": 300, "limit_per_minute": None, "limit_per_hour": None, "limit_per_day": None, "limit_behavior": "defer", "use_tls": None, "batch_size": None}),
         ("listAccounts", {"tenant_id": "test-tenant"}),
-        ("deleteAccount", {"id": "acc"}),
+        ("deleteAccount", {"id": "acc", "tenant_id": "test-tenant"}),
         ("listMessages", {"tenant_id": "test-tenant", "active_only": False}),
     ]
     assert svc.calls == expected_calls
@@ -255,15 +255,15 @@ def test_service_not_initialized_all_commands():
 
     # Test all command endpoints
     endpoints_to_test = [
-        ("POST", "/commands/run-now", None),
+        ("POST", "/commands/run-now?tenant_id=test-tenant", None),
         ("POST", "/commands/suspend", None),
         ("POST", "/commands/activate", None),
         ("POST", "/commands/add-messages", {"messages": []}),
-        ("POST", "/commands/delete-messages", {"ids": []}),
-        ("POST", "/commands/cleanup-messages", {}),
+        ("POST", "/commands/delete-messages", {"tenant_id": "test-tenant", "ids": []}),
+        ("POST", "/commands/cleanup-messages", {"tenant_id": "test-tenant"}),
         ("POST", "/account", {"id": "a", "host": "h", "port": 25}),
         ("GET", "/accounts?tenant_id=test-tenant", None),
-        ("DELETE", "/account/test", None),
+        ("DELETE", "/account/test?tenant_id=test-tenant", None),
         ("GET", "/messages?tenant_id=test-tenant", None),
         ("GET", "/metrics", None),
     ]
@@ -412,13 +412,14 @@ def test_cleanup_messages_with_custom_retention():
     client = TestClient(create_app(svc, api_token=API_TOKEN))
     client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
 
-    # With custom older_than_seconds
-    response = client.post("/commands/cleanup-messages", json={"older_than_seconds": 3600})
+    # With custom older_than_seconds and required tenant_id
+    response = client.post("/commands/cleanup-messages", json={"tenant_id": "test-tenant", "older_than_seconds": 3600})
     assert response.status_code == 200
 
     cmd, data = svc.calls[-1]
     assert cmd == "cleanupMessages"
     assert data["older_than_seconds"] == 3600
+    assert data["tenant_id"] == "test-tenant"
 
 
 def test_cleanup_messages_default_retention():
@@ -434,13 +435,14 @@ def test_cleanup_messages_default_retention():
     client = TestClient(create_app(svc, api_token=API_TOKEN))
     client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
 
-    # With default (no body or empty body)
-    response = client.post("/commands/cleanup-messages", json={})
+    # tenant_id is required, older_than_seconds is optional
+    response = client.post("/commands/cleanup-messages", json={"tenant_id": "test-tenant"})
     assert response.status_code == 200
 
     cmd, data = svc.calls[-1]
     assert cmd == "cleanupMessages"
     assert data.get("older_than_seconds") is None
+    assert data["tenant_id"] == "test-tenant"
 
 
 def test_empty_message_list_accepted(client_and_service):
@@ -458,7 +460,7 @@ def test_delete_messages_empty_list(client_and_service):
     """Test deleting with empty ID list."""
     client, svc = client_and_service
 
-    response = client.post("/commands/delete-messages", json={"ids": []})
+    response = client.post("/commands/delete-messages", json={"tenant_id": "test-tenant", "ids": []})
     assert response.status_code == 200
     assert response.json()["removed"] == 0
 
@@ -747,3 +749,179 @@ def test_nonexistent_tenant_returns_empty():
     response_messages = client.get("/messages?tenant_id=nonexistent")
     assert response_messages.status_code == 200
     assert response_messages.json()["messages"] == []
+
+
+# ============================================================================
+# Write Endpoint Tenant Isolation Security Tests (Issue #31)
+# ============================================================================
+
+def test_run_now_requires_tenant_id():
+    """Test that /commands/run-now endpoint requires tenant_id parameter."""
+    svc = DummyService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
+
+    # Request without tenant_id should fail with 422 validation error
+    response = client.post("/commands/run-now")
+    assert response.status_code == 422
+
+
+def test_run_now_passes_tenant_id_to_service():
+    """Test that /commands/run-now passes tenant_id to service."""
+    svc = DummyService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
+
+    response = client.post("/commands/run-now?tenant_id=tenant-alpha")
+    assert response.status_code == 200
+
+    # Verify tenant_id was passed to service
+    assert svc.calls[-1] == ("run now", {"tenant_id": "tenant-alpha"})
+
+
+def test_delete_messages_requires_tenant_id():
+    """Test that /commands/delete-messages requires tenant_id in payload."""
+    svc = DummyService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
+
+    # Request without tenant_id should fail with 422 validation error
+    response = client.post("/commands/delete-messages", json={"ids": ["msg-1"]})
+    assert response.status_code == 422
+
+
+def test_delete_messages_passes_tenant_id_to_service():
+    """Test that /commands/delete-messages passes tenant_id to service."""
+    class DeleteService(DummyService):
+        async def handle_command(self, cmd, payload):
+            self.calls.append((cmd, payload))
+            if cmd == "deleteMessages":
+                return {"ok": True, "removed": 1, "not_found": [], "unauthorized": []}
+            return {"ok": True}
+
+    svc = DeleteService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
+
+    response = client.post("/commands/delete-messages", json={
+        "tenant_id": "tenant-beta",
+        "ids": ["msg-1", "msg-2"]
+    })
+    assert response.status_code == 200
+
+    # Verify tenant_id was passed to service
+    assert svc.calls[-1] == ("deleteMessages", {
+        "tenant_id": "tenant-beta",
+        "ids": ["msg-1", "msg-2"]
+    })
+
+
+def test_cleanup_messages_requires_tenant_id():
+    """Test that /commands/cleanup-messages requires tenant_id in payload."""
+    svc = DummyService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
+
+    # Request without tenant_id should fail with 422 validation error
+    response = client.post("/commands/cleanup-messages", json={"older_than_seconds": 3600})
+    assert response.status_code == 422
+
+
+def test_cleanup_messages_passes_tenant_id_to_service():
+    """Test that /commands/cleanup-messages passes tenant_id to service."""
+    class CleanupService(DummyService):
+        async def handle_command(self, cmd, payload):
+            self.calls.append((cmd, payload))
+            if cmd == "cleanupMessages":
+                return {"ok": True, "removed": 3}
+            return {"ok": True}
+
+    svc = CleanupService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
+
+    response = client.post("/commands/cleanup-messages", json={
+        "tenant_id": "tenant-gamma",
+        "older_than_seconds": 7200
+    })
+    assert response.status_code == 200
+
+    # Verify tenant_id was passed to service
+    assert svc.calls[-1] == ("cleanupMessages", {
+        "tenant_id": "tenant-gamma",
+        "older_than_seconds": 7200
+    })
+
+
+def test_delete_account_requires_tenant_id():
+    """Test that DELETE /account/{id} requires tenant_id parameter."""
+    svc = DummyService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
+
+    # Request without tenant_id should fail with 422 validation error
+    response = client.delete("/account/acc-123")
+    assert response.status_code == 422
+
+
+def test_delete_account_passes_tenant_id_to_service():
+    """Test that DELETE /account/{id} passes tenant_id to service."""
+    svc = DummyService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
+
+    response = client.delete("/account/acc-123?tenant_id=tenant-delta")
+    assert response.status_code == 200
+
+    # Verify both account_id and tenant_id were passed to service
+    assert svc.calls[-1] == ("deleteAccount", {
+        "id": "acc-123",
+        "tenant_id": "tenant-delta"
+    })
+
+
+def test_delete_account_returns_error_for_unauthorized():
+    """Test that DELETE /account returns error when account doesn't belong to tenant."""
+    class UnauthorizedService(DummyService):
+        async def handle_command(self, cmd, payload):
+            self.calls.append((cmd, payload))
+            if cmd == "deleteAccount":
+                return {"ok": False, "error": "account not found or not owned by tenant"}
+            return {"ok": True}
+
+    svc = UnauthorizedService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
+
+    response = client.delete("/account/acc-other-tenant?tenant_id=tenant-alpha")
+    assert response.status_code == 400
+    assert "not owned by tenant" in response.json()["detail"]
+
+
+def test_delete_messages_returns_unauthorized_list():
+    """Test that delete-messages returns list of unauthorized message IDs."""
+    class AuthzService(DummyService):
+        async def handle_command(self, cmd, payload):
+            self.calls.append((cmd, payload))
+            if cmd == "deleteMessages":
+                # Simulating that msg-2 belongs to another tenant
+                return {
+                    "ok": True,
+                    "removed": 1,
+                    "not_found": [],
+                    "unauthorized": ["msg-2"]
+                }
+            return {"ok": True}
+
+    svc = AuthzService()
+    client = TestClient(create_app(svc, api_token=API_TOKEN))
+    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
+
+    response = client.post("/commands/delete-messages", json={
+        "tenant_id": "tenant-alpha",
+        "ids": ["msg-1", "msg-2"]
+    })
+    assert response.status_code == 200
+    data = response.json()
+    assert data["removed"] == 1
+    assert data["unauthorized"] == ["msg-2"]

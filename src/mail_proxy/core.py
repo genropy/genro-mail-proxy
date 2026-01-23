@@ -472,8 +472,12 @@ class MailProxy:
         payload = payload or {}
         match cmd:
             case "run now":
-                # Store tenant_id for targeted sync (None = all tenants)
-                self._run_now_tenant_id = payload.get("tenant_id")
+                # tenant_id is required for security isolation
+                tenant_id = payload.get("tenant_id") if isinstance(payload, dict) else None
+                if not tenant_id:
+                    return {"ok": False, "error": "tenant_id is required"}
+                # Store tenant_id for targeted sync
+                self._run_now_tenant_id = tenant_id
                 self._wake_event.set()  # Wake SMTP dispatch loop (process messages)
                 self._wake_client_event.set()  # Wake client report loop (sync with tenant)
                 return {"ok": True}
@@ -493,15 +497,28 @@ class MailProxy:
                 accounts = await self.db.list_accounts(tenant_id=tenant_id)
                 return {"ok": True, "accounts": accounts}
             case "deleteAccount":
+                tenant_id = payload.get("tenant_id") if isinstance(payload, dict) else None
+                if not tenant_id:
+                    return {"ok": False, "error": "tenant_id is required"}
                 account_id = payload.get("id")
+                # Verify account belongs to tenant before deletion
+                try:
+                    account = await self.db.get_account(account_id)
+                    if account.get("tenant_id") != tenant_id:
+                        return {"ok": False, "error": "account not found or not owned by tenant"}
+                except ValueError:
+                    return {"ok": False, "error": "account not found or not owned by tenant"}
                 await self.db.delete_account(account_id)
                 await self._refresh_queue_gauge()
                 return {"ok": True}
             case "deleteMessages":
+                tenant_id = payload.get("tenant_id") if isinstance(payload, dict) else None
+                if not tenant_id:
+                    return {"ok": False, "error": "tenant_id is required"}
                 ids = payload.get("ids") if isinstance(payload, dict) else []
-                removed, not_found = await self._delete_messages(ids or [])
+                removed, not_found, unauthorized = await self._delete_messages(ids or [], tenant_id)
                 await self._refresh_queue_gauge()
-                return {"ok": True, "removed": removed, "not_found": not_found}
+                return {"ok": True, "removed": removed, "not_found": not_found, "unauthorized": unauthorized}
             case "listMessages":
                 tenant_id = payload.get("tenant_id") if isinstance(payload, dict) else None
                 if not tenant_id:
@@ -512,8 +529,11 @@ class MailProxy:
             case "addMessages":
                 return await self._handle_add_messages(payload)
             case "cleanupMessages":
+                tenant_id = payload.get("tenant_id") if isinstance(payload, dict) else None
+                if not tenant_id:
+                    return {"ok": False, "error": "tenant_id is required"}
                 older_than = payload.get("older_than_seconds") if isinstance(payload, dict) else None
-                removed = await self._cleanup_reported_messages(older_than)
+                removed = await self._cleanup_reported_messages(older_than, tenant_id)
                 return {"ok": True, "removed": removed}
             case "addTenant":
                 await self.db.add_tenant(payload)
@@ -647,33 +667,48 @@ class MailProxy:
         }
         return result
 
-    async def _delete_messages(self, message_ids: Iterable[str]) -> tuple[int, list[str]]:
-        """Remove messages from the queue by their IDs.
+    async def _delete_messages(
+        self, message_ids: Iterable[str], tenant_id: str
+    ) -> tuple[int, list[str], list[str]]:
+        """Remove messages from the queue by their IDs, with tenant validation.
 
         Args:
             message_ids: Iterable of message IDs to delete.
+            tenant_id: Tenant ID - only messages belonging to this tenant will be deleted.
 
         Returns:
-            Tuple of (count of removed messages, list of IDs not found).
+            Tuple of (count of removed messages, list of IDs not found, list of unauthorized IDs).
         """
         ids = {mid for mid in message_ids if mid}
         if not ids:
-            return 0, []
+            return 0, [], []
+
+        # Get messages that belong to this tenant (via account relationship)
+        authorized_ids = await self.db.messages.get_ids_for_tenant(list(ids), tenant_id)
+
         removed = 0
         missing: list[str] = []
+        unauthorized: list[str] = []
+
         for mid in sorted(ids):
+            if mid not in authorized_ids:
+                unauthorized.append(mid)
+                continue
             if await self.db.delete_message(mid):
                 removed += 1
             else:
                 missing.append(mid)
-        return removed, missing
+        return removed, missing, unauthorized
 
-    async def _cleanup_reported_messages(self, older_than_seconds: int | None = None) -> int:
+    async def _cleanup_reported_messages(
+        self, older_than_seconds: int | None = None, tenant_id: str | None = None
+    ) -> int:
         """Remove reported messages older than the specified threshold.
 
         Args:
             older_than_seconds: Remove messages reported more than this many seconds ago.
                               If None, uses the configured retention period.
+            tenant_id: If provided, only cleanup messages belonging to this tenant.
 
         Returns:
             Number of messages removed.
@@ -684,7 +719,14 @@ class MailProxy:
             retention = max(0, int(older_than_seconds))
 
         threshold = self._utc_now_epoch() - retention
-        removed = await self.db.remove_reported_before(threshold)
+
+        if tenant_id:
+            removed = await self.db.messages.remove_reported_before_for_tenant(
+                threshold, tenant_id
+            )
+        else:
+            removed = await self.db.remove_reported_before(threshold)
+
         if removed:
             await self._refresh_queue_gauge()
         return removed

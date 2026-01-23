@@ -215,16 +215,20 @@ class MessagesResponse(CommandStatus):
 
 
 class DeleteMessagesPayload(BaseModel):
+    """Request payload for deleting messages."""
+    tenant_id: str
     ids: list[str] = Field(default_factory=list)
 
 
 class DeleteMessagesResponse(CommandStatus):
     removed: int
     not_found: list[str] | None = None
+    unauthorized: list[str] | None = None
 
 
 class CleanupMessagesPayload(BaseModel):
     """Request payload for manual cleanup of reported messages."""
+    tenant_id: str
     older_than_seconds: int | None = None
 
 
@@ -356,23 +360,26 @@ def create_app(
         return BasicOkResponse(ok=True)
 
     @router.post("/run-now", response_model=BasicOkResponse, response_model_exclude_none=True)
-    async def run_now(tenant_id: str | None = None):
+    async def run_now(tenant_id: str):
         """Trigger an immediate dispatch cycle without waiting for the scheduler.
 
         Args:
-            tenant_id: Optional tenant ID to limit the sync to a specific tenant.
-                If None, processes messages for all tenants.
+            tenant_id: Tenant ID to limit the sync to (required for security isolation).
 
         Returns:
             BasicOkResponse: Confirmation with ``ok=True`` after the cycle completes.
 
         Raises:
+            HTTPException: 400 if tenant_id is missing.
             HTTPException: 500 if the service is not initialized.
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
-        payload = {"tenant_id": tenant_id} if tenant_id else {}
-        result = await service.handle_command("run now", payload)
+        if not tenant_id:
+            raise HTTPException(400, "tenant_id is required")
+        result = await service.handle_command("run now", {"tenant_id": tenant_id})
+        if not result.get("ok"):
+            raise HTTPException(400, result.get("error", "Unknown error"))
         return BasicOkResponse.model_validate(result)
 
     @router.post("/suspend", response_model=BasicOkResponse, response_model_exclude_none=True)
@@ -455,32 +462,45 @@ def create_app(
 
         Deletes specified messages from both the queue and tracking tables.
         Messages already sent or in transit may not be cancellable.
+        Only messages belonging to the specified tenant will be deleted.
 
         Args:
-            payload: Request body containing list of message IDs to remove.
+            payload: Request body containing tenant_id and list of message IDs to remove.
 
         Returns:
-            DeleteMessagesResponse: Count of removed messages and list of
-                IDs that were not found.
+            DeleteMessagesResponse: Count of removed messages, IDs not found,
+                and IDs that were unauthorized (belong to other tenant).
 
         Raises:
+            HTTPException: 400 if tenant_id is missing.
             HTTPException: 500 if the service is not initialized.
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
         result = await service.handle_command("deleteMessages", payload.model_dump())
+        if not result.get("ok"):
+            raise HTTPException(400, result.get("error", "Unknown error"))
         return DeleteMessagesResponse.model_validate(result)
 
     @router.post("/cleanup-messages", response_model=CleanupMessagesResponse, response_model_exclude_none=True)
-    async def cleanup_messages(payload: CleanupMessagesPayload = CleanupMessagesPayload()):
+    async def cleanup_messages(payload: CleanupMessagesPayload):
         """Manually trigger cleanup of reported messages older than retention period.
 
-        By default uses the configured retention period. Optionally specify
-        older_than_seconds to override the retention period for this cleanup.
+        Only cleans up messages belonging to the specified tenant.
+        Optionally specify older_than_seconds to override the retention period.
+
+        Args:
+            payload: Request body containing tenant_id and optional older_than_seconds.
+
+        Raises:
+            HTTPException: 400 if tenant_id is missing.
+            HTTPException: 500 if the service is not initialized.
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
         result = await service.handle_command("cleanupMessages", payload.model_dump())
+        if not result.get("ok"):
+            raise HTTPException(400, result.get("error", "Unknown error"))
         return CleanupMessagesResponse.model_validate(result)
 
     @api.post("/account", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
@@ -529,7 +549,7 @@ def create_app(
         return AccountsResponse.model_validate(result)
 
     @api.delete("/account/{account_id}", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
-    async def delete_account(account_id: str):
+    async def delete_account(account_id: str, tenant_id: str):
         """Delete an SMTP account by its ID.
 
         Removes the account configuration and cleans up associated scheduler state.
@@ -537,16 +557,22 @@ def create_app(
 
         Args:
             account_id: Unique identifier of the account to delete.
+            tenant_id: Tenant ID (required for security isolation - account must belong to this tenant).
 
         Returns:
             BasicOkResponse: Confirmation with ``ok=True``.
 
         Raises:
+            HTTPException: 400 if tenant_id is missing or account doesn't belong to tenant.
             HTTPException: 500 if the service is not initialized.
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
-        result = await service.handle_command("deleteAccount", {"id": account_id})
+        if not tenant_id:
+            raise HTTPException(400, "tenant_id is required")
+        result = await service.handle_command("deleteAccount", {"id": account_id, "tenant_id": tenant_id})
+        if not result.get("ok"):
+            raise HTTPException(400, result.get("error", "Unknown error"))
         return BasicOkResponse.model_validate(result)
 
     @api.get("/messages", response_model=MessagesResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
