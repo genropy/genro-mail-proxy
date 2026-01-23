@@ -143,3 +143,4 @@ with separate databases.
    faq
    modules
    contributing
+   fullstack_testing

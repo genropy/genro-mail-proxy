@@ -182,7 +182,7 @@ services:
   mailproxy:
     build:
       context: ../..
-      dockerfile: Dockerfile
+      dockerfile: tests/docker/Dockerfile.test
     image: genro-mail-proxy:test
     environment:
       - GMP_DB_PATH=postgresql://mailproxy:testpassword@db:5432/mailproxy
