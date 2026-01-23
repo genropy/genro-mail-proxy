@@ -1,0 +1,51 @@
+# Git
+.git
+.gitignore
+
+# GitHub
+.github
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info
+dist
+build
+.eggs
+
+# Testing
+.pytest_cache
+.coverage
+htmlcov
+.tox
+
+# Linting/Type checking
+.mypy_cache
+.ruff_cache
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Documentation (not needed in runtime image)
+docs
+
+# Tests (not needed in runtime image)
+tests
+
+# Environment
+.env
+.env.*
+*.env
+
+# Misc
+*.md
+!README.md
+LICENSE
+NOTICE
+Makefile

@@ -4,8 +4,11 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 TZ=Europe/Rome
 
 WORKDIR /app
 
-# Install with PostgreSQL support
-RUN pip install --no-cache-dir "genro-mail-proxy[postgresql]"
+# Copy source code
+COPY . .
+
+# Install from local source with PostgreSQL support
+RUN pip install --no-cache-dir ".[postgresql]"
 
 # SQLite database stored in /data by default (when not using PostgreSQL)
 VOLUME ["/data"]
