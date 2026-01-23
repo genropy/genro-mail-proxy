@@ -59,6 +59,7 @@ Messages and Delivery
 **How does priority work?**
    Messages are processed in priority order (0=immediate, 1=high, 2=medium, 3=low).
    Within the same priority, older messages are sent first (FIFO).
+   See :doc:`priority_queuing` for use cases and examples.
 
 **Can I schedule messages for future delivery?**
    Yes. Set ``deferred_ts`` to a Unix timestamp. The message won't be sent until
@@ -144,6 +145,7 @@ Rate Limiting
 **How does rate limiting work?**
    Each SMTP account can have limits per minute, hour, and day. When a limit is
    reached, messages are deferred (not rejected) and retried later.
+   See :doc:`rate_limiting` for details.
 
 **What happens when rate limited?**
    The message stays in queue with a ``deferred_ts`` timestamp. It will be
@@ -166,12 +168,15 @@ Monitoring
    - ``gmp_rate_limited_total{account_id}``: Rate limit hits
    - ``gmp_pending_messages``: Current queue size
 
+   See :doc:`monitoring` for Prometheus configuration and Grafana dashboards.
+
 **How do I access metrics?**
    GET ``/metrics`` returns Prometheus exposition format. No authentication
    required for this endpoint (configure your firewall appropriately).
 
 **How do I check service health?**
-   GET ``/status`` returns ``{"ok": true}`` if the service is running.
+   GET ``/health`` returns ``{"ok": true}`` if the service is running.
+   GET ``/status`` (requires auth) returns detailed status including scheduler state.
 
 Troubleshooting
 ---------------

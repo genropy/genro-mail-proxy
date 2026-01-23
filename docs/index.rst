@@ -136,6 +136,9 @@ with separate databases.
    usage
    cli_reference
    attachments
+   rate_limiting
+   priority_queuing
+   monitoring
    example_client
    integrations
    multi_tenancy
