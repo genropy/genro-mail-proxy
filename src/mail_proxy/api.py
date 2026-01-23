@@ -31,13 +31,29 @@ Example:
 import logging
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
-from typing import Any, Literal
+from datetime import datetime
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+
+
+def _coerce_datetime(value: Any) -> datetime | None:
+    """Coerce string to datetime or pass through datetime objects."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        # Parse ISO format string
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    raise ValueError(f"Cannot convert {type(value)} to datetime")
+
+
+FlexibleDatetime = Annotated[datetime | None, BeforeValidator(_coerce_datetime)]
 
 from .core import MailProxy
 from .entities.message.schema import AttachmentPayload
@@ -170,7 +186,8 @@ class AccountInfo(BaseModel):
     limit_behavior: str | None = None
     use_tls: bool | None = None
     batch_size: int | None = None
-    created_at: str | None = None
+    created_at: FlexibleDatetime = None
+    updated_at: FlexibleDatetime = None
 
 
 class AccountsResponse(CommandStatus):
@@ -205,8 +222,8 @@ class MessageRecord(BaseModel):
     error_ts: int | None = None
     error: str | None = None
     reported_ts: int | None = None
-    created_at: str | None = None
-    updated_at: str | None = None
+    created_at: FlexibleDatetime = None
+    updated_at: FlexibleDatetime = None
     message: dict[str, Any]
 
 
@@ -271,8 +288,8 @@ class TenantInfo(BaseModel):
     rate_limits: dict[str, Any] | None = None
     large_file_config: dict[str, Any] | None = None
     active: bool = True
-    created_at: str | None = None
-    updated_at: str | None = None
+    created_at: FlexibleDatetime = None
+    updated_at: FlexibleDatetime = None
 
 
 class TenantsResponse(CommandStatus):

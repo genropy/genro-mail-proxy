@@ -79,6 +79,14 @@ class DbAdapter(ABC):
     # CRUD Helpers
     # -------------------------------------------------------------------------
 
+    def _sql_name(self, name: str) -> str:
+        """Return SQL identifier for column/table name.
+
+        Override in subclasses to quote reserved words (PostgreSQL)
+        or map internal names to different SQL names.
+        """
+        return name
+
     def _placeholder(self, name: str) -> str:
         """Return placeholder for named parameter."""
         return self.placeholder.replace("name", name)
@@ -95,7 +103,7 @@ class DbAdapter(ABC):
         """
         cols = list(values.keys())
         placeholders = ", ".join(self._placeholder(c) for c in cols)
-        col_list = ", ".join(cols)
+        col_list = ", ".join(self._sql_name(c) for c in cols)
         query = f"INSERT INTO {table} ({col_list}) VALUES ({placeholders})"
         return await self.execute(query, values)
 
@@ -119,12 +127,12 @@ class DbAdapter(ABC):
         Returns:
             List of row dicts.
         """
-        cols_sql = ", ".join(columns) if columns else "*"
+        cols_sql = ", ".join(self._sql_name(c) for c in columns) if columns else "*"
         query = f"SELECT {cols_sql} FROM {table}"
 
         params: dict[str, Any] = {}
         if where:
-            conditions = [f"{k} = {self._placeholder(k)}" for k in where.keys()]
+            conditions = [f"{self._sql_name(k)} = {self._placeholder(k)}" for k in where.keys()]
             query += " WHERE " + " AND ".join(conditions)
             params.update(where)
 
@@ -160,8 +168,8 @@ class DbAdapter(ABC):
             Number of affected rows.
         """
         # Prefix value params to avoid collision with where params
-        set_parts = [f"{k} = {self._placeholder('val_' + k)}" for k in values]
-        where_parts = [f"{k} = {self._placeholder('whr_' + k)}" for k in where]
+        set_parts = [f"{self._sql_name(k)} = {self._placeholder('val_' + k)}" for k in values]
+        where_parts = [f"{self._sql_name(k)} = {self._placeholder('whr_' + k)}" for k in where]
 
         query = f"UPDATE {table} SET {', '.join(set_parts)} WHERE {' AND '.join(where_parts)}"
 
@@ -180,7 +188,7 @@ class DbAdapter(ABC):
         Returns:
             Number of deleted rows.
         """
-        where_parts = [f"{k} = {self._placeholder(k)}" for k in where]
+        where_parts = [f"{self._sql_name(k)} = {self._placeholder(k)}" for k in where]
         query = f"DELETE FROM {table} WHERE {' AND '.join(where_parts)}"
         return await self.execute(query, where)
 
@@ -223,7 +231,7 @@ class DbAdapter(ABC):
         params: dict[str, Any] = {}
 
         if where:
-            conditions = [f"{k} = {self._placeholder(k)}" for k in where.keys()]
+            conditions = [f"{self._sql_name(k)} = {self._placeholder(k)}" for k in where.keys()]
             query += " WHERE " + " AND ".join(conditions)
             params.update(where)
 

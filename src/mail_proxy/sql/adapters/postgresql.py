@@ -108,6 +108,10 @@ class PostgresAdapter(DbAdapter):
                 await cur.execute(script)
             await conn.commit()
 
+    def _sql_name(self, name: str) -> str:
+        """Quote identifier for PostgreSQL (handles reserved words like 'user')."""
+        return f'"{name}"'
+
     async def upsert(
         self,
         table: str,
@@ -118,9 +122,9 @@ class PostgresAdapter(DbAdapter):
         """Insert or update using PostgreSQL ON CONFLICT DO UPDATE."""
         columns = list(data.keys())
         placeholders = ", ".join(f"%({c})s" for c in columns)
-        col_list = ", ".join(columns)
-        conflict_cols = ", ".join(conflict_columns)
-        update_parts = [f"{c} = EXCLUDED.{c}" for c in columns if c not in conflict_columns]
+        col_list = ", ".join(self._sql_name(c) for c in columns)
+        conflict_cols = ", ".join(self._sql_name(c) for c in conflict_columns)
+        update_parts = [f"{self._sql_name(c)} = EXCLUDED.{self._sql_name(c)}" for c in columns if c not in conflict_columns]
         if update_extras:
             update_parts.extend(update_extras)
         update_cols = ", ".join(update_parts)

@@ -67,7 +67,7 @@ class MessagesTable(Table):
                     error = NULL,
                     reported_ts = NULL,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE sent_ts IS NULL
+                WHERE messages.sent_ts IS NULL
                 """,
                 {
                     "id": msg_id,

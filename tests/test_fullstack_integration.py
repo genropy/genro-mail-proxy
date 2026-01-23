@@ -104,7 +104,7 @@ async def setup_test_tenants(api_client):
         "client_auth": {"method": "none"},
         "active": True,
     }
-    resp = await api_client.post("/tenants/add", json=tenant1_data)
+    resp = await api_client.post("/tenant", json=tenant1_data)
     # Ignore if already exists
     assert resp.status_code in (200, 201, 409), resp.text
 
@@ -116,7 +116,7 @@ async def setup_test_tenants(api_client):
         "port": 1025,
         "use_tls": False,
     }
-    resp = await api_client.post("/accounts/add", json=account1_data)
+    resp = await api_client.post("/account", json=account1_data)
     assert resp.status_code in (200, 201, 409), resp.text
 
     # Create tenant2
@@ -128,7 +128,7 @@ async def setup_test_tenants(api_client):
         "client_auth": {"method": "bearer", "token": "tenant2-secret-token"},
         "active": True,
     }
-    resp = await api_client.post("/tenants/add", json=tenant2_data)
+    resp = await api_client.post("/tenant", json=tenant2_data)
     assert resp.status_code in (200, 201, 409), resp.text
 
     # Create account for tenant2
@@ -139,7 +139,7 @@ async def setup_test_tenants(api_client):
         "port": 1025,
         "use_tls": False,
     }
-    resp = await api_client.post("/accounts/add", json=account2_data)
+    resp = await api_client.post("/account", json=account2_data)
     assert resp.status_code in (200, 201, 409), resp.text
 
     return {"tenant1": tenant1_data, "tenant2": tenant2_data}
@@ -178,9 +178,24 @@ async def wait_for_messages(
 
 async def trigger_dispatch(api_client, tenant_id: str | None = None) -> None:
     """Trigger message dispatch."""
-    payload = {"tenant_id": tenant_id} if tenant_id else {}
-    await api_client.post("/run-now", json=payload)
+    params = {"tenant_id": tenant_id} if tenant_id else {}
+    await api_client.post("/commands/run-now", params=params)
     await asyncio.sleep(2)  # Wait for processing
+
+
+def get_msg_status(msg: dict[str, Any]) -> str:
+    """Derive message status from MessageRecord fields.
+
+    The API returns MessageRecord with timestamps, not a status field.
+    This helper derives the logical status.
+    """
+    if msg.get("sent_ts"):
+        return "sent"
+    if msg.get("error_ts") or msg.get("error"):
+        return "error"
+    if msg.get("deferred_ts"):
+        return "deferred"
+    return "pending"
 
 
 # ============================================
@@ -234,19 +249,19 @@ class TestTenantManagement:
             "client_base_url": "http://example.com",
             "active": True,
         }
-        resp = await api_client.post("/tenants/add", json=tenant_data)
+        resp = await api_client.post("/tenant", json=tenant_data)
         assert resp.status_code in (200, 201)
 
     async def test_list_tenants(self, api_client, setup_test_tenants):
         """Can list all tenants."""
-        resp = await api_client.get("/tenants/list")
+        resp = await api_client.get("/tenants")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) >= 2  # At least our test tenants
 
     async def test_get_tenant_details(self, api_client, setup_test_tenants):
         """Can get tenant details."""
-        resp = await api_client.get("/tenants/test-tenant-1")
+        resp = await api_client.get("/tenant/test-tenant-1")
         assert resp.status_code == 200
         data = resp.json()
         assert data.get("id") == "test-tenant-1"
@@ -254,11 +269,11 @@ class TestTenantManagement:
     async def test_update_tenant(self, api_client, setup_test_tenants):
         """Can update tenant details."""
         update_data = {"name": "Updated Tenant 1 Name"}
-        resp = await api_client.post("/tenants/test-tenant-1/update", json=update_data)
+        resp = await api_client.put("/tenant/test-tenant-1", json=update_data)
         assert resp.status_code == 200
 
         # Verify update
-        resp = await api_client.get("/tenants/test-tenant-1")
+        resp = await api_client.get("/tenant/test-tenant-1")
         data = resp.json()
         assert data.get("name") == "Updated Tenant 1 Name"
 
@@ -271,7 +286,7 @@ class TestAccountManagement:
 
     async def test_list_accounts(self, api_client, setup_test_tenants):
         """Can list all accounts."""
-        resp = await api_client.get("/accounts/list")
+        resp = await api_client.get("/accounts?tenant_id=test-tenant-1")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) >= 2
@@ -288,7 +303,7 @@ class TestAccountManagement:
             "limit_per_hour": 100,
             "limit_per_day": 500,
         }
-        resp = await api_client.post("/accounts/add", json=account_data)
+        resp = await api_client.post("/account", json=account_data)
         assert resp.status_code in (200, 201)
 
 
@@ -306,12 +321,12 @@ class TestBasicMessageDispatch:
         message = {
             "id": msg_id,
             "account_id": "test-account-1",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "Simple Text Email",
             "body": "This is a simple text email.",
         }
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
         await trigger_dispatch(api_client)
@@ -330,12 +345,13 @@ class TestBasicMessageDispatch:
         message = {
             "id": msg_id,
             "account_id": "test-account-1",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "HTML Email Test",
-            "html_body": "<html><body><h1>Hello!</h1><p>HTML content.</p></body></html>",
+            "body": "<html><body><h1>Hello!</h1><p>HTML content.</p></body></html>",
+            "content_type": "html",
         }
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
         await trigger_dispatch(api_client)
@@ -351,14 +367,14 @@ class TestBasicMessageDispatch:
         message = {
             "id": msg_id,
             "account_id": "test-account-1",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "cc_addr": ["cc@example.com"],
             "bcc_addr": ["bcc@example.com"],
             "subject": "CC/BCC Test",
             "body": "Email with CC and BCC.",
         }
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
         await trigger_dispatch(api_client)
@@ -374,8 +390,8 @@ class TestBasicMessageDispatch:
         message = {
             "id": msg_id,
             "account_id": "test-account-1",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "Custom Headers Test",
             "body": "Email with custom headers.",
             "headers": {
@@ -384,7 +400,7 @@ class TestBasicMessageDispatch:
                 "Reply-To": "reply@test.com",
             },
         }
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
         await trigger_dispatch(api_client)
@@ -415,8 +431,8 @@ class TestTenantIsolation:
         msg1 = {
             "id": f"isolation-t1-{ts}",
             "account_id": "test-account-1",
-            "from_addr": "sender@tenant1.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@tenant1.com",
+            "to": ["recipient@example.com"],
             "subject": "Tenant 1 Isolation Test",
             "body": "This should go to tenant 1 SMTP.",
         }
@@ -425,13 +441,13 @@ class TestTenantIsolation:
         msg2 = {
             "id": f"isolation-t2-{ts}",
             "account_id": "test-account-2",
-            "from_addr": "sender@tenant2.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@tenant2.com",
+            "to": ["recipient@example.com"],
             "subject": "Tenant 2 Isolation Test",
             "body": "This should go to tenant 2 SMTP.",
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [msg1, msg2]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [msg1, msg2]})
         assert resp.status_code == 200
 
         await trigger_dispatch(api_client)
@@ -458,24 +474,24 @@ class TestTenantIsolation:
             {
                 "id": f"filter-t1-{ts}",
                 "account_id": "test-account-1",
-                "from_addr": "sender@tenant1.com",
-                "to_addr": ["recipient@example.com"],
+                "from": "sender@tenant1.com",
+                "to": ["recipient@example.com"],
                 "subject": "Filtered Test T1",
                 "body": "Message for tenant 1.",
             },
             {
                 "id": f"filter-t2-{ts}",
                 "account_id": "test-account-2",
-                "from_addr": "sender@tenant2.com",
-                "to_addr": ["recipient@example.com"],
+                "from": "sender@tenant2.com",
+                "to": ["recipient@example.com"],
                 "subject": "Filtered Test T2",
                 "body": "Message for tenant 2.",
             },
         ]
-        await api_client.post("/messages/add", json={"messages": messages})
+        await api_client.post("/commands/add-messages", json={"messages": messages})
 
         # Trigger only tenant 1
-        await api_client.post("/run-now", json={"tenant_id": "test-tenant-1"})
+        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
         await asyncio.sleep(2)
 
         # Only tenant 1 should have received message
@@ -502,16 +518,16 @@ class TestBatchOperations:
             messages.append({
                 "id": f"batch-{ts}-{i}",
                 "account_id": "test-account-1",
-                "from_addr": "sender@test.com",
-                "to_addr": [f"recipient{i}@example.com"],
+                "from": "sender@test.com",
+                "to": [f"recipient{i}@example.com"],
                 "subject": f"Batch Message {i}",
                 "body": f"Batch message content {i}",
             })
 
-        resp = await api_client.post("/messages/add", json={"messages": messages})
+        resp = await api_client.post("/commands/add-messages", json={"messages": messages})
         assert resp.status_code == 200
         data = resp.json()
-        assert data.get("accepted") == 5
+        assert data.get("queued") == 5
 
         await trigger_dispatch(api_client)
 
@@ -526,22 +542,23 @@ class TestBatchOperations:
         message = {
             "id": msg_id,
             "account_id": "test-account-1",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "Dedup Test",
             "body": "First message",
         }
 
         # First send
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
         # Second send with same ID
         message["body"] = "Duplicate message"
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         data = resp.json()
         # Should be rejected as duplicate
-        assert data.get("rejected", 0) >= 1 or data.get("accepted", 0) == 0
+        rejected = data.get("rejected", [])
+        assert len(rejected) >= 1 or data.get("queued", 0) == 0
 
 
 # ============================================
@@ -561,8 +578,8 @@ class TestAttachmentsBase64:
         message = {
             "id": f"base64-att-{ts}",
             "account_id": "test-account-1",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "Base64 Attachment Test",
             "body": "See attached file.",
             "attachments": [{
@@ -572,7 +589,7 @@ class TestAttachmentsBase64:
             }],
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
         await trigger_dispatch(api_client)
@@ -602,8 +619,8 @@ class TestPriorityHandling:
             {
                 "id": f"prio-low-{ts}",
                 "account_id": "test-account-1",
-                "from_addr": "sender@test.com",
-                "to_addr": ["recipient@example.com"],
+                "from": "sender@test.com",
+                "to": ["recipient@example.com"],
                 "subject": "Low Priority",
                 "body": "Low priority message",
                 "priority": "low",
@@ -611,8 +628,8 @@ class TestPriorityHandling:
             {
                 "id": f"prio-high-{ts}",
                 "account_id": "test-account-1",
-                "from_addr": "sender@test.com",
-                "to_addr": ["recipient@example.com"],
+                "from": "sender@test.com",
+                "to": ["recipient@example.com"],
                 "subject": "High Priority",
                 "body": "High priority message",
                 "priority": "high",
@@ -620,15 +637,15 @@ class TestPriorityHandling:
             {
                 "id": f"prio-immediate-{ts}",
                 "account_id": "test-account-1",
-                "from_addr": "sender@test.com",
-                "to_addr": ["recipient@example.com"],
+                "from": "sender@test.com",
+                "to": ["recipient@example.com"],
                 "subject": "Immediate Priority",
                 "body": "Immediate priority message",
                 "priority": "immediate",
             },
         ]
 
-        resp = await api_client.post("/messages/add", json={"messages": messages})
+        resp = await api_client.post("/commands/add-messages", json={"messages": messages})
         assert resp.status_code == 200
 
         await trigger_dispatch(api_client)
@@ -653,7 +670,7 @@ class TestServiceControl:
     async def test_suspend_and_activate(self, api_client):
         """Can suspend and activate processing."""
         # Suspend
-        resp = await api_client.post("/suspend")
+        resp = await api_client.post("/commands/suspend")
         assert resp.status_code == 200
 
         # Check status
@@ -662,7 +679,7 @@ class TestServiceControl:
         assert data.get("active") is False
 
         # Activate
-        resp = await api_client.post("/activate")
+        resp = await api_client.post("/commands/activate")
         assert resp.status_code == 200
 
         # Check status
@@ -701,7 +718,7 @@ class TestValidation:
             # Missing account_id, from_addr, to_addr
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         # Should fail validation
         assert resp.status_code in (400, 422) or resp.json().get("rejected", 0) > 0
 
@@ -711,13 +728,13 @@ class TestValidation:
         message = {
             "id": f"nonexistent-acc-{ts}",
             "account_id": "nonexistent-account-id",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "Test",
             "body": "Test",
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         # Should be rejected
         data = resp.json()
         assert data.get("rejected", 0) > 0 or resp.status_code >= 400
@@ -731,7 +748,7 @@ class TestMessageManagement:
 
     async def test_list_messages(self, api_client, setup_test_tenants):
         """Can list all messages."""
-        resp = await api_client.get("/messages/all")
+        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
         assert resp.status_code == 200
         # Response should be a list
         data = resp.json()
@@ -746,15 +763,18 @@ class TestMessageManagement:
         message = {
             "id": msg_id,
             "account_id": "test-account-1",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "To Delete",
             "body": "This will be deleted",
         }
-        await api_client.post("/messages/add", json={"messages": [message]})
+        await api_client.post("/commands/add-messages", json={"messages": [message]})
 
-        # Delete it
-        resp = await api_client.post("/messages/delete", json={"ids": [msg_id]})
+        # Delete it (tenant_id is required query param)
+        resp = await api_client.post(
+            "/commands/delete-messages?tenant_id=test-tenant-1",
+            json={"ids": [msg_id]}
+        )
         assert resp.status_code == 200
 
 
@@ -850,7 +870,7 @@ class TestSmtpErrorHandling:
         ]
 
         for account in accounts:
-            resp = await api_client.post("/accounts/add", json=account)
+            resp = await api_client.post("/account", json=account)
             # Ignore if already exists
             assert resp.status_code in (200, 201, 409), resp.text
 
@@ -866,28 +886,28 @@ class TestSmtpErrorHandling:
         message = {
             "id": msg_id,
             "account_id": "account-smtp-reject",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "Should Be Rejected",
             "body": "This should fail with 550 error.",
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/run-now")
+        await api_client.post("/commands/run-now")
         await asyncio.sleep(3)
 
         # Check message status - should be error
-        resp = await api_client.get("/messages/all")
-        messages = resp.json()
+        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
+        messages = resp.json().get("messages", [])
 
         found = [m for m in messages if m.get("id") == msg_id]
         if found:
             msg = found[0]
             # Message should be in error state (not sent)
-            assert msg.get("status") in ("error", "deferred"), f"Expected error/deferred, got {msg.get('status')}"
+            assert get_msg_status(msg) in ("error", "deferred"), f"Expected error/deferred, got {get_msg_status(msg)}"
 
     async def test_temporary_error_defers_message(
         self, api_client, setup_error_accounts
@@ -899,28 +919,28 @@ class TestSmtpErrorHandling:
         message = {
             "id": msg_id,
             "account_id": "account-smtp-tempfail",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "Should Be Deferred",
             "body": "This should fail with 451 and be retried.",
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/run-now")
+        await api_client.post("/commands/run-now")
         await asyncio.sleep(3)
 
         # Check message status - should be deferred (waiting for retry)
-        resp = await api_client.get("/messages/all")
-        messages = resp.json()
+        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
+        messages = resp.json().get("messages", [])
 
         found = [m for m in messages if m.get("id") == msg_id]
         if found:
             msg = found[0]
             # Message should be deferred for retry
-            assert msg.get("status") in ("deferred", "pending", "error"), f"Got status: {msg.get('status')}"
+            assert get_msg_status(msg) in ("deferred", "pending", "error"), f"Got status: {get_msg_status(msg)}"
             # Should have retry count incremented
             assert msg.get("retry_count", 0) >= 0
 
@@ -936,22 +956,22 @@ class TestSmtpErrorHandling:
             messages.append({
                 "id": f"ratelimit-test-{ts}-{i}",
                 "account_id": "account-smtp-ratelimit",
-                "from_addr": "sender@test.com",
-                "to_addr": ["recipient@example.com"],
+                "from": "sender@test.com",
+                "to": ["recipient@example.com"],
                 "subject": f"Rate Limit Test {i}",
                 "body": f"Message {i} for rate limit testing.",
             })
 
-        resp = await api_client.post("/messages/add", json={"messages": messages})
+        resp = await api_client.post("/commands/add-messages", json={"messages": messages})
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/run-now")
+        await api_client.post("/commands/run-now")
         await asyncio.sleep(5)
 
         # Check results - some should be sent, some deferred/error
-        resp = await api_client.get("/messages/all")
-        all_msgs = resp.json()
+        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
+        all_msgs = resp.json().get("messages", [])
 
         test_msgs = [m for m in all_msgs if m.get("id", "").startswith(f"ratelimit-test-{ts}")]
 
@@ -959,7 +979,7 @@ class TestSmtpErrorHandling:
         assert len(test_msgs) > 0, "Test messages should exist"
 
         # Count statuses
-        statuses = [m.get("status") for m in test_msgs]
+        statuses = [get_msg_status(m) for m in test_msgs]
         # We expect a mix of sent and deferred/error due to rate limiting
         # The exact behavior depends on the error classification
 
@@ -975,30 +995,30 @@ class TestSmtpErrorHandling:
             messages.append({
                 "id": f"random-test-{ts}-{i}",
                 "account_id": "account-smtp-random",
-                "from_addr": "sender@test.com",
-                "to_addr": ["recipient@example.com"],
+                "from": "sender@test.com",
+                "to": ["recipient@example.com"],
                 "subject": f"Random Error Test {i}",
                 "body": f"Message {i} with random outcome.",
             })
 
-        resp = await api_client.post("/messages/add", json={"messages": messages})
+        resp = await api_client.post("/commands/add-messages", json={"messages": messages})
         assert resp.status_code == 200
 
         # Trigger multiple dispatch cycles
         for _ in range(3):
-            await api_client.post("/run-now")
+            await api_client.post("/commands/run-now")
             await asyncio.sleep(2)
 
         # Check results
-        resp = await api_client.get("/messages/all")
-        all_msgs = resp.json()
+        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
+        all_msgs = resp.json().get("messages", [])
 
         test_msgs = [m for m in all_msgs if m.get("id", "").startswith(f"random-test-{ts}")]
 
         # Count statuses
-        sent = sum(1 for m in test_msgs if m.get("status") == "sent")
-        deferred = sum(1 for m in test_msgs if m.get("status") == "deferred")
-        error = sum(1 for m in test_msgs if m.get("status") == "error")
+        sent = sum(1 for m in test_msgs if get_msg_status(m) == "sent")
+        deferred = sum(1 for m in test_msgs if get_msg_status(m) == "deferred")
+        error = sum(1 for m in test_msgs if get_msg_status(m) == "error")
 
         # With random errors, we expect a mix (not all same status)
         # At minimum, messages should have been processed
@@ -1023,7 +1043,7 @@ class TestRetryLogic:
             "port": 1025,
             "use_tls": False,
         }
-        await api_client.post("/accounts/add", json=account_data)
+        await api_client.post("/account", json=account_data)
 
         ts = int(time.time())
         msg_id = f"retry-count-test-{ts}"
@@ -1031,24 +1051,24 @@ class TestRetryLogic:
         message = {
             "id": msg_id,
             "account_id": "retry-test-account",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "Retry Count Test",
             "body": "This should increment retry count.",
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger multiple dispatch cycles
         initial_retry = 0
         for cycle in range(3):
-            await api_client.post("/run-now")
+            await api_client.post("/commands/run-now")
             await asyncio.sleep(2)
 
             # Check retry count
-            resp = await api_client.get("/messages/all")
-            all_msgs = resp.json()
+            resp = await api_client.get("/messages?tenant_id=test-tenant-1")
+            all_msgs = resp.json().get("messages", [])
             found = [m for m in all_msgs if m.get("id") == msg_id]
 
             if found:
@@ -1067,7 +1087,7 @@ class TestRetryLogic:
             "port": 1025,
             "use_tls": False,
         }
-        await api_client.post("/accounts/add", json=account_data)
+        await api_client.post("/account", json=account_data)
 
         ts = int(time.time())
         msg_id = f"error-details-test-{ts}"
@@ -1075,22 +1095,22 @@ class TestRetryLogic:
         message = {
             "id": msg_id,
             "account_id": "error-details-account",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "Error Details Test",
             "body": "Check error details.",
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/run-now")
+        await api_client.post("/commands/run-now")
         await asyncio.sleep(3)
 
         # Check message has error details
-        resp = await api_client.get("/messages/all")
-        all_msgs = resp.json()
+        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
+        all_msgs = resp.json().get("messages", [])
         found = [m for m in all_msgs if m.get("id") == msg_id]
 
         if found:
@@ -1099,7 +1119,7 @@ class TestRetryLogic:
             last_error = msg.get("last_error", "")
             # The error should contain some SMTP-related info
             # (actual content depends on implementation)
-            assert msg.get("status") in ("error", "deferred")
+            assert get_msg_status(msg) in ("error", "deferred")
 
 
 # ============================================
@@ -1138,7 +1158,7 @@ class TestLargeFileStorage:
                 "file_ttl_days": 30,
             },
         }
-        resp = await api_client.post("/tenants/add", json=tenant_data)
+        resp = await api_client.post("/tenant", json=tenant_data)
         assert resp.status_code in (200, 201, 409), resp.text
 
         # Create account for this tenant
@@ -1149,7 +1169,7 @@ class TestLargeFileStorage:
             "port": 1025,
             "use_tls": False,
         }
-        resp = await api_client.post("/accounts/add", json=account_data)
+        resp = await api_client.post("/account", json=account_data)
         assert resp.status_code in (200, 201, 409), resp.text
 
         return tenant_data
@@ -1170,7 +1190,7 @@ class TestLargeFileStorage:
                 "action": "reject",
             },
         }
-        resp = await api_client.post("/tenants/add", json=tenant_data)
+        resp = await api_client.post("/tenant", json=tenant_data)
         assert resp.status_code in (200, 201, 409), resp.text
 
         account_data = {
@@ -1180,7 +1200,7 @@ class TestLargeFileStorage:
             "port": 1025,
             "use_tls": False,
         }
-        resp = await api_client.post("/accounts/add", json=account_data)
+        resp = await api_client.post("/account", json=account_data)
         assert resp.status_code in (200, 201, 409), resp.text
 
         return tenant_data
@@ -1201,7 +1221,7 @@ class TestLargeFileStorage:
                 "action": "warn",
             },
         }
-        resp = await api_client.post("/tenants/add", json=tenant_data)
+        resp = await api_client.post("/tenant", json=tenant_data)
         assert resp.status_code in (200, 201, 409), resp.text
 
         account_data = {
@@ -1211,7 +1231,7 @@ class TestLargeFileStorage:
             "port": 1025,
             "use_tls": False,
         }
-        resp = await api_client.post("/accounts/add", json=account_data)
+        resp = await api_client.post("/account", json=account_data)
         assert resp.status_code in (200, 201, 409), resp.text
 
         return tenant_data
@@ -1227,33 +1247,33 @@ class TestLargeFileStorage:
         message = {
             "id": msg_id,
             "account_id": "account-largefile",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "Small Attachment Test",
             "body": "This email has a small attachment.",
             "attachments": [
                 {
                     "filename": "small.txt",
-                    "url": "http://attachment-server:8080/small.txt",
-                    "fetch_mode": "http",
+                    "storage_path": "http://attachment-server:8080/small.txt",
+                    "fetch_mode": "http_url",
                 }
             ],
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/run-now")
+        await api_client.post("/commands/run-now")
         await asyncio.sleep(3)
 
         # Check message was sent
-        resp = await api_client.get("/messages/all")
-        all_msgs = resp.json()
+        resp = await api_client.get("/messages?tenant_id=test-tenant-largefile")
+        all_msgs = resp.json().get("messages", [])
         found = [m for m in all_msgs if m.get("id") == msg_id]
 
         assert len(found) > 0
-        assert found[0].get("status") == "sent", f"Expected sent, got {found[0].get('status')}"
+        assert get_msg_status(found[0]) == "sent", f"Expected sent, got {get_msg_status(found[0])}"
 
         # Check MailHog - email should have the attachment (not a link)
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1, timeout=10)
@@ -1280,34 +1300,34 @@ class TestLargeFileStorage:
         message = {
             "id": msg_id,
             "account_id": "account-largefile",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "Large Attachment Rewrite Test",
             "body": "<html><body><p>This email has a large attachment that should be converted to a link.</p></body></html>",
             "content_type": "html",
             "attachments": [
                 {
                     "filename": "large-file.bin",
-                    "url": "http://attachment-server:8080/large-file.bin",
-                    "fetch_mode": "http",
+                    "storage_path": "http://attachment-server:8080/large-file.bin",
+                    "fetch_mode": "http_url",
                 }
             ],
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/run-now")
+        await api_client.post("/commands/run-now")
         await asyncio.sleep(5)
 
         # Check message was sent
-        resp = await api_client.get("/messages/all")
-        all_msgs = resp.json()
+        resp = await api_client.get("/messages?tenant_id=test-tenant-largefile")
+        all_msgs = resp.json().get("messages", [])
         found = [m for m in all_msgs if m.get("id") == msg_id]
 
         assert len(found) > 0
-        msg_status = found[0].get("status")
+        msg_status = get_msg_status(found[0])
         assert msg_status == "sent", f"Expected sent, got {msg_status}"
 
         # Check MailHog - email should have a download link in the body
@@ -1335,38 +1355,38 @@ class TestLargeFileStorage:
         message = {
             "id": msg_id,
             "account_id": "account-reject-large",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "Large Attachment Reject Test",
             "body": "This email has a large attachment that should be rejected.",
             "attachments": [
                 {
                     "filename": "large-file.bin",
-                    "url": "http://attachment-server:8080/large-file.bin",
-                    "fetch_mode": "http",
+                    "storage_path": "http://attachment-server:8080/large-file.bin",
+                    "fetch_mode": "http_url",
                 }
             ],
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/run-now")
+        await api_client.post("/commands/run-now")
         await asyncio.sleep(3)
 
         # Check message status - should be error (rejected)
-        resp = await api_client.get("/messages/all")
-        all_msgs = resp.json()
+        resp = await api_client.get("/messages?tenant_id=test-tenant-reject-large")
+        all_msgs = resp.json().get("messages", [])
         found = [m for m in all_msgs if m.get("id") == msg_id]
 
         assert len(found) > 0
-        msg_status = found[0].get("status")
+        msg_status = get_msg_status(found[0])
         # Should be error because attachment was rejected
         assert msg_status == "error", f"Expected error (rejected), got {msg_status}"
 
         # Check last_error mentions size limit
-        last_error = found[0].get("last_error", "")
+        last_error = found[0].get("error", "")
         assert "large" in last_error.lower() or "size" in last_error.lower() or "limit" in last_error.lower(), \
             f"Error should mention size/limit. Got: {last_error}"
 
@@ -1380,33 +1400,33 @@ class TestLargeFileStorage:
         message = {
             "id": msg_id,
             "account_id": "account-warn-large",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "Large Attachment Warn Test",
             "body": "This email has a large attachment that triggers a warning.",
             "attachments": [
                 {
                     "filename": "large-file.bin",
-                    "url": "http://attachment-server:8080/large-file.bin",
-                    "fetch_mode": "http",
+                    "storage_path": "http://attachment-server:8080/large-file.bin",
+                    "fetch_mode": "http_url",
                 }
             ],
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/run-now")
+        await api_client.post("/commands/run-now")
         await asyncio.sleep(5)
 
         # Check message was sent (warning is just logged)
-        resp = await api_client.get("/messages/all")
-        all_msgs = resp.json()
+        resp = await api_client.get("/messages?tenant_id=test-tenant-warn-large")
+        all_msgs = resp.json().get("messages", [])
         found = [m for m in all_msgs if m.get("id") == msg_id]
 
         assert len(found) > 0
-        msg_status = found[0].get("status")
+        msg_status = get_msg_status(found[0])
         assert msg_status == "sent", f"Expected sent (with warning), got {msg_status}"
 
     async def test_mixed_attachments_partial_rewrite(
@@ -1419,39 +1439,39 @@ class TestLargeFileStorage:
         message = {
             "id": msg_id,
             "account_id": "account-largefile",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "Mixed Attachments Test",
             "body": "<html><body><p>This email has both small and large attachments.</p></body></html>",
             "content_type": "html",
             "attachments": [
                 {
                     "filename": "small.txt",
-                    "url": "http://attachment-server:8080/small.txt",
-                    "fetch_mode": "http",
+                    "storage_path": "http://attachment-server:8080/small.txt",
+                    "fetch_mode": "http_url",
                 },
                 {
                     "filename": "large-file.bin",
-                    "url": "http://attachment-server:8080/large-file.bin",
-                    "fetch_mode": "http",
+                    "storage_path": "http://attachment-server:8080/large-file.bin",
+                    "fetch_mode": "http_url",
                 },
             ],
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/run-now")
+        await api_client.post("/commands/run-now")
         await asyncio.sleep(5)
 
         # Check message was sent
-        resp = await api_client.get("/messages/all")
-        all_msgs = resp.json()
+        resp = await api_client.get("/messages?tenant_id=test-tenant-largefile")
+        all_msgs = resp.json().get("messages", [])
         found = [m for m in all_msgs if m.get("id") == msg_id]
 
         assert len(found) > 0
-        assert found[0].get("status") == "sent"
+        assert get_msg_status(found[0]) == "sent"
 
         # Check MailHog - should have small attachment AND download link for large
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1, timeout=10)
@@ -1490,31 +1510,31 @@ class TestLargeFileStorage:
         message = {
             "id": msg_id,
             "account_id": "account-largefile",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "MinIO Upload Verification",
             "body": "Testing that files are uploaded to MinIO.",
             "attachments": [
                 {
                     "filename": "large-file.bin",
-                    "url": "http://attachment-server:8080/large-file.bin",
-                    "fetch_mode": "http",
+                    "storage_path": "http://attachment-server:8080/large-file.bin",
+                    "fetch_mode": "http_url",
                 }
             ],
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/run-now")
+        await api_client.post("/commands/run-now")
         await asyncio.sleep(5)
 
         # Verify message was sent
-        resp = await api_client.get("/messages/all")
-        all_msgs = resp.json()
+        resp = await api_client.get("/messages?tenant_id=test-tenant-largefile")
+        all_msgs = resp.json().get("messages", [])
         found = [m for m in all_msgs if m.get("id") == msg_id]
         assert len(found) > 0
-        assert found[0].get("status") == "sent"
+        assert get_msg_status(found[0]) == "sent"
 
         # Check MinIO has files in the bucket
         # We use the MinIO mc CLI or direct S3 API
@@ -1547,11 +1567,11 @@ class TestTenantLargeFileConfigApi:
             },
         }
 
-        resp = await api_client.post("/tenants/add", json=tenant_data)
+        resp = await api_client.post("/tenant", json=tenant_data)
         assert resp.status_code in (200, 201), resp.text
 
         # Verify by getting tenant details
-        resp = await api_client.get(f"/tenants/{tenant_data['id']}")
+        resp = await api_client.get(f"/tenant/{tenant_data['id']}")
         assert resp.status_code == 200
         tenant = resp.json()
 
@@ -1572,11 +1592,11 @@ class TestTenantLargeFileConfigApi:
             },
         }
 
-        resp = await api_client.post("/tenants/test-tenant-1/update", json=update_data)
+        resp = await api_client.put("/tenant/test-tenant-1", json=update_data)
         assert resp.status_code == 200
 
         # Verify
-        resp = await api_client.get("/tenants/test-tenant-1")
+        resp = await api_client.get("/tenant/test-tenant-1")
         assert resp.status_code == 200
         tenant = resp.json()
 
@@ -1588,7 +1608,7 @@ class TestTenantLargeFileConfigApi:
     async def test_disable_large_file_config(self, api_client, setup_test_tenants):
         """Can disable large_file_config on a tenant."""
         # First enable
-        await api_client.post("/tenants/test-tenant-2/update", json={
+        await api_client.put("/tenant/test-tenant-2", json={
             "large_file_config": {
                 "enabled": True,
                 "max_size_mb": 3.0,
@@ -1597,7 +1617,7 @@ class TestTenantLargeFileConfigApi:
         })
 
         # Then disable
-        resp = await api_client.post("/tenants/test-tenant-2/update", json={
+        resp = await api_client.put("/tenant/test-tenant-2", json={
             "large_file_config": {
                 "enabled": False,
             },
@@ -1605,7 +1625,7 @@ class TestTenantLargeFileConfigApi:
         assert resp.status_code == 200
 
         # Verify
-        resp = await api_client.get("/tenants/test-tenant-2")
+        resp = await api_client.get("/tenant/test-tenant-2")
         tenant = resp.json()
         lfc = tenant.get("large_file_config", {})
         assert lfc.get("enabled") is False
@@ -1633,17 +1653,17 @@ class TestDeliveryReports:
         message = {
             "id": msg_id,
             "account_id": "test-account-1",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "Delivery Report Test",
             "body": "Testing delivery report callback.",
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger dispatch and wait for delivery
-        await api_client.post("/run-now")
+        await api_client.post("/commands/run-now")
         await asyncio.sleep(3)
 
         # Verify message was sent
@@ -1651,13 +1671,13 @@ class TestDeliveryReports:
         assert len(messages) >= 1
 
         # Check message status - should be sent and reported
-        resp = await api_client.get("/messages/all")
-        all_msgs = resp.json()
+        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
+        all_msgs = resp.json().get("messages", [])
         found = [m for m in all_msgs if m.get("id") == msg_id]
 
         if found:
             msg = found[0]
-            assert msg.get("status") == "sent"
+            assert get_msg_status(msg) == "sent"
             # After delivery cycle, reported_ts should be set
             # (depends on report_interval configuration)
 
@@ -1673,7 +1693,7 @@ class TestDeliveryReports:
             "port": 1025,
             "use_tls": False,
         }
-        await api_client.post("/accounts/add", json=account_data)
+        await api_client.post("/account", json=account_data)
 
         ts = int(time.time())
         msg_id = f"report-error-{ts}"
@@ -1681,27 +1701,27 @@ class TestDeliveryReports:
         message = {
             "id": msg_id,
             "account_id": "account-report-reject",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "Delivery Report Error Test",
             "body": "This should fail and be reported.",
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/run-now")
+        await api_client.post("/commands/run-now")
         await asyncio.sleep(3)
 
         # Check message status - should be error
-        resp = await api_client.get("/messages/all")
-        all_msgs = resp.json()
+        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
+        all_msgs = resp.json().get("messages", [])
         found = [m for m in all_msgs if m.get("id") == msg_id]
 
         if found:
             msg = found[0]
-            assert msg.get("status") in ("error", "deferred")
+            assert get_msg_status(msg) in ("error", "deferred")
 
     async def test_mixed_delivery_report(
         self, api_client, setup_test_tenants
@@ -1717,7 +1737,7 @@ class TestDeliveryReports:
             "port": 1025,
             "use_tls": False,
         }
-        await api_client.post("/accounts/add", json=account_data)
+        await api_client.post("/account", json=account_data)
 
         ts = int(time.time())
 
@@ -1725,39 +1745,39 @@ class TestDeliveryReports:
             {
                 "id": f"mixed-success-{ts}",
                 "account_id": "test-account-1",
-                "from_addr": "sender@test.com",
-                "to_addr": ["recipient@example.com"],
+                "from": "sender@test.com",
+                "to": ["recipient@example.com"],
                 "subject": "Mixed Report - Success",
                 "body": "This should succeed.",
             },
             {
                 "id": f"mixed-error-{ts}",
                 "account_id": "account-mixed-reject",
-                "from_addr": "sender@test.com",
-                "to_addr": ["recipient@example.com"],
+                "from": "sender@test.com",
+                "to": ["recipient@example.com"],
                 "subject": "Mixed Report - Error",
                 "body": "This should fail.",
             },
         ]
 
-        resp = await api_client.post("/messages/add", json={"messages": messages})
+        resp = await api_client.post("/commands/add-messages", json={"messages": messages})
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/run-now")
+        await api_client.post("/commands/run-now")
         await asyncio.sleep(3)
 
         # Check results
-        resp = await api_client.get("/messages/all")
-        all_msgs = resp.json()
+        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
+        all_msgs = resp.json().get("messages", [])
 
         success_msg = [m for m in all_msgs if m.get("id") == f"mixed-success-{ts}"]
         error_msg = [m for m in all_msgs if m.get("id") == f"mixed-error-{ts}"]
 
         if success_msg:
-            assert success_msg[0].get("status") == "sent"
+            assert get_msg_status(success_msg[0]) == "sent"
         if error_msg:
-            assert error_msg[0].get("status") in ("error", "deferred")
+            assert get_msg_status(error_msg[0]) in ("error", "deferred")
 
 
 # ============================================
@@ -1813,16 +1833,16 @@ class TestSecurityInputSanitization:
         message = {
             "id": f"xss-test-{ts}",
             "account_id": "test-account-1",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": xss_subject,
             "body": xss_body,
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/run-now")
+        await api_client.post("/commands/run-now")
         await asyncio.sleep(3)
 
         # Verify the message was sent with literal content (not sanitized)
@@ -1842,8 +1862,8 @@ class TestSecurityInputSanitization:
         message = {
             "id": f"path-traversal-{ts}",
             "account_id": "test-account-1",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "Path Traversal Test",
             "body": "Testing path traversal.",
             "attachments": [{
@@ -1853,7 +1873,7 @@ class TestSecurityInputSanitization:
             }],
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         # Should either reject or handle safely
         assert resp.status_code != 500, "Path traversal caused server error"
 
@@ -1867,13 +1887,13 @@ class TestSecurityInputSanitization:
         message = {
             "id": f"oversized-{ts}",
             "account_id": "test-account-1",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "Oversized Payload Test",
             "body": large_body,
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         # Should either reject (413/422) or accept with warning
         # Server should not crash
         assert resp.status_code != 500, "Oversized payload caused server error"
@@ -1895,16 +1915,16 @@ class TestUnicodeEncoding:
         message = {
             "id": f"emoji-subject-{ts}",
             "account_id": "test-account-1",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": emoji_subject,
             "body": "Testing emoji in subject line.",
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/run-now")
+        await api_client.post("/commands/run-now")
         await asyncio.sleep(3)
 
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
@@ -1938,16 +1958,16 @@ class TestUnicodeEncoding:
         message = {
             "id": f"emoji-body-{ts}",
             "account_id": "test-account-1",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "Emoji Body Test",
             "body": emoji_body,
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/run-now")
+        await api_client.post("/commands/run-now")
         await asyncio.sleep(3)
 
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
@@ -1977,16 +1997,16 @@ class TestUnicodeEncoding:
         message = {
             "id": f"international-{ts}",
             "account_id": "test-account-1",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "International Characters: 你好 مرحبا Привет",
             "body": international_body,
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/run-now")
+        await api_client.post("/commands/run-now")
         await asyncio.sleep(3)
 
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
@@ -2001,8 +2021,8 @@ class TestUnicodeEncoding:
         message = {
             "id": f"unicode-filename-{ts}",
             "account_id": "test-account-1",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "Unicode Filename Test",
             "body": "Testing unicode filename.",
             "attachments": [{
@@ -2012,20 +2032,20 @@ class TestUnicodeEncoding:
             }],
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/run-now")
+        await api_client.post("/commands/run-now")
         await asyncio.sleep(3)
 
         # Should be sent without error
-        resp = await api_client.get("/messages/all")
-        all_msgs = resp.json()
+        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
+        all_msgs = resp.json().get("messages", [])
         found = [m for m in all_msgs if m.get("id") == f"unicode-filename-{ts}"]
 
         if found:
             # Should be sent or have meaningful error (not crash)
-            assert found[0].get("status") in ("sent", "error", "deferred")
+            assert get_msg_status(found[0]) in ("sent", "error", "deferred")
 
 
 # ============================================
@@ -2043,21 +2063,21 @@ class TestHttpAttachmentFetch:
         message = {
             "id": f"http-fetch-{ts}",
             "account_id": "test-account-1",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "HTTP Attachment Fetch Test",
             "body": "Testing HTTP URL attachment fetch.",
             "attachments": [{
                 "filename": "small.txt",
-                "url": "http://attachment-server:8080/small.txt",
-                "fetch_mode": "http",
+                "storage_path": "http://attachment-server:8080/small.txt",
+                "fetch_mode": "http_url",
             }],
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/run-now")
+        await api_client.post("/commands/run-now")
         await asyncio.sleep(5)
 
         # Verify message was sent
@@ -2065,12 +2085,12 @@ class TestHttpAttachmentFetch:
         assert len(messages) >= 1
 
         # Check message status
-        resp = await api_client.get("/messages/all")
-        all_msgs = resp.json()
+        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
+        all_msgs = resp.json().get("messages", [])
         found = [m for m in all_msgs if m.get("id") == f"http-fetch-{ts}"]
 
         if found:
-            assert found[0].get("status") == "sent"
+            assert get_msg_status(found[0]) == "sent"
 
     async def test_fetch_multiple_http_attachments(self, api_client, setup_test_tenants):
         """Can fetch multiple attachments from HTTP URLs."""
@@ -2081,28 +2101,28 @@ class TestHttpAttachmentFetch:
         message = {
             "id": f"multi-http-{ts}",
             "account_id": "test-account-1",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "Multiple HTTP Attachments Test",
             "body": "Testing multiple HTTP URL attachments.",
             "attachments": [
                 {
                     "filename": "small.txt",
-                    "url": "http://attachment-server:8080/small.txt",
-                    "fetch_mode": "http",
+                    "storage_path": "http://attachment-server:8080/small.txt",
+                    "fetch_mode": "http_url",
                 },
                 {
                     "filename": "document.html",
-                    "url": "http://attachment-server:8080/document.html",
-                    "fetch_mode": "http",
+                    "storage_path": "http://attachment-server:8080/document.html",
+                    "fetch_mode": "http_url",
                 },
             ],
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/run-now")
+        await api_client.post("/commands/run-now")
         await asyncio.sleep(5)
 
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
@@ -2116,31 +2136,31 @@ class TestHttpAttachmentFetch:
         message = {
             "id": f"http-timeout-{ts}",
             "account_id": "test-account-1",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "HTTP Timeout Test",
             "body": "Testing HTTP fetch timeout.",
             "attachments": [{
                 "filename": "nonexistent.txt",
-                "url": "http://attachment-server:8080/nonexistent-file-12345.txt",
-                "fetch_mode": "http",
+                "storage_path": "http://attachment-server:8080/nonexistent-file-12345.txt",
+                "fetch_mode": "http_url",
             }],
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/run-now")
+        await api_client.post("/commands/run-now")
         await asyncio.sleep(5)
 
         # Message should fail gracefully (not crash the server)
-        resp = await api_client.get("/messages/all")
-        all_msgs = resp.json()
+        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
+        all_msgs = resp.json().get("messages", [])
         found = [m for m in all_msgs if m.get("id") == f"http-timeout-{ts}"]
 
         if found:
             # Should be error or deferred, not sent
-            assert found[0].get("status") in ("error", "deferred")
+            assert get_msg_status(found[0]) in ("error", "deferred")
 
     async def test_http_attachment_invalid_url(self, api_client, setup_test_tenants):
         """Invalid HTTP URLs should be handled gracefully."""
@@ -2149,18 +2169,18 @@ class TestHttpAttachmentFetch:
         message = {
             "id": f"invalid-url-{ts}",
             "account_id": "test-account-1",
-            "from_addr": "sender@test.com",
-            "to_addr": ["recipient@example.com"],
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
             "subject": "Invalid URL Test",
             "body": "Testing invalid URL handling.",
             "attachments": [{
                 "filename": "test.txt",
-                "url": "not-a-valid-url",
-                "fetch_mode": "http",
+                "storage_path": "not-a-valid-url",
+                "fetch_mode": "http_url",
             }],
         }
 
-        resp = await api_client.post("/messages/add", json={"messages": [message]})
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         # Should either reject immediately or fail during processing
         # Server should not crash
         assert resp.status_code != 500
