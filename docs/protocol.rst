@@ -34,10 +34,10 @@ REST command surface
      - Queue one or more messages for delivery
      - :ref:`Message batch payload <message-batch>`
      - ``queued`` count and ``rejected`` array
-* - ``POST /commands/run-now`` †
-  - Wake the dispatcher/reporting loops to run a one-off cycle immediately
-  - None
-  - ``{"ok": true}`` or ``{"ok": false, "error": ...}``
+   * - ``POST /commands/run-now`` †
+     - Wake the dispatcher/reporting loops to run a one-off cycle immediately
+     - None
+     - ``{"ok": true}`` or ``{"ok": false, "error": ...}``
    * - ``POST /commands/suspend`` / ``POST /commands/activate``
      - Toggle the scheduler
      - Optional JSON (unused)

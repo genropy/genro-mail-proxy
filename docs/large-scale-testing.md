@@ -519,8 +519,8 @@ git commit -m "test: update large-scale testing checklist"
 - [Docker Compose File](../tests/docker/docker-compose.fulltest.yml)
 - [Test Python](../tests/test_fullstack_integration.py)
 - [Script Runner](../scripts/run-fullstack-tests.sh)
-- [API Documentation](api.rst)
-- [Architecture](architecture.rst)
+- [API Documentation](api_reference.rst)
+- [Architecture](architecture_overview.rst)
 
 ---
 ---

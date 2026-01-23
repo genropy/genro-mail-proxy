@@ -145,3 +145,4 @@ with separate databases.
    modules
    contributing
    fullstack_testing
+   large-scale-testing

@@ -141,3 +141,7 @@ typehints_document_rtype = True
 linkcheck_anchors_ignore_for_url = [
     r"https://github\.com/genropy/genro-mail-proxy/.*",  # All GitHub anchors
 ]
+linkcheck_ignore = [
+    r"http://localhost:\d+",  # Local development URLs
+    r"http://127\.0\.0\.1:\d+",  # Local development URLs
+]
