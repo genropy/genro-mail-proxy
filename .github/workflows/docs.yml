@@ -5,13 +5,13 @@ name: Documentation
     branches: [main]
     paths:
       - 'docs/**'
-      - 'src/async_mail_service/**'
+      - 'src/mail_proxy/**'
       - '.readthedocs.yaml'
   pull_request:
     branches: [main]
     paths:
       - 'docs/**'
-      - 'src/async_mail_service/**'
+      - 'src/mail_proxy/**'
       - '.readthedocs.yaml'
   workflow_dispatch:
 
