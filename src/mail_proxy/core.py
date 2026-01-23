@@ -1683,11 +1683,24 @@ class MailProxy:
             )
 
         # Get current body and append footer
-        current_body = msg.get_content()
-        new_body = current_body + footer
-
-        # Replace the content
-        msg.set_content(new_body, subtype=content_subtype)
+        # For multipart messages, we need to find and modify the text body part
+        if msg.is_multipart():
+            # Find the body part (text/plain or text/html)
+            body_part = msg.get_body(preferencelist=('html', 'plain') if content_subtype == 'html' else ('plain', 'html'))
+            if body_part is not None:
+                current_body = body_part.get_content()
+                new_body = current_body + footer
+                body_part.set_content(new_body, subtype=content_subtype)
+            else:
+                # No body found, try to add content to the message directly
+                # This shouldn't happen in normal use, but handle it gracefully
+                self.logger.warning("No body part found in multipart message, adding footer as new part")
+                msg.add_alternative(footer, subtype=content_subtype)
+        else:
+            # Simple message - modify directly
+            current_body = msg.get_content()
+            new_body = current_body + footer
+            msg.set_content(new_body, subtype=content_subtype)
 
         return msg
 

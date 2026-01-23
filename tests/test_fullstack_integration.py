@@ -176,10 +176,9 @@ async def wait_for_messages(
     return await get_mailhog_messages(api_url)
 
 
-async def trigger_dispatch(api_client, tenant_id: str | None = None) -> None:
-    """Trigger message dispatch."""
-    params = {"tenant_id": tenant_id} if tenant_id else {}
-    await api_client.post("/commands/run-now", params=params)
+async def trigger_dispatch(api_client, tenant_id: str = "test-tenant-1") -> None:
+    """Trigger message dispatch for a specific tenant."""
+    await api_client.post("/commands/run-now", params={"tenant_id": tenant_id})
     await asyncio.sleep(2)  # Wait for processing
 
 
@@ -464,42 +463,50 @@ class TestTenantIsolation:
 
     async def test_run_now_with_tenant_filter(self, api_client, setup_test_tenants):
         """run-now should respect tenant filter."""
+        # Suspend service to prevent background dispatch during test
+        await api_client.post("/commands/suspend")
         await clear_mailhog(MAILHOG_TENANT1_API)
         await clear_mailhog(MAILHOG_TENANT2_API)
 
         ts = int(time.time())
 
-        # Add messages for both tenants
-        messages = [
-            {
-                "id": f"filter-t1-{ts}",
-                "account_id": "test-account-1",
-                "from": "sender@tenant1.com",
-                "to": ["recipient@example.com"],
-                "subject": "Filtered Test T1",
-                "body": "Message for tenant 1.",
-            },
-            {
-                "id": f"filter-t2-{ts}",
-                "account_id": "test-account-2",
-                "from": "sender@tenant2.com",
-                "to": ["recipient@example.com"],
-                "subject": "Filtered Test T2",
-                "body": "Message for tenant 2.",
-            },
-        ]
-        await api_client.post("/commands/add-messages", json={"messages": messages})
+        try:
+            # Add messages for both tenants
+            messages = [
+                {
+                    "id": f"filter-t1-{ts}",
+                    "account_id": "test-account-1",
+                    "from": "sender@tenant1.com",
+                    "to": ["recipient@example.com"],
+                    "subject": "Filtered Test T1",
+                    "body": "Message for tenant 1.",
+                },
+                {
+                    "id": f"filter-t2-{ts}",
+                    "account_id": "test-account-2",
+                    "from": "sender@tenant2.com",
+                    "to": ["recipient@example.com"],
+                    "subject": "Filtered Test T2",
+                    "body": "Message for tenant 2.",
+                },
+            ]
+            await api_client.post("/commands/add-messages", json={"messages": messages})
 
-        # Trigger only tenant 1
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(2)
+            # Trigger only tenant 1 (activate temporarily just for this dispatch)
+            await api_client.post("/commands/activate")
+            await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
+            await asyncio.sleep(2)
+            await api_client.post("/commands/suspend")
 
-        # Only tenant 1 should have received message
-        msgs_t1 = await get_mailhog_messages(MAILHOG_TENANT1_API)
-        msgs_t2 = await get_mailhog_messages(MAILHOG_TENANT2_API)
+            # Only tenant 1 should have received message
+            msgs_t1 = await get_mailhog_messages(MAILHOG_TENANT1_API)
+            msgs_t2 = await get_mailhog_messages(MAILHOG_TENANT2_API)
 
-        assert len(msgs_t1) == 1
-        assert len(msgs_t2) == 0  # Tenant 2 not triggered yet
+            assert len(msgs_t1) == 1
+            assert len(msgs_t2) == 0  # Tenant 2 not triggered yet
+        finally:
+            # Re-activate service
+            await api_client.post("/commands/activate")
 
 
 # ============================================
@@ -536,6 +543,9 @@ class TestBatchOperations:
 
     async def test_deduplication(self, api_client, setup_test_tenants):
         """Duplicate message IDs should be rejected."""
+        # Suspend service to prevent automatic dispatch during test
+        await api_client.post("/commands/suspend")
+
         ts = int(time.time())
         msg_id = f"dedup-test-{ts}"
 
@@ -548,17 +558,21 @@ class TestBatchOperations:
             "body": "First message",
         }
 
-        # First send
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
-        assert resp.status_code == 200
+        try:
+            # First send
+            resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+            assert resp.status_code == 200
 
-        # Second send with same ID
-        message["body"] = "Duplicate message"
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
-        data = resp.json()
-        # Should be rejected as duplicate
-        rejected = data.get("rejected", [])
-        assert len(rejected) >= 1 or data.get("queued", 0) == 0
+            # Second send with same ID - should be rejected
+            message["body"] = "Duplicate message"
+            resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+            data = resp.json()
+            # Should be rejected as duplicate
+            rejected = data.get("rejected", [])
+            assert len(rejected) >= 1 or data.get("queued", 0) == 0
+        finally:
+            # Re-activate service
+            await api_client.post("/commands/activate")
 
 
 # ============================================
@@ -897,7 +911,7 @@ class TestSmtpErrorHandling:
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/commands/run-now")
+        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
         await asyncio.sleep(3)
 
         # Check message status - should be error
@@ -930,7 +944,7 @@ class TestSmtpErrorHandling:
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/commands/run-now")
+        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
         await asyncio.sleep(3)
 
         # Check message status - should be deferred (waiting for retry)
@@ -967,7 +981,7 @@ class TestSmtpErrorHandling:
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/commands/run-now")
+        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
         await asyncio.sleep(5)
 
         # Check results - some should be sent, some deferred/error
@@ -1007,7 +1021,7 @@ class TestSmtpErrorHandling:
 
         # Trigger multiple dispatch cycles
         for _ in range(3):
-            await api_client.post("/commands/run-now")
+            await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
             await asyncio.sleep(2)
 
         # Check results
@@ -1064,7 +1078,7 @@ class TestRetryLogic:
         # Trigger multiple dispatch cycles
         initial_retry = 0
         for cycle in range(3):
-            await api_client.post("/commands/run-now")
+            await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
             await asyncio.sleep(2)
 
             # Check retry count
@@ -1106,7 +1120,7 @@ class TestRetryLogic:
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/commands/run-now")
+        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
         await asyncio.sleep(3)
 
         # Check message has error details
@@ -1265,7 +1279,7 @@ class TestLargeFileStorage:
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/commands/run-now")
+        await api_client.post("/commands/run-now?tenant_id=test-tenant-largefile")
         await asyncio.sleep(3)
 
         # Check message was sent
@@ -1319,7 +1333,7 @@ class TestLargeFileStorage:
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/commands/run-now")
+        await api_client.post("/commands/run-now?tenant_id=test-tenant-largefile")
         await asyncio.sleep(5)
 
         # Check message was sent
@@ -1373,7 +1387,7 @@ class TestLargeFileStorage:
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/commands/run-now")
+        await api_client.post("/commands/run-now?tenant_id=test-tenant-reject-large")
         await asyncio.sleep(3)
 
         # Check message status - should be error (rejected)
@@ -1418,7 +1432,7 @@ class TestLargeFileStorage:
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/commands/run-now")
+        await api_client.post("/commands/run-now?tenant_id=test-tenant-warn-large")
         await asyncio.sleep(5)
 
         # Check message was sent (warning is just logged)
@@ -1462,8 +1476,8 @@ class TestLargeFileStorage:
         resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
-        # Trigger dispatch
-        await api_client.post("/commands/run-now")
+        # Trigger dispatch for the tenant that owns this account
+        await api_client.post("/commands/run-now?tenant_id=test-tenant-largefile")
         await asyncio.sleep(5)
 
         # Check message was sent
@@ -1527,7 +1541,7 @@ class TestLargeFileStorage:
         resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now")
+        await api_client.post("/commands/run-now?tenant_id=test-tenant-largefile")
         await asyncio.sleep(5)
 
         # Verify message was sent
@@ -1664,7 +1678,7 @@ class TestDeliveryReports:
         assert resp.status_code == 200
 
         # Trigger dispatch and wait for delivery
-        await api_client.post("/commands/run-now")
+        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
         await asyncio.sleep(3)
 
         # Verify message was sent
@@ -1712,7 +1726,7 @@ class TestDeliveryReports:
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/commands/run-now")
+        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
         await asyncio.sleep(3)
 
         # Check message status - should be error
@@ -1765,7 +1779,7 @@ class TestDeliveryReports:
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/commands/run-now")
+        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
         await asyncio.sleep(3)
 
         # Check results
@@ -1843,7 +1857,7 @@ class TestSecurityInputSanitization:
         resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now")
+        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
         await asyncio.sleep(3)
 
         # Verify the message was sent with literal content (not sanitized)
@@ -1925,7 +1939,7 @@ class TestUnicodeEncoding:
         resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now")
+        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
         await asyncio.sleep(3)
 
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
@@ -1968,7 +1982,7 @@ class TestUnicodeEncoding:
         resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now")
+        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
         await asyncio.sleep(3)
 
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
@@ -2007,7 +2021,7 @@ class TestUnicodeEncoding:
         resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now")
+        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
         await asyncio.sleep(3)
 
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
@@ -2036,7 +2050,7 @@ class TestUnicodeEncoding:
         resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now")
+        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
         await asyncio.sleep(3)
 
         # Should be sent without error
@@ -2078,7 +2092,7 @@ class TestHttpAttachmentFetch:
         resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now")
+        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
         await asyncio.sleep(5)
 
         # Verify message was sent
@@ -2123,7 +2137,7 @@ class TestHttpAttachmentFetch:
         resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now")
+        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
         await asyncio.sleep(5)
 
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
@@ -2151,7 +2165,7 @@ class TestHttpAttachmentFetch:
         resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now")
+        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
         await asyncio.sleep(5)
 
         # Message should fail gracefully (not crash the server)
