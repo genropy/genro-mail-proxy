@@ -21,6 +21,8 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "docker: marks tests requiring Docker")
     config.addinivalue_line("markers", "network: marks tests requiring network access")
     config.addinivalue_line("markers", "integration: marks tests as integration tests")
+    config.addinivalue_line("markers", "fullstack: marks tests requiring full Docker infrastructure")
+    config.addinivalue_line("markers", "db: marks tests as database integration tests")
 
 
 # Dummy classes for mocking dependencies

@@ -67,6 +67,7 @@ dev = [
     "aiosmtpd>=1.4.0",
     "pytest-docker>=3.0.0",
     "bandit>=1.7.0",
+    "testcontainers[postgres]>=4.0.0",
 ]
 docs = [
     "sphinx>=8.0.0",
@@ -98,10 +99,12 @@ packages = ["src/mail_proxy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+norecursedirs = ["_build", "docs/_build", "docs", ".git"]
 addopts = "-v --cov=mail_proxy --cov-report=term-missing"
 markers = [
     "network: marks tests as requiring network access (deselect with '-m \"not network\"')",
     "fullstack: marks tests as requiring full Docker infrastructure (PostgreSQL, MailHog, MinIO)",
+    "db: marks tests as database integration tests using testcontainers",
 ]
 
 [tool.black]

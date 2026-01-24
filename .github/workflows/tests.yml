@@ -31,7 +31,43 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          pytest -m "not fullstack" --cov=mail_proxy --cov-report=xml --cov-report=term
+          pytest -m "not fullstack and not db" --cov=mail_proxy --cov-report=xml --cov-report=term
+
+  db-integration:
+    runs-on: ubuntu-latest
+    needs: test
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,postgresql]"
+
+      - name: Run database integration tests
+        run: |
+          pytest tests/integration/ -m "db" -v
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.11'
