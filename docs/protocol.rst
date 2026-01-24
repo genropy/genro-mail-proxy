@@ -85,7 +85,7 @@ Message batch payload
          "priority": 2,
          "deferred_ts": 1728470400,
          "attachments": [
-           {"filename": "report.pdf", "s3": {"bucket": "docs", "key": "report.pdf"}}
+           {"filename": "report.pdf", "storage_path": "/data/docs/report.pdf", "fetch_mode": "filesystem"}
          ]
        }
      ],
