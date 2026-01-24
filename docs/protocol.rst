@@ -139,8 +139,9 @@ Each entry mirrors :class:`mail_proxy.api.MessagePayload`. Key fields:
 Attachment storage formats
 --------------------------
 
-Each attachment requires a ``fetch_mode`` field specifying how to retrieve
-the content, and a ``storage_path`` with the location or data.
+Each attachment requires a ``storage_path`` field with the location or data.
+The ``fetch_mode`` field is **optional** - when omitted, it is automatically
+inferred from the ``storage_path`` format.
 
 .. list-table::
    :header-rows: 1
@@ -149,7 +150,7 @@ the content, and a ``storage_path`` with the location or data.
      - storage_path example
      - Description
    * - ``base64``
-     - ``SGVsbG8gV29ybGQ=``
+     - ``base64:SGVsbG8=`` or raw base64
      - Inline base64-encoded content
    * - ``filesystem``
      - ``/tmp/attachments/file.pdf``
@@ -160,6 +161,13 @@ the content, and a ``storage_path`` with the location or data.
    * - ``http_url``
      - ``https://storage.example.com/file.pdf``
      - HTTP GET from external URL
+
+**Auto-detection rules** (when ``fetch_mode`` is omitted):
+
+1. Starts with ``base64:`` → **base64** (prefix is stripped)
+2. Starts with ``http://`` or ``https://`` → **http_url**
+3. Starts with ``/`` → **filesystem**
+4. Otherwise → **endpoint** (default)
 
 **MD5 cache marker**: Filenames can include an MD5 hash marker for cache lookup:
 
@@ -175,11 +183,15 @@ Example attachment payload:
 
    {
      "attachments": [
-       {"filename": "logo.png", "storage_path": "iVBORw0KGgo...", "fetch_mode": "base64"},
-       {"filename": "invoice.pdf", "storage_path": "doc_id=456", "fetch_mode": "endpoint"},
-       {"filename": "local.txt", "storage_path": "/var/attachments/local.txt", "fetch_mode": "filesystem"}
+       {"filename": "logo.png", "storage_path": "base64:iVBORw0KGgo..."},
+       {"filename": "invoice.pdf", "storage_path": "doc_id=456"},
+       {"filename": "remote.pdf", "storage_path": "https://cdn.example.com/file.pdf"},
+       {"filename": "local.txt", "storage_path": "/var/attachments/local.txt"}
      ]
    }
+
+Note: ``fetch_mode`` is omitted in the example above because it is auto-detected
+from the ``storage_path`` format. You can still specify it explicitly if needed.
 
 Delivery report payload
 -----------------------
@@ -212,13 +224,13 @@ Client synchronisation protocol
 -------------------------------
 
 The "client report loop" sends ``POST`` requests to the configured
-``client_sync_url`` (configured per-tenant or via ``GMP_CLIENT_SYNC_URL``).
+sync endpoint (per-tenant: ``client_base_url`` + ``client_sync_path``, or global: ``GMP_CLIENT_SYNC_URL``).
 Authentication uses either HTTP basic auth or a bearer token (configured
 per-tenant via CLI or environment variables). A typical exchange:
 
 1. Dispatcher computes a batch of pending delivery results (respecting the
    configured batch size).
-2. Dispatcher sends the JSON payload above to ``client_sync_url``.
+2. Dispatcher sends the JSON payload above to the sync endpoint.
 3. Upstream service replies with an acknowledgment summarising the received
    items (for example ``{"sent": 12, "error": 1, "deferred": 3}``).
 4. Dispatcher sets ``reported_ts`` on the acknowledged rows and eventually
@@ -231,7 +243,7 @@ per-tenant via CLI or environment variables). A typical exchange:
      participant Core as MailProxy
      participant Upstream as Genropy / client
 
-     Core->>Upstream: POST client_sync_url<br/>delivery_report array
+     Core->>Upstream: POST sync_endpoint<br/>delivery_report array
      Upstream-->>Core: HTTP 200 + summary JSON
      Core->>Core: mark_reported() & retention cleanup
 

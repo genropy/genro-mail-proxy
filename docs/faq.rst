@@ -66,7 +66,7 @@ Messages and Delivery
    that time.
 
 **How do I know if a message was delivered?**
-   The service posts delivery reports to your ``client_sync_url`` endpoint. Each
+   The service posts delivery reports to your sync endpoint. Each
    report includes ``sent_ts`` (success) or ``error_ts`` + ``error`` (failure).
 
 **What's the maximum message size?**
@@ -91,7 +91,8 @@ Attachments
         "fetch_mode": "endpoint"
       }
 
-   Configure the endpoint in ``[attachments] http_endpoint``.
+   For per-tenant configuration, set ``client_base_url`` and ``client_attachment_path``
+   on the tenant. For global configuration, use ``GMP_ATTACHMENT_BASE_URL``.
 
 **What's the MD5 cache marker?**
    Include ``{MD5:hash}`` in the filename to enable caching::
@@ -136,8 +137,8 @@ Multi-tenancy
    isolation and separate rate limiting.
 
 **How are delivery reports routed?**
-   Reports are sent to the tenant's ``client_sync_url`` if configured, otherwise
-   to the global ``client_sync_url``.
+   Reports are sent to the tenant's sync endpoint (``client_base_url`` + ``client_sync_path``)
+   if configured, otherwise to the global ``GMP_CLIENT_SYNC_URL``.
 
 Rate Limiting
 -------------
@@ -192,8 +193,8 @@ Troubleshooting
    the SMTP account. Or add more accounts to distribute the load.
 
 **Delivery reports aren't arriving**
-   1. Verify ``client_sync_url`` is configured and reachable
-   2. Check authentication (``client_sync_user``/``password`` or ``token``)
+   1. Verify ``client_base_url`` and ``client_sync_path`` are configured (or global ``GMP_CLIENT_SYNC_URL``)
+   2. Check authentication in ``client_auth`` (bearer token or basic auth)
    3. Ensure your endpoint returns HTTP 200 with valid JSON
 
 **Attachments fail to fetch**

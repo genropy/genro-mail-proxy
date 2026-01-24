@@ -30,7 +30,7 @@ The following diagram illustrates the complete message lifecycle:
 
    Proxy                              Tenant Server (Client)
      │                                       │
-     │  POST {client_sync_url}               │
+     │  POST {client_base_url + sync_path}    │
      │  {"delivery_report": [...]}           │
      │ ─────────────────────────────────►    │
      │                                       │
@@ -48,7 +48,7 @@ The following diagram illustrates the complete message lifecycle:
 
 1. **Proxy sends delivery reports**: The proxy's client report loop periodically
    collects completed message results (sent, error, deferred) and POSTs them
-   to each tenant's ``client_sync_url``.
+   to each tenant's sync endpoint (``client_base_url`` + ``client_sync_path``).
 
 2. **Tenant processes reports**: The tenant server receives the delivery reports,
    updates its local database with message statuses (delivered, failed, etc.).
@@ -79,18 +79,22 @@ Tenants are configured via the REST API. Each tenant has:
      - ``str``
      - No
      - Human-readable name
-   * - ``client_sync_url``
+   * - ``client_base_url``
      - ``str``
      - No
-     - URL where proxy sends delivery reports (e.g., ``https://api.tenant.com/proxy_sync``)
+     - Base URL for tenant HTTP endpoints (e.g., ``https://api.tenant.com``)
+   * - ``client_sync_path``
+     - ``str``
+     - No
+     - Path for delivery report callbacks (default: ``/mail-proxy/sync``)
+   * - ``client_attachment_path``
+     - ``str``
+     - No
+     - Path for attachment fetcher endpoint (default: ``/mail-proxy/attachments``)
    * - ``client_auth``
      - ``TenantAuth``
      - No
      - Common authentication for all HTTP endpoints (sync and attachments)
-   * - ``client_attachment_url``
-     - ``str``
-     - No
-     - URL for fetching attachments via HTTP (e.g., ``https://api.tenant.com/attachments``)
    * - ``active``
      - ``bool``
      - No
@@ -154,8 +158,9 @@ Tenant Management API
       {
         "id": "tenant-acme",
         "name": "ACME Corporation",
-        "client_sync_url": "https://api.acme.com/proxy_sync",
-        "client_attachment_url": "https://api.acme.com/attachments",
+        "client_base_url": "https://api.acme.com",
+        "client_sync_path": "/proxy_sync",
+        "client_attachment_path": "/attachments",
         "client_auth": {
           "method": "bearer",
           "token": "acme-secret-token"
@@ -182,7 +187,7 @@ Tenant Management API
           {
             "id": "tenant-acme",
             "name": "ACME Corporation",
-            "client_sync_url": "https://api.acme.com/proxy_sync",
+            "client_base_url": "https://api.acme.com",
             "active": true,
             "created_at": "2024-01-20T10:00:00Z",
             "updated_at": "2024-01-20T10:00:00Z"
@@ -212,12 +217,13 @@ When the proxy has delivery reports to send, it routes them based on the
 ``tenant_id`` associated with each message:
 
 1. **Messages with tenant_id**: Reports are grouped by tenant and sent to each
-   tenant's ``client_sync_url`` with the appropriate authentication.
+   tenant's sync endpoint (``client_base_url`` + ``client_sync_path``) with the
+   appropriate authentication.
 
-2. **Messages without tenant_id**: Reports are sent to the global
-   ``client_sync_url`` (configured via ``GMP_CLIENT_SYNC_URL`` environment variable).
+2. **Messages without tenant_id**: Reports are sent to the global sync endpoint
+   (configured via ``GMP_CLIENT_SYNC_URL`` environment variable).
 
-3. **Tenants without client_sync_url**: Falls back to the global URL.
+3. **Tenants without client_base_url**: Falls back to the global URL.
 
 The routing logic ensures tenant isolation - each tenant only receives reports
 for their own messages.
@@ -351,8 +357,9 @@ Complete tenant setup example:
         -d '{
           "id": "acme",
           "name": "ACME Corp",
-          "client_sync_url": "https://api.acme.com/proxy_sync",
-          "client_attachment_url": "https://api.acme.com/attachments",
+          "client_base_url": "https://api.acme.com",
+          "client_sync_path": "/proxy_sync",
+          "client_attachment_path": "/attachments",
           "client_auth": {
             "method": "bearer",
             "token": "acme-secret"

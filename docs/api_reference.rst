@@ -148,7 +148,7 @@ See :doc:`multi_tenancy` for full architecture details.
           {
             "id": "tenant-acme",
             "name": "ACME Corporation",
-            "client_sync_url": "https://api.acme.com/proxy_sync",
+            "client_base_url": "https://api.acme.com",
             "active": true,
             "created_at": "2024-01-20T10:00:00Z"
           }
@@ -268,7 +268,8 @@ Outbound proxy sync
 -------------------
 
 Besides REST endpoints that clients call, the service also issues a
-``POST`` request to the configured ``client_sync_url`` whenever there are
+``POST`` request to the configured sync endpoint (per-tenant: ``client_base_url`` +
+``client_sync_path``, or global: ``GMP_CLIENT_SYNC_URL``) whenever there are
 delivery results to share with your application.  Example payload:
 
 The payload contains the delivery results read from the ``messages`` table:
@@ -312,8 +313,8 @@ them to receive callbacks from the proxy.
 Delivery Report Endpoint
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
-The proxy sends delivery reports to your ``client_sync_url`` (configured per-tenant
-or globally). Your endpoint must:
+The proxy sends delivery reports to your sync endpoint (per-tenant: ``client_base_url``
++ ``client_sync_path``, or global: ``GMP_CLIENT_SYNC_URL``). Your endpoint must:
 
 - Accept POST requests with JSON body containing ``delivery_report`` array
 - Return a JSON summary response
@@ -339,8 +340,9 @@ Attachment Endpoint (optional)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 If using ``fetch_mode: "endpoint"`` for attachments, the proxy fetches file content
-from your ``client_attachment_url``. Your endpoint receives a POST with the
-``storage_path`` value and must return the file content.
+from your attachment endpoint (``client_base_url`` + ``client_attachment_path``).
+Your endpoint receives a POST with the ``storage_path`` value and must return the
+file content.
 
 Example implementation:
 
