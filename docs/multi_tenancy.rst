@@ -457,3 +457,186 @@ Complete tenant setup example:
         }'
 
 4. **Proxy delivers message and sends report to** ``https://api.acme.com/proxy_sync``
+
+Batch Suspension
+----------------
+
+Tenants can suspend message sending at different granularity levels:
+
+* **Full suspension**: Stop all message sending for the tenant
+* **Batch-specific suspension**: Stop only messages belonging to a specific batch/campaign
+
+This feature is useful when you need to halt a mailing campaign due to content errors,
+while allowing other messages (transactional emails, other campaigns) to continue normally.
+
+**Use case example:**
+
+A tenant sends a newsletter to 5000 recipients and discovers an error in the content:
+
+1. **Suspend the batch**: Stop sending for that specific campaign
+2. **Re-submit corrected messages**: Messages with the same IDs overwrite unsent ones
+3. **Activate the batch**: Resume sending with corrected content
+
+Meanwhile, transactional emails and other campaigns continue uninterrupted.
+
+Batch Code in Messages
+~~~~~~~~~~~~~~~~~~~~~~
+
+Messages can include an optional ``batch_code`` field to group them into campaigns:
+
+.. code-block:: json
+
+   {
+     "messages": [{
+       "id": "newsletter-2026-01-001",
+       "account_id": "smtp-acme",
+       "batch_code": "NL-2026-01",
+       "from": "newsletter@acme.com",
+       "to": ["customer@example.com"],
+       "subject": "January Newsletter",
+       "body": "..."
+     }]
+   }
+
+Messages without ``batch_code`` are only affected by full tenant suspension (``*``).
+
+Suspend/Activate API
+~~~~~~~~~~~~~~~~~~~~
+
+``POST /commands/suspend``
+   Suspend message sending for a tenant.
+
+   Query parameters:
+
+   - ``tenant_id`` (str, required): The tenant to suspend
+   - ``batch_code`` (str, optional): Specific batch to suspend. If omitted, suspends all sending.
+
+   Examples:
+
+   .. code-block:: bash
+
+      # Suspend all sending for tenant
+      curl -X POST "http://localhost:8000/commands/suspend?tenant_id=acme" \
+        -H "X-API-Token: your-api-token"
+
+      # Suspend only a specific batch
+      curl -X POST "http://localhost:8000/commands/suspend?tenant_id=acme&batch_code=NL-2026-01" \
+        -H "X-API-Token: your-api-token"
+
+   Response:
+
+   .. code-block:: json
+
+      {
+        "ok": true,
+        "tenant_id": "acme",
+        "batch_code": "NL-2026-01",
+        "suspended_batches": ["NL-2026-01"],
+        "pending_messages": 4500
+      }
+
+``POST /commands/activate``
+   Resume message sending for a tenant.
+
+   Query parameters:
+
+   - ``tenant_id`` (str, required): The tenant to activate
+   - ``batch_code`` (str, optional): Specific batch to activate. If omitted, clears all suspensions.
+
+   Examples:
+
+   .. code-block:: bash
+
+      # Activate all sending for tenant (clear all suspensions)
+      curl -X POST "http://localhost:8000/commands/activate?tenant_id=acme" \
+        -H "X-API-Token: your-api-token"
+
+      # Activate only a specific batch
+      curl -X POST "http://localhost:8000/commands/activate?tenant_id=acme&batch_code=NL-2026-01" \
+        -H "X-API-Token: your-api-token"
+
+   Response:
+
+   .. code-block:: json
+
+      {
+        "ok": true,
+        "tenant_id": "acme",
+        "batch_code": "NL-2026-01",
+        "suspended_batches": [],
+        "pending_messages": 0
+      }
+
+Suspension Behavior
+~~~~~~~~~~~~~~~~~~~
+
+The ``suspended_batches`` field in the tenant record stores the suspension state:
+
+- **Empty/NULL**: No suspension, all messages are processed normally
+- **"*"**: Full suspension, no messages are sent for this tenant
+- **"NL-01,NL-02"**: Comma-separated list of suspended batch codes
+
+**Processing rules:**
+
+1. If ``suspended_batches = "*"``: All messages for the tenant are skipped
+2. If ``suspended_batches`` contains the message's ``batch_code``: That message is skipped
+3. Messages without ``batch_code`` are only affected by full suspension (``*``)
+
+**Important notes:**
+
+- Suspending multiple batches accumulates them in the list
+- Activating a single batch removes only that batch from the list
+- Activating without ``batch_code`` clears all suspensions
+- You cannot activate a single batch when full suspension (``*``) is active;
+  you must first activate all (clear the ``*``)
+
+Complete Workflow Example
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+1. **Submit newsletter campaign:**
+
+   .. code-block:: bash
+
+      curl -X POST http://localhost:8000/commands/add-messages \
+        -H "Content-Type: application/json" \
+        -H "X-API-Token: your-api-token" \
+        -d '{
+          "messages": [
+            {"id": "nl-001", "account_id": "smtp-acme", "batch_code": "NL-2026-01", ...},
+            {"id": "nl-002", "account_id": "smtp-acme", "batch_code": "NL-2026-01", ...},
+            ...
+          ]
+        }'
+
+2. **Discover error, suspend the batch:**
+
+   .. code-block:: bash
+
+      curl -X POST "http://localhost:8000/commands/suspend?tenant_id=acme&batch_code=NL-2026-01" \
+        -H "X-API-Token: your-api-token"
+
+      # Response shows 4500 pending messages in that batch
+
+3. **Re-submit corrected messages (same IDs overwrite unsent ones):**
+
+   .. code-block:: bash
+
+      curl -X POST http://localhost:8000/commands/add-messages \
+        -H "Content-Type: application/json" \
+        -H "X-API-Token: your-api-token" \
+        -d '{
+          "messages": [
+            {"id": "nl-001", "account_id": "smtp-acme", "batch_code": "NL-2026-01", "body": "Corrected content..."},
+            {"id": "nl-002", "account_id": "smtp-acme", "batch_code": "NL-2026-01", "body": "Corrected content..."},
+            ...
+          ]
+        }'
+
+4. **Resume sending:**
+
+   .. code-block:: bash
+
+      curl -X POST "http://localhost:8000/commands/activate?tenant_id=acme&batch_code=NL-2026-01" \
+        -H "X-API-Token: your-api-token"
+
+      # Messages with corrected content are now being sent

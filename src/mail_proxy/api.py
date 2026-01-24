@@ -180,6 +180,15 @@ class StatusResponse(CommandStatus):
     active: bool = Field(..., description="Whether the service is actively processing messages")
 
 
+class SuspendResponse(CommandStatus):
+    """Response from /suspend and /activate endpoints."""
+
+    tenant_id: str = Field(..., description="Tenant ID")
+    batch_code: str | None = Field(default=None, description="Batch code (None if all)")
+    suspended_batches: list[str] = Field(default_factory=list, description="Currently suspended batches")
+    pending_messages: int = Field(default=0, description="Count of pending messages")
+
+
 # AttachmentPayload is imported from models.py for consistency and proper validation
 
 
@@ -204,6 +213,7 @@ class MessagePayload(BaseModel):
         attachments: List of attachment specifications.
         priority: Message priority (0-3 or "immediate"/"high"/"medium"/"low").
         deferred_ts: Unix timestamp to defer delivery until.
+        batch_code: Optional batch/campaign identifier for grouping messages.
     """
     model_config = ConfigDict(populate_by_name=True)
     id: str
@@ -222,6 +232,7 @@ class MessagePayload(BaseModel):
     attachments: list[AttachmentPayload] | None = None
     priority: int | Literal["immediate", "high", "medium", "low"] | None = None
     deferred_ts: int | None = None
+    batch_code: str | None = Field(default=None, max_length=64)
 
 
 class AccountInfo(BaseModel):
@@ -456,41 +467,63 @@ def create_app(
             raise HTTPException(400, result.get("error", "Unknown error"))
         return BasicOkResponse.model_validate(result)
 
-    @router.post("/suspend", response_model=BasicOkResponse, response_model_exclude_none=True)
-    async def suspend():
-        """Pause the automatic dispatch scheduler.
+    @router.post("/suspend", response_model=SuspendResponse, response_model_exclude_none=True)
+    async def suspend(tenant_id: str, batch_code: str | None = None):
+        """Suspend message sending for a tenant.
 
-        Messages remain in the queue but are not processed until the scheduler
-        is reactivated via ``/activate``. Useful for maintenance or debugging.
+        Suspends all messages for the tenant, or only messages with the specified
+        batch_code. Other tenants continue sending normally.
+
+        Use case: Stop sending a newsletter campaign with incorrect content,
+        then re-submit corrected messages with same IDs to overwrite, then activate.
+
+        Args:
+            tenant_id: The tenant to suspend.
+            batch_code: Optional batch code. If None, suspends all sending for tenant.
 
         Returns:
-            BasicOkResponse: Confirmation with ``ok=True``.
+            SuspendResponse: Confirmation with suspended batches list and pending count.
 
         Raises:
-            HTTPException: 500 if the service is not initialized.
+            HTTPException: 400 if tenant_id missing, 500 if service not initialized.
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
-        result = await service.handle_command("suspend", {})
-        return BasicOkResponse.model_validate(result)
+        result = await service.handle_command("suspend", {
+            "tenant_id": tenant_id,
+            "batch_code": batch_code,
+        })
+        if not result.get("ok"):
+            raise HTTPException(400, result.get("error", "Unknown error"))
+        return SuspendResponse.model_validate(result)
 
-    @router.post("/activate", response_model=BasicOkResponse, response_model_exclude_none=True)
-    async def activate():
-        """Resume the automatic dispatch scheduler after suspension.
+    @router.post("/activate", response_model=SuspendResponse, response_model_exclude_none=True)
+    async def activate(tenant_id: str, batch_code: str | None = None):
+        """Resume message sending for a tenant.
 
-        Restarts processing of queued messages according to the configured
-        interval and rate limits.
+        Resumes sending for all messages of the tenant, or only messages with the
+        specified batch_code. If batch_code is None, clears all suspensions.
+
+        Args:
+            tenant_id: The tenant to activate.
+            batch_code: Optional batch code. If None, clears all suspensions.
 
         Returns:
-            BasicOkResponse: Confirmation with ``ok=True``.
+            SuspendResponse: Confirmation with remaining suspended batches.
 
         Raises:
-            HTTPException: 500 if the service is not initialized.
+            HTTPException: 400 if tenant_id missing or cannot activate single batch
+                from full suspension, 500 if service not initialized.
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
-        result = await service.handle_command("activate", {})
-        return BasicOkResponse.model_validate(result)
+        result = await service.handle_command("activate", {
+            "tenant_id": tenant_id,
+            "batch_code": batch_code,
+        })
+        if not result.get("ok"):
+            raise HTTPException(400, result.get("error", "Unknown error"))
+        return SuspendResponse.model_validate(result)
 
     @router.post("/add-messages", response_model=AddMessagesResponse, response_model_exclude_none=True)
     async def add_messages(payload: EnqueueMessagesPayload):

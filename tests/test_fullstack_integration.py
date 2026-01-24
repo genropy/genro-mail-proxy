@@ -674,25 +674,57 @@ class TestPriorityHandling:
 class TestServiceControl:
     """Test service control operations."""
 
-    async def test_suspend_and_activate(self, api_client):
-        """Can suspend and activate processing."""
-        # Suspend
+    async def test_suspend_and_activate(self, api_client, setup_test_tenants):
+        """Can suspend and activate processing for a tenant."""
+        tenant_id = "test-tenant-1"
+
+        # Suspend all batches for tenant
+        resp = await api_client.post(f"/commands/suspend?tenant_id={tenant_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("ok") is True
+        assert data.get("tenant_id") == tenant_id
+        assert data.get("suspended_batches") == ["*"]
+
+        # Activate all batches for tenant
+        resp = await api_client.post(f"/commands/activate?tenant_id={tenant_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("ok") is True
+        assert data.get("tenant_id") == tenant_id
+        assert data.get("suspended_batches") == []
+
+    async def test_suspend_single_batch(self, api_client, setup_test_tenants):
+        """Can suspend a specific batch for a tenant."""
+        tenant_id = "test-tenant-1"
+        batch_code = "NL-2026-01"
+
+        # Suspend specific batch
+        resp = await api_client.post(
+            f"/commands/suspend?tenant_id={tenant_id}&batch_code={batch_code}"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("ok") is True
+        assert data.get("batch_code") == batch_code
+        assert batch_code in data.get("suspended_batches", [])
+
+        # Activate specific batch
+        resp = await api_client.post(
+            f"/commands/activate?tenant_id={tenant_id}&batch_code={batch_code}"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("ok") is True
+        assert batch_code not in data.get("suspended_batches", [])
+
+    async def test_suspend_requires_tenant_id(self, api_client):
+        """Suspend without tenant_id returns error."""
         resp = await api_client.post("/commands/suspend")
-        assert resp.status_code == 200
-
-        # Check status
-        resp = await api_client.get("/status")
+        assert resp.status_code == 200  # Still 200, but ok=False
         data = resp.json()
-        assert data.get("active") is False
-
-        # Activate
-        resp = await api_client.post("/commands/activate")
-        assert resp.status_code == 200
-
-        # Check status
-        resp = await api_client.get("/status")
-        data = resp.json()
-        assert data.get("active") is True
+        assert data.get("ok") is False
+        assert "tenant_id" in data.get("error", "").lower()
 
 
 # ============================================

@@ -18,6 +18,7 @@ class MessagesTable(Table):
     - account_id: SMTP account (FK)
     - priority: 1=high, 2=normal, 3=low
     - payload: JSON-encoded message data
+    - batch_code: Optional batch/campaign identifier for grouping messages
     - deferred_ts: Timestamp when message can be retried
     - sent_ts: Timestamp when message was sent
     - error_ts: Timestamp when error occurred
@@ -33,6 +34,7 @@ class MessagesTable(Table):
         c.column("account_id", String)
         c.column("priority", Integer, nullable=False, default=2)
         c.column("payload", String, nullable=False)  # JSON but handled specially
+        c.column("batch_code", String)  # Optional batch/campaign identifier
         c.column("created_at", Timestamp, default="CURRENT_TIMESTAMP")
         c.column("updated_at", Timestamp, default="CURRENT_TIMESTAMP")
         c.column("deferred_ts", Integer)
@@ -53,15 +55,17 @@ class MessagesTable(Table):
             account_id = entry.get("account_id")
             priority = int(entry.get("priority", 2))
             deferred_ts = entry.get("deferred_ts")
+            batch_code = entry.get("batch_code")
 
             rowcount = await self.execute(
                 """
-                INSERT INTO messages (id, account_id, priority, payload, deferred_ts)
-                VALUES (:id, :account_id, :priority, :payload, :deferred_ts)
+                INSERT INTO messages (id, account_id, priority, payload, batch_code, deferred_ts)
+                VALUES (:id, :account_id, :priority, :payload, :batch_code, :deferred_ts)
                 ON CONFLICT(id) DO UPDATE SET
                     account_id = excluded.account_id,
                     priority = excluded.priority,
                     payload = excluded.payload,
+                    batch_code = excluded.batch_code,
                     deferred_ts = excluded.deferred_ts,
                     error_ts = NULL,
                     error = NULL,
@@ -74,6 +78,7 @@ class MessagesTable(Table):
                     "account_id": account_id,
                     "priority": priority,
                     "payload": payload,
+                    "batch_code": batch_code,
                     "deferred_ts": deferred_ts,
                 },
             )
@@ -91,26 +96,53 @@ class MessagesTable(Table):
         priority: int | None = None,
         min_priority: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Fetch messages ready for SMTP delivery."""
+        """Fetch messages ready for SMTP delivery.
+
+        Excludes messages from suspended tenants/batches:
+        - If tenant.suspended_batches = "*", all messages are skipped
+        - If tenant.suspended_batches contains message.batch_code, message is skipped
+        - Messages without batch_code are only skipped when suspended_batches = "*"
+        """
         conditions = [
-            "sent_ts IS NULL",
-            "error_ts IS NULL",
-            "(deferred_ts IS NULL OR deferred_ts <= :now_ts)",
+            "m.sent_ts IS NULL",
+            "m.error_ts IS NULL",
+            "(m.deferred_ts IS NULL OR m.deferred_ts <= :now_ts)",
         ]
         params: dict[str, Any] = {"now_ts": now_ts, "limit": limit}
 
         if priority is not None:
-            conditions.append("priority = :priority")
+            conditions.append("m.priority = :priority")
             params["priority"] = priority
         elif min_priority is not None:
-            conditions.append("priority >= :min_priority")
+            conditions.append("m.priority >= :min_priority")
             params["min_priority"] = min_priority
 
+        # Exclude suspended batches:
+        # - t.suspended_batches IS NULL → not suspended
+        # - t.suspended_batches = '*' → fully suspended (skip all)
+        # - m.batch_code is in suspended list → skip
+        # - m.batch_code IS NULL and suspended_batches != '*' → not suspended
+        suspension_filter = """
+            (
+                t.suspended_batches IS NULL
+                OR (
+                    t.suspended_batches != '*'
+                    AND (
+                        m.batch_code IS NULL
+                        OR NOT (',' || t.suspended_batches || ',' LIKE '%,' || m.batch_code || ',%')
+                    )
+                )
+            )
+        """
+        conditions.append(suspension_filter)
+
         query = f"""
-            SELECT id, account_id, priority, payload, deferred_ts
-            FROM messages
+            SELECT m.id, m.account_id, m.priority, m.payload, m.batch_code, m.deferred_ts
+            FROM messages m
+            LEFT JOIN accounts a ON m.account_id = a.id
+            LEFT JOIN tenants t ON a.tenant_id = t.id
             WHERE {' AND '.join(conditions)}
-            ORDER BY priority ASC, created_at ASC, id ASC
+            ORDER BY m.priority ASC, m.created_at ASC, m.id ASC
             LIMIT :limit
         """
 
@@ -358,6 +390,45 @@ class MessagesTable(Table):
             WHERE sent_ts IS NULL AND error_ts IS NULL
             """
         )
+        return int(row["cnt"]) if row else 0
+
+    async def count_pending_for_tenant(
+        self, tenant_id: str, batch_code: str | None = None
+    ) -> int:
+        """Count pending messages for a tenant, optionally filtered by batch_code.
+
+        Args:
+            tenant_id: Tenant ID to filter by.
+            batch_code: Optional batch code. If provided, only count messages
+                with this batch_code. If None, count all pending messages.
+
+        Returns:
+            Number of pending messages.
+        """
+        params: dict[str, Any] = {"tenant_id": tenant_id}
+
+        if batch_code is not None:
+            query = """
+                SELECT COUNT(*) as cnt
+                FROM messages m
+                JOIN accounts a ON m.account_id = a.id
+                WHERE a.tenant_id = :tenant_id
+                  AND m.batch_code = :batch_code
+                  AND m.sent_ts IS NULL
+                  AND m.error_ts IS NULL
+            """
+            params["batch_code"] = batch_code
+        else:
+            query = """
+                SELECT COUNT(*) as cnt
+                FROM messages m
+                JOIN accounts a ON m.account_id = a.id
+                WHERE a.tenant_id = :tenant_id
+                  AND m.sent_ts IS NULL
+                  AND m.error_ts IS NULL
+            """
+
+        row = await self.db.adapter.fetch_one(query, params)
         return int(row["cnt"]) if row else 0
 
     def _decode_payload(self, data: dict[str, Any]) -> dict[str, Any]:

@@ -130,6 +130,7 @@ with separate databases.
    :hidden:
 
    overview
+   features
    architecture_overview
    installation
    network_requirements

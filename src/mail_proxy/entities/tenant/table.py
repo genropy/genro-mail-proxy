@@ -13,6 +13,7 @@ class TenantsTable(Table):
 
     JSON-encoded fields: client_auth, rate_limits, large_file_config.
     Boolean field: active (stored as INTEGER 0/1).
+    Suspension: suspended_batches contains comma-separated batch codes or "*" for all.
     """
 
     name = "tenants"
@@ -28,6 +29,7 @@ class TenantsTable(Table):
         c.column("rate_limits", String, json_encoded=True)
         c.column("large_file_config", String, json_encoded=True)
         c.column("active", Integer, default=1)
+        c.column("suspended_batches", String)  # Comma-separated batch codes or "*" for all
         c.column("api_key_hash", String)
         c.column("api_key_expires_at", Timestamp)
         c.column("created_at", Timestamp, default="CURRENT_TIMESTAMP")
@@ -207,6 +209,126 @@ class TenantsTable(Table):
             {"tenant_id": tenant_id},
         )
         return rowcount > 0
+
+    # -------------------------------------------------------------- Batch Suspension
+
+    async def suspend_batch(self, tenant_id: str, batch_code: str | None = None) -> bool:
+        """Suspend sending for a tenant, optionally for a specific batch only.
+
+        Args:
+            tenant_id: The tenant ID.
+            batch_code: Optional batch code. If None, suspends all sending ("*").
+
+        Returns:
+            True if tenant was found and updated.
+        """
+        tenant = await self.get(tenant_id)
+        if not tenant:
+            return False
+
+        if batch_code is None:
+            # Suspend all
+            new_value = "*"
+        else:
+            # Add batch to suspended list
+            current = tenant.get("suspended_batches") or ""
+            if current == "*":
+                # Already fully suspended
+                return True
+            batches = set(current.split(",")) if current else set()
+            batches.discard("")  # Remove empty string if present
+            batches.add(batch_code)
+            new_value = ",".join(sorted(batches))
+
+        await self.execute(
+            """
+            UPDATE tenants
+            SET suspended_batches = :suspended_batches,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = :tenant_id
+            """,
+            {"tenant_id": tenant_id, "suspended_batches": new_value},
+        )
+        return True
+
+    async def activate_batch(self, tenant_id: str, batch_code: str | None = None) -> bool:
+        """Resume sending for a tenant, optionally for a specific batch only.
+
+        Args:
+            tenant_id: The tenant ID.
+            batch_code: Optional batch code. If None, clears all suspensions.
+
+        Returns:
+            True if tenant was found and updated.
+        """
+        tenant = await self.get(tenant_id)
+        if not tenant:
+            return False
+
+        if batch_code is None:
+            # Clear all suspensions
+            new_value = None
+        else:
+            # Remove batch from suspended list
+            current = tenant.get("suspended_batches") or ""
+            if current == "*":
+                # Cannot remove single batch from full suspension
+                # User must activate all first
+                return False
+            batches = set(current.split(",")) if current else set()
+            batches.discard("")
+            batches.discard(batch_code)
+            new_value = ",".join(sorted(batches)) if batches else None
+
+        await self.execute(
+            """
+            UPDATE tenants
+            SET suspended_batches = :suspended_batches,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = :tenant_id
+            """,
+            {"tenant_id": tenant_id, "suspended_batches": new_value},
+        )
+        return True
+
+    async def get_suspended_batches(self, tenant_id: str) -> set[str]:
+        """Get the set of suspended batch codes for a tenant.
+
+        Returns:
+            Set of batch codes, or {"*"} if all suspended, or empty set if none.
+        """
+        tenant = await self.get(tenant_id)
+        if not tenant:
+            return set()
+
+        suspended = tenant.get("suspended_batches") or ""
+        if not suspended:
+            return set()
+        if suspended == "*":
+            return {"*"}
+        batches = set(suspended.split(","))
+        batches.discard("")
+        return batches
+
+    def is_batch_suspended(self, suspended_batches: str | None, batch_code: str | None) -> bool:
+        """Check if a batch is suspended based on tenant's suspended_batches field.
+
+        Args:
+            suspended_batches: The tenant's suspended_batches value.
+            batch_code: The message's batch_code (None if no batch).
+
+        Returns:
+            True if the message should be skipped.
+        """
+        if not suspended_batches:
+            return False
+        if suspended_batches == "*":
+            return True
+        if batch_code is None:
+            # Messages without batch_code are only suspended by "*"
+            return False
+        suspended_set = set(suspended_batches.split(","))
+        return batch_code in suspended_set
 
 
 __all__ = ["TenantsTable"]

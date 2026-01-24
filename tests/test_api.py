@@ -27,6 +27,26 @@ class DummyService:
             return {"ok": True, "messages": list(self.messages)}
         if cmd == "listAccounts":
             return {"ok": True, "accounts": []}
+        if cmd == "suspend":
+            tenant_id = payload.get("tenant_id") if isinstance(payload, dict) else None
+            batch_code = payload.get("batch_code") if isinstance(payload, dict) else None
+            return {
+                "ok": True,
+                "tenant_id": tenant_id,
+                "batch_code": batch_code,
+                "suspended_batches": ["*"] if batch_code is None else [batch_code],
+                "pending_messages": 0,
+            }
+        if cmd == "activate":
+            tenant_id = payload.get("tenant_id") if isinstance(payload, dict) else None
+            batch_code = payload.get("batch_code") if isinstance(payload, dict) else None
+            return {
+                "ok": True,
+                "tenant_id": tenant_id,
+                "batch_code": batch_code,
+                "suspended_batches": [],
+                "pending_messages": 0,
+            }
         return {"ok": True, "cmd": cmd, "payload": payload}
 
 
@@ -76,8 +96,8 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
     assert status["active"] is True
 
     assert client.post("/commands/run-now").json()["ok"] is True
-    assert client.post("/commands/suspend").json()["ok"] is True
-    assert client.post("/commands/activate").json()["ok"] is True
+    assert client.post("/commands/suspend?tenant_id=test-tenant").json()["ok"] is True
+    assert client.post("/commands/activate?tenant_id=test-tenant").json()["ok"] is True
 
     bulk_payload = {
         "messages": [
@@ -112,8 +132,8 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
 
     expected_calls = [
         ("run now", {}),
-        ("suspend", {}),
-        ("activate", {}),
+        ("suspend", {"tenant_id": "test-tenant", "batch_code": None}),
+        ("activate", {"tenant_id": "test-tenant", "batch_code": None}),
         (
             "addMessages",
             {
@@ -259,8 +279,8 @@ def test_service_not_initialized_all_commands():
     # Test all command endpoints
     endpoints_to_test = [
         ("POST", "/commands/run-now", None),
-        ("POST", "/commands/suspend", None),
-        ("POST", "/commands/activate", None),
+        ("POST", "/commands/suspend?tenant_id=test-tenant", None),
+        ("POST", "/commands/activate?tenant_id=test-tenant", None),
         ("POST", "/commands/add-messages", {"messages": []}),
         ("POST", "/commands/delete-messages?tenant_id=test-tenant", {"ids": []}),
         ("POST", "/commands/cleanup-messages?tenant_id=test-tenant", {}),

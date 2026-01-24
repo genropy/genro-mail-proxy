@@ -460,13 +460,37 @@ class MailProxyClient:
         """Trigger immediate dispatch cycle."""
         return self._post("/commands/run-now")
 
-    def suspend(self) -> dict[str, Any]:
-        """Suspend the scheduler."""
-        return self._post("/commands/suspend")
+    def suspend(self, tenant_id: str, batch_code: str | None = None) -> dict[str, Any]:
+        """Suspend message sending for a tenant, optionally for a specific batch.
 
-    def activate(self) -> dict[str, Any]:
-        """Activate the scheduler."""
-        return self._post("/commands/activate")
+        Args:
+            tenant_id: Tenant ID to suspend.
+            batch_code: Optional batch code. If provided, only suspends this batch.
+                If None, suspends all message sending for the tenant.
+
+        Returns:
+            Response with suspended_batches list and pending_messages count.
+        """
+        params: dict[str, Any] = {"tenant_id": tenant_id}
+        if batch_code:
+            params["batch_code"] = batch_code
+        return self._post("/commands/suspend", params=params)
+
+    def activate(self, tenant_id: str, batch_code: str | None = None) -> dict[str, Any]:
+        """Resume message sending for a tenant, optionally for a specific batch.
+
+        Args:
+            tenant_id: Tenant ID to activate.
+            batch_code: Optional batch code. If provided, only activates this batch.
+                If None, clears all suspensions for the tenant.
+
+        Returns:
+            Response with suspended_batches list and pending_messages count.
+        """
+        params: dict[str, Any] = {"tenant_id": tenant_id}
+        if batch_code:
+            params["batch_code"] = batch_code
+        return self._post("/commands/activate", params=params)
 
     def stats(self) -> dict[str, Any]:
         """Get queue statistics."""

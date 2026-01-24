@@ -194,6 +194,12 @@ class MailProxyDb(SqlDb):
     async def count_active_messages(self) -> int:
         return await self.messages.count_active()
 
+    async def count_pending_messages(
+        self, tenant_id: str, batch_code: str | None = None
+    ) -> int:
+        """Count pending messages for a tenant, optionally filtered by batch_code."""
+        return await self.messages.count_pending_for_tenant(tenant_id, batch_code)
+
     # -------------------------------------------------------------------------
     # Send log
     # -------------------------------------------------------------------------

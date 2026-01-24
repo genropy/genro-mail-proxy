@@ -103,6 +103,7 @@ class MessageCreate(BaseModel):
         message_id: Custom Message-ID header.
         priority: Message priority (0=immediate, 1=high, 2=medium, 3=low).
         deferred_ts: Unix timestamp to defer delivery until.
+        batch_code: Optional batch/campaign identifier for grouping.
         attachments: List of attachments.
         headers: Additional email headers.
     """
@@ -164,6 +165,10 @@ class MessageCreate(BaseModel):
     deferred_ts: Annotated[
         int | None,
         Field(default=None, ge=0, description="Unix timestamp to defer until")
+    ]
+    batch_code: Annotated[
+        str | None,
+        Field(default=None, max_length=64, description="Batch/campaign identifier")
     ]
     attachments: Annotated[
         list[AttachmentPayload] | None,

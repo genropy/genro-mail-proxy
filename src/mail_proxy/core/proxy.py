@@ -422,21 +422,44 @@ class MailProxy(DispatcherMixin, ReporterMixin):
         payload = payload or {}
         match cmd:
             case "run now":
-                # tenant_id is required for security isolation
+                # Global wake-up - processes all pending messages
+                self._wake_event.set()  # Wake SMTP dispatch loop (process messages)
+                self._wake_client_event.set()  # Wake client report loop
+                return {"ok": True}
+            case "suspend":
                 tenant_id = payload.get("tenant_id") if isinstance(payload, dict) else None
                 if not tenant_id:
                     return {"ok": False, "error": "tenant_id is required"}
-                # Store tenant_id for targeted sync
-                self._run_now_tenant_id = tenant_id
-                self._wake_event.set()  # Wake SMTP dispatch loop (process messages)
-                self._wake_client_event.set()  # Wake client report loop (sync with tenant)
-                return {"ok": True}
-            case "suspend":
-                self._active = False
-                return {"ok": True, "active": False}
+                batch_code = payload.get("batch_code") if isinstance(payload, dict) else None
+                success = await self.db.tenants.suspend_batch(tenant_id, batch_code)
+                if not success:
+                    return {"ok": False, "error": "tenant not found"}
+                suspended = await self.db.tenants.get_suspended_batches(tenant_id)
+                pending = await self.db.count_pending_messages(tenant_id, batch_code)
+                return {
+                    "ok": True,
+                    "tenant_id": tenant_id,
+                    "batch_code": batch_code,
+                    "suspended_batches": list(suspended),
+                    "pending_messages": pending,
+                }
             case "activate":
-                self._active = True
-                return {"ok": True, "active": True}
+                tenant_id = payload.get("tenant_id") if isinstance(payload, dict) else None
+                if not tenant_id:
+                    return {"ok": False, "error": "tenant_id is required"}
+                batch_code = payload.get("batch_code") if isinstance(payload, dict) else None
+                success = await self.db.tenants.activate_batch(tenant_id, batch_code)
+                if not success:
+                    return {"ok": False, "error": "tenant not found or cannot activate single batch from full suspension"}
+                suspended = await self.db.tenants.get_suspended_batches(tenant_id)
+                pending = await self.db.count_pending_messages(tenant_id, batch_code)
+                return {
+                    "ok": True,
+                    "tenant_id": tenant_id,
+                    "batch_code": batch_code,
+                    "suspended_batches": list(suspended),
+                    "pending_messages": pending,
+                }
             case "addAccount":
                 await self.db.add_account(payload)
                 return {"ok": True}

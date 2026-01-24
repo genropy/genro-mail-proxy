@@ -320,28 +320,86 @@ class TestMailProxyClient:
         import requests
         with patch.object(requests, 'post') as mock_post:
             mock_response = MagicMock()
-            mock_response.json.return_value = {"ok": True}
+            mock_response.json.return_value = {
+                "ok": True,
+                "tenant_id": "acme",
+                "batch_code": None,
+                "suspended_batches": ["*"],
+                "pending_messages": 10,
+            }
             mock_post.return_value = mock_response
 
             client = MailProxyClient()
-            client.suspend()
+            client.suspend("acme")
 
             call_args = mock_post.call_args
             assert "/commands/suspend" in call_args[0][0]
+            assert call_args[1]["params"]["tenant_id"] == "acme"
+
+    def test_client_suspend_with_batch(self):
+        """Test suspend() method with batch_code."""
+        import requests
+        with patch.object(requests, 'post') as mock_post:
+            mock_response = MagicMock()
+            mock_response.json.return_value = {
+                "ok": True,
+                "tenant_id": "acme",
+                "batch_code": "NL-01",
+                "suspended_batches": ["NL-01"],
+                "pending_messages": 5,
+            }
+            mock_post.return_value = mock_response
+
+            client = MailProxyClient()
+            client.suspend("acme", "NL-01")
+
+            call_args = mock_post.call_args
+            assert "/commands/suspend" in call_args[0][0]
+            assert call_args[1]["params"]["tenant_id"] == "acme"
+            assert call_args[1]["params"]["batch_code"] == "NL-01"
 
     def test_client_activate(self):
         """Test activate() method."""
         import requests
         with patch.object(requests, 'post') as mock_post:
             mock_response = MagicMock()
-            mock_response.json.return_value = {"ok": True}
+            mock_response.json.return_value = {
+                "ok": True,
+                "tenant_id": "acme",
+                "batch_code": None,
+                "suspended_batches": [],
+                "pending_messages": 10,
+            }
             mock_post.return_value = mock_response
 
             client = MailProxyClient()
-            client.activate()
+            client.activate("acme")
 
             call_args = mock_post.call_args
             assert "/commands/activate" in call_args[0][0]
+            assert call_args[1]["params"]["tenant_id"] == "acme"
+
+    def test_client_activate_with_batch(self):
+        """Test activate() method with batch_code."""
+        import requests
+        with patch.object(requests, 'post') as mock_post:
+            mock_response = MagicMock()
+            mock_response.json.return_value = {
+                "ok": True,
+                "tenant_id": "acme",
+                "batch_code": "NL-01",
+                "suspended_batches": ["NL-02"],
+                "pending_messages": 5,
+            }
+            mock_post.return_value = mock_response
+
+            client = MailProxyClient()
+            client.activate("acme", "NL-01")
+
+            call_args = mock_post.call_args
+            assert "/commands/activate" in call_args[0][0]
+            assert call_args[1]["params"]["tenant_id"] == "acme"
+            assert call_args[1]["params"]["batch_code"] == "NL-01"
 
     def test_client_stats(self):
         """Test stats() method."""
