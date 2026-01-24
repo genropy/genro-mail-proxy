@@ -118,7 +118,7 @@ The proxy supports multiple attachment sources via explicit `fetch_mode`:
 
 | fetch_mode | storage_path example | Description |
 | ---------- | -------------------- | ----------- |
-| `base64` | `SGVsbG8gV29ybGQ=` | Inline base64-encoded content |
+| `base64` | `base64:SGVsbG8gV29ybGQ=` | Inline base64-encoded content (requires `base64:` prefix) |
 | `filesystem` | `/tmp/file.pdf` | Local filesystem path |
 | `endpoint` | `doc_id=123` | HTTP POST to tenant's attachment endpoint |
 | `http_url` | `https://storage.example.com/file.pdf` | HTTP GET from external URL |

@@ -150,8 +150,8 @@ inferred from the ``storage_path`` format.
      - storage_path example
      - Description
    * - ``base64``
-     - ``base64:SGVsbG8=`` or raw base64
-     - Inline base64-encoded content
+     - ``base64:SGVsbG8=``
+     - Inline base64-encoded content (requires ``base64:`` prefix for auto-detection)
    * - ``filesystem``
      - ``/tmp/attachments/file.pdf``
      - Local filesystem path (absolute or relative to ``base_dir``)
