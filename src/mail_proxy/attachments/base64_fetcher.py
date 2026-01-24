@@ -31,7 +31,7 @@ class Base64Fetcher:
             base64_content: The base64-encoded string (without the "base64:" prefix).
 
         Returns:
-            Decoded binary content, or None if decoding fails.
+            Decoded binary content, or None if input is empty.
 
         Raises:
             ValueError: If the base64 content is invalid.
@@ -40,14 +40,13 @@ class Base64Fetcher:
             return None
 
         try:
-            # Handle both standard and URL-safe base64
-            # Also handle missing padding
+            # Handle missing padding
             content = base64_content.strip()
             # Add padding if necessary
             padding_needed = 4 - (len(content) % 4)
             if padding_needed != 4:
                 content += "=" * padding_needed
 
-            return base64.b64decode(content)
+            return base64.b64decode(content, validate=True)
         except Exception as e:
             raise ValueError(f"Invalid base64 content: {e}") from e
