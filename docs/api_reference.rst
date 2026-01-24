@@ -18,17 +18,17 @@ All endpoints require the ``X-API-Token`` header when
 Core endpoints
 --------------
 
-``POST /commands/run-now?tenant_id=<tenant_id>``
+``POST /commands/run-now``
    Wake the dispatcher and reporting loops so they execute a cycle immediately
-   instead of waiting for the next scheduled interval. Useful for maintenance
-   scripts and for ``test_mode`` instances where the interval is effectively
-   infinite.
+   instead of waiting for the next scheduled interval. The dispatcher processes
+   all pending messages across all tenants. Useful for maintenance scripts and
+   for ``test_mode`` instances where the interval is effectively infinite.
 
    Example:
 
    .. code-block:: bash
 
-      curl -X POST "http://localhost:8000/commands/run-now?tenant_id=acme" \
+      curl -X POST "http://localhost:8000/commands/run-now" \
         -H "X-API-Token: your-token"
 
 ``POST /commands/suspend`` / ``POST /commands/activate``

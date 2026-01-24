@@ -396,7 +396,7 @@ context:
 
    # Access raw API responses
    proxy._get("/metrics")
-   proxy._post("/commands/run-now", params={"tenant_id": "acme"})
+   proxy._post("/commands/run-now")
 
 See :doc:`usage` for more REPL examples and the full client API.
 

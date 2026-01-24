@@ -230,9 +230,11 @@ class MessagesAPI:
         Returns:
             List of Message objects.
         """
-        params = {"limit": limit}
+        params: dict[str, Any] = {"limit": limit}
         if active_only:
             params["active_only"] = "true"
+        if self._client.tenant_id:
+            params["tenant_id"] = self._client.tenant_id
         data = self._client._get("/messages", params=params)
         return [Message.from_dict(m) for m in data.get("messages", [])]
 
@@ -309,7 +311,10 @@ class AccountsAPI:
         Returns:
             List of Account objects.
         """
-        data = self._client._get("/accounts")
+        params: dict[str, Any] = {}
+        if self._client.tenant_id:
+            params["tenant_id"] = self._client.tenant_id
+        data = self._client._get("/accounts", params=params if params else None)
         return [Account.from_dict(a) for a in data.get("accounts", [])]
 
     def get(self, account_id: str) -> Account | None:
@@ -387,6 +392,7 @@ class MailProxyClient:
         url: str = "http://localhost:8000",
         token: str | None = None,
         name: str | None = None,
+        tenant_id: str | None = None,
     ):
         """Initialize the client.
 
@@ -394,10 +400,12 @@ class MailProxyClient:
             url: Base URL of the mail-proxy server.
             token: API token for authentication.
             name: Optional name for this connection.
+            tenant_id: Default tenant ID for multi-tenant operations.
         """
         self.url = url.rstrip("/")
         self.token = token
         self.name = name or url
+        self.tenant_id = tenant_id
         self._session: aiohttp.ClientSession | None = None
 
         # Sub-APIs

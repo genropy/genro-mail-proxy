@@ -385,24 +385,21 @@ def create_app(
         return StatusResponse(ok=True, active=service._active)
 
     @router.post("/run-now", response_model=BasicOkResponse, response_model_exclude_none=True)
-    async def run_now(tenant_id: str):
+    async def run_now():
         """Trigger an immediate dispatch cycle without waiting for the scheduler.
 
-        Args:
-            tenant_id: Tenant ID to limit the sync to (required for security isolation).
+        Wakes up the dispatcher to process all pending messages across all tenants.
+        This is a simple "wake up" signal - the dispatcher always processes everything.
 
         Returns:
             BasicOkResponse: Confirmation with ``ok=True`` after the cycle completes.
 
         Raises:
-            HTTPException: 400 if tenant_id is missing.
             HTTPException: 500 if the service is not initialized.
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
-        if not tenant_id:
-            raise HTTPException(400, "tenant_id is required")
-        result = await service.handle_command("run now", {"tenant_id": tenant_id})
+        result = await service.handle_command("run now", {})
         if not result.get("ok"):
             raise HTTPException(400, result.get("error", "Unknown error"))
         return BasicOkResponse.model_validate(result)
