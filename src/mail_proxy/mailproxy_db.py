@@ -25,6 +25,7 @@ from typing import Any
 from .entities import (
     AccountsTable,
     InstanceConfigTable,
+    InstanceTable,
     MessagesTable,
     SendLogTable,
     TenantsTable,
@@ -58,6 +59,7 @@ class MailProxyDb(SqlDb):
         self.add_table(MessagesTable)
         self.add_table(SendLogTable)
         self.add_table(InstanceConfigTable)
+        self.add_table(InstanceTable)
 
     @property
     def tenants(self) -> TenantsTable:
@@ -78,6 +80,10 @@ class MailProxyDb(SqlDb):
     @property
     def config(self) -> InstanceConfigTable:
         return self.table("instance_config")  # type: ignore[return-value]
+
+    @property
+    def instance(self) -> InstanceTable:
+        return self.table("instance")  # type: ignore[return-value]
 
     async def init_db(self) -> None:
         """Initialize database: connect, create schema, run migrations."""

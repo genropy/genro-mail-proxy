@@ -608,6 +608,7 @@ def _create_instance_group(instance_name: str) -> click.Group:
     _add_stats_command(instance_group, instance_name)
     _add_connect_command(instance_group, instance_name)
     _add_token_command(instance_group, instance_name)
+    _add_config_command(instance_group, instance_name)
 
     return instance_group
 
@@ -1420,6 +1421,151 @@ def _add_token_command(group: click.Group, instance_name: str) -> None:
                 sys.exit(1)
 
             console.print(token)
+
+
+# ============================================================================
+# CONFIG command (instance configuration)
+# ============================================================================
+
+def _add_config_command(group: click.Group, instance_name: str) -> None:
+    """Add config command for instance configuration."""
+
+    @group.group("config", invoke_without_command=True)
+    @click.pass_context
+    def config_group(ctx):
+        """Manage instance configuration."""
+        if ctx.invoked_subcommand is None:
+            click.echo(ctx.get_help())
+
+    @config_group.command("show")
+    @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+    def config_show(as_json: bool) -> None:
+        """Show instance configuration."""
+        persistence = _get_persistence_for_instance(instance_name)
+
+        async def _show():
+            await persistence.init_db()
+            return await persistence.instance.get_instance()
+
+        instance = run_async(_show())
+
+        if as_json:
+            print_json(instance or {})
+            return
+
+        if not instance:
+            console.print("[dim]Instance not configured.[/dim]")
+            return
+
+        console.print(f"\n[bold cyan]Instance Configuration[/bold cyan]\n")
+        console.print(f"  Name:              {instance.get('name') or 'mail-proxy'}")
+        console.print(f"  API Token:         {'***' if instance.get('api_token') else '-'}")
+
+        # Bounce detection config
+        bounce_enabled = bool(instance.get("bounce_enabled"))
+        console.print(f"\n  [bold]Bounce Detection:[/bold]")
+        console.print(f"    Enabled:         {'[green]Yes[/green]' if bounce_enabled else '[dim]No[/dim]'}")
+        if bounce_enabled:
+            console.print(f"    IMAP Host:       {instance.get('bounce_imap_host') or '-'}")
+            console.print(f"    IMAP Port:       {instance.get('bounce_imap_port') or 993}")
+            console.print(f"    IMAP User:       {instance.get('bounce_imap_user') or '-'}")
+            console.print(f"    IMAP Folder:     {instance.get('bounce_imap_folder') or 'INBOX'}")
+            console.print(f"    Return-Path:     {instance.get('bounce_return_path') or '-'}")
+            console.print(f"    Last UID:        {instance.get('bounce_last_uid') or '-'}")
+            console.print(f"    Last Sync:       {instance.get('bounce_last_sync') or '-'}")
+
+        console.print()
+
+    @config_group.command("set")
+    @click.option("--name", "-n", help="Instance name.")
+    @click.option("--bounce-enabled/--bounce-disabled", default=None, help="Enable/disable bounce detection.")
+    @click.option("--bounce-imap-host", help="IMAP host for bounce mailbox.")
+    @click.option("--bounce-imap-port", type=int, help="IMAP port (default: 993).")
+    @click.option("--bounce-imap-user", help="IMAP username.")
+    @click.option("--bounce-imap-password", help="IMAP password.")
+    @click.option("--bounce-imap-folder", help="IMAP folder (default: INBOX).")
+    @click.option("--bounce-return-path", help="Return-Path header for outgoing emails.")
+    def config_set(
+        name: str | None,
+        bounce_enabled: bool | None,
+        bounce_imap_host: str | None,
+        bounce_imap_port: int | None,
+        bounce_imap_user: str | None,
+        bounce_imap_password: str | None,
+        bounce_imap_folder: str | None,
+        bounce_return_path: str | None,
+    ) -> None:
+        """Update instance configuration."""
+        persistence = _get_persistence_for_instance(instance_name)
+
+        updates: dict[str, Any] = {}
+        if name is not None:
+            updates["name"] = name
+        if bounce_enabled is not None:
+            updates["bounce_enabled"] = 1 if bounce_enabled else 0
+        if bounce_imap_host is not None:
+            updates["bounce_imap_host"] = bounce_imap_host
+        if bounce_imap_port is not None:
+            updates["bounce_imap_port"] = bounce_imap_port
+        if bounce_imap_user is not None:
+            updates["bounce_imap_user"] = bounce_imap_user
+        if bounce_imap_password is not None:
+            updates["bounce_imap_password"] = bounce_imap_password
+        if bounce_imap_folder is not None:
+            updates["bounce_imap_folder"] = bounce_imap_folder
+        if bounce_return_path is not None:
+            updates["bounce_return_path"] = bounce_return_path
+
+        if not updates:
+            print_error("No configuration changes specified.")
+            sys.exit(1)
+
+        async def _update():
+            await persistence.init_db()
+            await persistence.instance.update_instance(updates)
+
+        run_async(_update())
+        print_success("Instance configuration updated.")
+
+    @config_group.command("bounce")
+    @click.option("--host", "-h", help="IMAP host.", prompt="IMAP host")
+    @click.option("--port", "-p", type=int, default=993, help="IMAP port (default: 993).")
+    @click.option("--user", "-u", help="IMAP username.", prompt="IMAP username")
+    @click.option("--password", help="IMAP password.", prompt="IMAP password", hide_input=True)
+    @click.option("--folder", "-f", default="INBOX", help="IMAP folder (default: INBOX).")
+    @click.option("--return-path", "-r", help="Return-Path header for outgoing emails.", prompt="Return-Path email")
+    def config_bounce(
+        host: str,
+        port: int,
+        user: str,
+        password: str,
+        folder: str,
+        return_path: str,
+    ) -> None:
+        """Configure bounce detection (interactive).
+
+        Example:
+
+            mail-proxy myserver config bounce
+        """
+        persistence = _get_persistence_for_instance(instance_name)
+
+        async def _configure():
+            await persistence.init_db()
+            await persistence.instance.set_bounce_config(
+                enabled=True,
+                imap_host=host,
+                imap_port=port,
+                imap_user=user,
+                imap_password=password,
+                imap_folder=folder,
+                return_path=return_path,
+            )
+
+        run_async(_configure())
+        print_success("Bounce detection configured and enabled.")
+        console.print(f"  IMAP:         {user}@{host}:{port}/{folder}")
+        console.print(f"  Return-Path:  {return_path}")
 
 
 # ============================================================================

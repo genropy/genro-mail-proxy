@@ -535,6 +535,14 @@ class MailProxy(DispatcherMixin, ReporterMixin):
                 if deleted:
                     return {"ok": True}
                 return {"ok": False, "error": "tenant not found"}
+            case "getInstance":
+                instance = await self.db.instance.get_instance()
+                if instance:
+                    return {"ok": True, **instance}
+                return {"ok": False, "error": "instance not configured"}
+            case "updateInstance":
+                await self.db.instance.update_instance(payload)
+                return {"ok": True}
             case _:
                 return {"ok": False, "error": "unknown command"}
 

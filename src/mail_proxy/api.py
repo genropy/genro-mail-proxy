@@ -360,6 +360,37 @@ class TenantsResponse(CommandStatus):
     tenants: list[TenantInfo]
 
 
+class InstanceInfo(BaseModel):
+    """Instance configuration as returned by getInstance."""
+    id: int = 1
+    name: str | None = None
+    api_token: str | None = None
+    bounce_enabled: bool = False
+    bounce_imap_host: str | None = None
+    bounce_imap_port: int | None = 993
+    bounce_imap_user: str | None = None
+    bounce_imap_folder: str | None = "INBOX"
+    bounce_return_path: str | None = None
+    bounce_last_uid: int | None = None
+    bounce_last_sync: FlexibleDatetime = None
+    bounce_uidvalidity: int | None = None
+    created_at: FlexibleDatetime = None
+    updated_at: FlexibleDatetime = None
+
+
+class InstanceUpdatePayload(BaseModel):
+    """Instance update payload - all fields optional."""
+    name: str | None = None
+    api_token: str | None = None
+    bounce_enabled: bool | None = None
+    bounce_imap_host: str | None = None
+    bounce_imap_port: int | None = None
+    bounce_imap_user: str | None = None
+    bounce_imap_password: str | None = None
+    bounce_imap_folder: str | None = None
+    bounce_return_path: str | None = None
+
+
 def create_app(
     svc: MailProxy,
     api_token: str | None = None,
@@ -865,6 +896,57 @@ def create_app(
         result = await service.handle_command("deleteTenant", {"id": tenant_id})
         if not result.get("ok"):
             raise HTTPException(404, f"Tenant '{tenant_id}' not found")
+        return BasicOkResponse.model_validate(result)
+
+    # Instance configuration endpoints
+    @api.get("/instance", response_model=InstanceInfo, response_model_exclude_none=True, dependencies=[auth_dependency])
+    async def get_instance():
+        """Retrieve instance configuration.
+
+        Returns the singleton instance configuration including general settings
+        and bounce detection configuration.
+
+        Returns:
+            InstanceInfo: Instance configuration.
+
+        Raises:
+            HTTPException: 500 if the service is not initialized.
+        """
+        if not service:
+            raise HTTPException(500, "Service not initialized")
+        result = await service.handle_command("getInstance", {})
+        if not result.get("ok"):
+            # Instance doesn't exist yet, return defaults
+            return InstanceInfo()
+        result.pop("ok", None)
+        # Convert bounce_enabled from int to bool
+        if "bounce_enabled" in result:
+            result["bounce_enabled"] = bool(result["bounce_enabled"])
+        return InstanceInfo(**result)
+
+    @api.put("/instance", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
+    async def update_instance(payload: InstanceUpdatePayload):
+        """Update instance configuration.
+
+        Updates the singleton instance configuration. Only provided fields are
+        updated; omitted fields retain their current values.
+
+        Args:
+            payload: Fields to update (all optional).
+
+        Returns:
+            BasicOkResponse: Confirmation with ``ok=True``.
+
+        Raises:
+            HTTPException: 500 if the service is not initialized.
+        """
+        if not service:
+            raise HTTPException(500, "Service not initialized")
+        update_data = payload.model_dump(exclude_none=True)
+        # Convert bounce_enabled to int for database
+        if "bounce_enabled" in update_data:
+            update_data["bounce_enabled"] = 1 if update_data["bounce_enabled"] else 0
+        result = await service.handle_command("updateInstance", update_data)
         return BasicOkResponse.model_validate(result)
 
     api.include_router(router)
