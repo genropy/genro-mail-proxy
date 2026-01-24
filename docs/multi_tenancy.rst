@@ -59,6 +59,53 @@ The following diagram illustrates the complete message lifecycle:
 4. **Proxy acknowledges**: The tenant returns a summary response; the proxy marks
    the reports as delivered (``reported_ts``) and eventually cleans them up.
 
+Per-Tenant API Authentication
+-----------------------------
+
+Each tenant can have its own dedicated API token for accessing the proxy API.
+This provides an additional layer of security and isolation.
+
+**How it works:**
+
+1. When a request arrives with an ``X-API-Token`` header, the proxy first
+   checks if the token belongs to any tenant (by looking up its hash).
+
+2. If the token is found in the tenants table:
+   - The request is authenticated as that tenant
+   - If the request includes a ``tenant_id`` parameter, it must match the
+     token's tenant (prevents cross-tenant access)
+
+3. If the token is not found in tenants:
+   - Falls back to the global API token (``GMP_API_TOKEN``)
+   - Allows access to any tenant's data (admin access)
+
+**Creating a tenant API token:**
+
+Currently, tenant tokens must be created programmatically:
+
+.. code-block:: python
+
+   # Using the TenantsTable directly
+   raw_token = await db.tenants.create_api_key(
+       tenant_id="acme",
+       expires_at=1735689600  # Optional Unix timestamp
+   )
+   # raw_token is shown once - store it securely!
+
+**Token properties:**
+
+- Tokens are stored as SHA-256 hashes (the raw token is never stored)
+- Optional expiration via ``api_key_expires_at`` (Unix timestamp)
+- One token per tenant (creating a new one replaces the old)
+- Revoke with ``revoke_api_key(tenant_id)``
+
+**Security benefits:**
+
+- Tenant tokens can only access their own data
+- Compromised tenant token doesn't affect other tenants
+- Global token remains available for admin/cross-tenant operations
+- Token expiration for time-limited access
+
 Tenant Configuration
 --------------------
 
@@ -99,6 +146,14 @@ Tenants are configured via the REST API. Each tenant has:
      - ``bool``
      - No
      - Whether tenant is enabled (default: ``true``)
+   * - ``api_key_hash``
+     - ``str``
+     - No
+     - SHA-256 hash of tenant's dedicated API token (internal use)
+   * - ``api_key_expires_at``
+     - ``timestamp``
+     - No
+     - Unix timestamp when the API token expires (optional)
 
 TenantAuth Configuration
 ------------------------
