@@ -169,8 +169,8 @@ class MessagePayload(BaseModel):
     bcc: list[str] | str | None = None
     reply_to: str | None = None
     return_path: str | None = None
-    subject: str
-    body: str
+    subject: str = Field(min_length=1)
+    body: str = Field(default="")
     content_type: str | None = Field(default="plain")
     headers: dict[str, Any] | None = None
     message_id: str | None = None
