@@ -500,6 +500,10 @@ class DispatcherMixin:
             else:
                 msg[header] = value_str
 
+        # Add tracking header for bounce detection correlation
+        if msg_id := data.get("id"):
+            msg["X-Genro-Mail-ID"] = msg_id
+
         attachments = data.get("attachments", []) or []
         if attachments:
             # Get tenant configuration for large file handling

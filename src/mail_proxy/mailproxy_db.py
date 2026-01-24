@@ -174,6 +174,9 @@ class MailProxyDb(SqlDb):
     async def update_message_payload(self, msg_id: str, payload: dict[str, Any]) -> None:
         await self.messages.update_payload(msg_id, payload)
 
+    async def get_message(self, msg_id: str) -> dict[str, Any] | None:
+        return await self.messages.get(msg_id)
+
     async def delete_message(self, msg_id: str) -> bool:
         return await self.messages.remove(msg_id)
 
@@ -186,8 +189,30 @@ class MailProxyDb(SqlDb):
     async def fetch_reports(self, limit: int) -> list[dict[str, Any]]:
         return await self.messages.fetch_reports(limit)
 
-    async def mark_reported(self, message_ids: Iterable[str], reported_ts: int) -> None:
+    async def mark_reported(
+        self,
+        message_ids: Iterable[str],
+        reported_ts: int,
+    ) -> None:
         await self.messages.mark_reported(message_ids, reported_ts)
+
+    async def mark_bounced(
+        self,
+        msg_id: str,
+        bounce_type: str,
+        bounce_code: str | None = None,
+        bounce_reason: str | None = None,
+    ) -> None:
+        """Mark a message as bounced."""
+        await self.messages.mark_bounced(msg_id, bounce_type, bounce_code, bounce_reason)
+
+    async def mark_bounce_reported(
+        self,
+        message_ids: Iterable[str],
+        reported_ts: int,
+    ) -> None:
+        """Mark bounce as reported to client."""
+        await self.messages.mark_bounce_reported(message_ids, reported_ts)
 
     async def remove_reported_before(self, threshold_ts: int) -> int:
         return await self.messages.remove_reported_before(threshold_ts)

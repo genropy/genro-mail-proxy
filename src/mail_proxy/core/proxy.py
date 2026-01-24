@@ -59,6 +59,7 @@ from ..prometheus import MailMetrics
 from ..rate_limit import RateLimiter
 from ..retry import DEFAULT_MAX_RETRIES, DEFAULT_RETRY_DELAYS, RetryStrategy
 from ..smtp_pool import SMTPPool
+from .bounce_mixin import BounceReceiverMixin
 from .dispatcher import DispatcherMixin
 from .reporting import ReporterMixin
 
@@ -92,7 +93,7 @@ class AttachmentTooLargeError(ValueError):
         )
 
 
-class MailProxy(DispatcherMixin, ReporterMixin):
+class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
     """Central orchestrator for the asynchronous mail dispatch service.
 
     Coordinates all aspects of email delivery including message queue
@@ -247,6 +248,9 @@ class MailProxy(DispatcherMixin, ReporterMixin):
         self._max_concurrent_attachments = max(1, int(max_concurrent_attachments))
         self._account_semaphores: dict[str, asyncio.Semaphore] = {}
         self._attachment_semaphore: asyncio.Semaphore | None = None
+
+        # Initialize bounce receiver mixin state
+        self.__init_bounce_receiver__()
 
     @classmethod
     async def create(cls, **kwargs) -> "MailProxy":
@@ -591,6 +595,7 @@ class MailProxy(DispatcherMixin, ReporterMixin):
                         "priority": priority,
                         "payload": item,
                         "deferred_ts": None,
+                        "batch_code": item.get("batch_code"),
                     }
                     await self.db.insert_messages([entry])
                     await self.db.mark_error(msg_id, now_ts, reason)
@@ -620,6 +625,7 @@ class MailProxy(DispatcherMixin, ReporterMixin):
                     "priority": int(msg["priority"]),
                     "payload": msg,
                     "deferred_ts": msg.get("deferred_ts"),
+                    "batch_code": msg.get("batch_code"),
                 }
                 for msg in validated
             ]
@@ -769,6 +775,8 @@ class MailProxy(DispatcherMixin, ReporterMixin):
         if not self._test_mode:
             self.logger.debug("Creating cleanup loop task...")
             self._task_cleanup = asyncio.create_task(self._cleanup_loop(), name="smtp-cleanup-loop")
+        # Start bounce receiver if configured
+        await self._start_bounce_receiver()
         self.logger.debug("All background tasks created")
 
     async def stop(self) -> None:
@@ -785,6 +793,8 @@ class MailProxy(DispatcherMixin, ReporterMixin):
             *(task for task in [self._task_smtp, self._task_client, self._task_cleanup] if task),
             return_exceptions=True,
         )
+        # Stop bounce receiver if running
+        await self._stop_bounce_receiver()
         await self.db.adapter.close()
 
     # ----------------------------------------------------------------- messaging

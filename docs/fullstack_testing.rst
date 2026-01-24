@@ -21,50 +21,107 @@ that work together to test:
 Architecture
 ------------
 
-.. code-block:: text
+Infrastructure Overview
+~~~~~~~~~~~~~~~~~~~~~~~
 
-                                    ┌─────────────────────────────────────────────────────────────────┐
-                                    │                        Client Layer                             │
-                                    │                    ┌──────────────────┐                         │
-                                    │                    │   API Client     │                         │
-                                    │                    │  (pytest/httpx)  │                         │
-                                    │                    └────────┬─────────┘                         │
-                                    └─────────────────────────────┼───────────────────────────────────┘
-                                                                  │ REST API
-                                    ┌─────────────────────────────┼───────────────────────────────────┐
-                                    │                Application Layer                                │
-                                    │                    ┌────────▼─────────┐                         │
-                                    │                    │   Mail Proxy     │                         │
-                                    │                    │     :8000        │                         │
-                                    │                    └────────┬─────────┘                         │
-                                    └─────────────────────────────┼───────────────────────────────────┘
-                                                                  │
-                    ┌─────────────────────────────────────────────┼─────────────────────────────────────────────┐
-                    │                                             │                                             │
-    ┌───────────────▼───────────────┐           ┌─────────────────▼─────────────────┐           ┌───────────────▼───────────────┐
-    │         Data Layer            │           │          SMTP Layer               │           │      Client Endpoints         │
-    │  ┌──────────┐  ┌──────────┐   │           │  ┌──────────┐  ┌──────────┐       │           │  ┌──────────┐  ┌──────────┐   │
-    │  │PostgreSQL│  │  MinIO   │   │           │  │ MailHog  │  │ MailHog  │       │           │  │ Echo T1  │  │ Echo T2  │   │
-    │  │  :5432   │  │  :9000   │   │           │  │   T1     │  │   T2     │       │           │  │  :8081   │  │  :8082   │   │
-    │  └──────────┘  └──────────┘   │           │  │  :1025   │  │  :1026   │       │           │  └──────────┘  └──────────┘   │
-    └───────────────────────────────┘           │  └──────────┘  └──────────┘       │           │       ┌──────────┐            │
-                                                │  ┌──────────┐  ┌──────────┐       │           │       │Attachment│            │
-                                                │  │smtp-     │  │smtp-     │       │           │       │ Server   │            │
-                                                │  │reject    │  │tempfail  │       │           │       │  :8083   │            │
-                                                │  │  :1027   │  │  :1028   │       │           │       └──────────┘            │
-                                                │  └──────────┘  └──────────┘       │           └───────────────────────────────┘
-                                                │  ┌──────────┐  ┌──────────┐       │
-                                                │  │smtp-     │  │smtp-     │       │
-                                                │  │timeout   │  │ratelimit │       │
-                                                │  │  :1029   │  │  :1030   │       │
-                                                │  └──────────┘  └──────────┘       │
-                                                │       ┌──────────┐                │
-                                                │       │smtp-     │                │
-                                                │       │random    │                │
-                                                │       │  :1031   │                │
-                                                │       └──────────┘                │
-                                                └───────────────────────────────────┘
+.. mermaid::
 
+   graph TB
+       subgraph Client["Client Layer"]
+           pytest["pytest/httpx<br/>API Client"]
+       end
+
+       subgraph App["Application Layer"]
+           proxy["Mail Proxy<br/>:8000"]
+       end
+
+       subgraph Data["Data Layer"]
+           pg["PostgreSQL<br/>:5432"]
+           minio["MinIO S3<br/>:9000"]
+       end
+
+       subgraph SMTP["SMTP Layer"]
+           mh1["MailHog T1<br/>:1025"]
+           mh2["MailHog T2<br/>:1026"]
+           reject["smtp-reject<br/>:1027"]
+           tempfail["smtp-tempfail<br/>:1028"]
+           timeout["smtp-timeout<br/>:1029"]
+           ratelimit["smtp-ratelimit<br/>:1030"]
+           random["smtp-random<br/>:1031"]
+       end
+
+       subgraph Clients["Client Endpoints"]
+           echo1["Echo T1<br/>:8081"]
+           echo2["Echo T2<br/>:8082"]
+           attach["Attachment Server<br/>:8083"]
+       end
+
+       subgraph IMAP["IMAP Layer (Bounce)"]
+           dovecot["Dovecot IMAP<br/>:10143"]
+       end
+
+       pytest -->|REST API| proxy
+       proxy --> pg
+       proxy --> minio
+       proxy -->|SMTP| mh1
+       proxy -->|SMTP| mh2
+       proxy -->|SMTP errors| reject
+       proxy -->|SMTP errors| tempfail
+       proxy -->|SMTP errors| timeout
+       proxy -->|SMTP errors| ratelimit
+       proxy -->|SMTP errors| random
+       proxy -->|Delivery Reports| echo1
+       proxy -->|Delivery Reports| echo2
+       proxy -->|Fetch Attachments| attach
+       proxy -->|Poll Bounces| dovecot
+       pytest -->|Inject Bounces| dovecot
+
+Test Flow
+~~~~~~~~~
+
+.. mermaid::
+
+   sequenceDiagram
+       participant T as pytest
+       participant P as Mail Proxy
+       participant DB as PostgreSQL
+       participant S as SMTP (MailHog)
+       participant C as Client Echo
+
+       T->>P: POST /commands/add-messages
+       P->>DB: INSERT messages
+       P-->>T: 200 OK (queued)
+
+       T->>P: POST /commands/run-now
+       P->>DB: SELECT ready messages
+       P->>S: SMTP SEND
+       S-->>P: 250 OK
+       P->>DB: UPDATE sent_ts
+
+       P->>C: POST /proxy_sync (delivery report)
+       C-->>P: 200 OK
+       P->>DB: UPDATE reported_ts
+
+       T->>P: GET /messages
+       P->>DB: SELECT messages
+       P-->>T: messages with sent_ts
+
+       T->>S: GET /api/v2/messages
+       S-->>T: captured emails
+
+Test Coverage Overview
+~~~~~~~~~~~~~~~~~~~~~~
+
+.. mermaid::
+
+   pie title Fullstack Test Coverage (91 tests)
+       "Core Features" : 35
+       "Error Handling" : 12
+       "Security" : 9
+       "Attachments" : 11
+       "Multi-tenancy" : 6
+       "Bounce/Batch" : 17
+       "Bounce E2E (NEW)" : 10
 
 Docker Services
 ---------------
@@ -126,6 +183,54 @@ mailhog-tenant2  1026    8026     Tenant 2
 
    # List messages
    curl http://localhost:8025/api/v2/messages
+
+IMAP Server - Dovecot
+~~~~~~~~~~~~~~~~~~~~~
+
+============= ========================
+Parameter     Value
+============= ========================
+Image         ``dovecot/dovecot:latest``
+Ports         10143 (IMAP), 10993 (IMAPS)
+Bounce User   ``bounces@localhost``
+Password      ``bouncepass``
+Volume        ``dovecot-mail:/var/mail``
+============= ========================
+
+**Purpose**: IMAP server for bounce detection testing. BounceReceiver polls this mailbox
+for bounce emails (DSN/MDN format) and correlates them with sent messages via X-Genro-Mail-ID header.
+
+**Why Dovecot over GreenMail?**
+
+We evaluated two options for IMAP testing:
+
+1. **Dovecot** - Production-grade IMAP/POP3 server (chosen)
+2. **GreenMail** - Java-based test email server with REST API
+
+We chose Dovecot for the following reasons:
+
+- **Production standard**: Dovecot is the same software used in production environments.
+  Testing against the real thing gives us confidence that bounce detection will work
+  with actual mail servers.
+
+- **No Java dependency**: GreenMail requires a JVM, adding ~200MB+ to container size
+  and startup time. Dovecot is a lightweight native binary.
+
+- **IMAP APPEND works perfectly**: For testing, we inject bounce emails directly into
+  the mailbox using standard IMAP APPEND command. This is simple and requires no
+  special test APIs.
+
+- **Realistic testing**: By using production-grade software, we catch edge cases and
+  compatibility issues that a test-only server might not expose.
+
+GreenMail's REST API for programmatic email injection is convenient, but the benefits
+of testing against a real IMAP server outweigh the minor convenience gain.
+
+**Test Usage**:
+
+- Tests inject bounce emails directly into the mailbox using IMAP APPEND
+- BounceParser processes the DSN format to extract bounce type, code, and original message ID
+- Messages are correlated using the X-Genro-Mail-ID header
 
    # Delete all
    curl -X DELETE http://localhost:8025/api/v1/messages
@@ -216,7 +321,7 @@ API Token   ``test-api-token``
 Test Categories
 ---------------
 
-The test suite is organized into 21 test classes covering 62 tests total:
+The test suite is organized into 25 test classes covering 91 tests total:
 
 ============================== ======= ===============================================
 Class                          # Tests Description
@@ -229,7 +334,7 @@ TestTenantIsolation            2       Message isolation between tenants
 TestBatchOperations            2       Batch enqueue, deduplication
 TestAttachmentsBase64          1       Base64 inline attachments
 TestPriorityHandling           1       Priority ordering
-TestServiceControl             1       Suspend/Activate
+TestServiceControl             1       Suspend/Activate validation
 TestMetrics                    1       Prometheus endpoint
 TestValidation                 2       Payload validation
 TestMessageManagement          2       List/Delete messages
@@ -242,6 +347,10 @@ TestDeliveryReports            3       Delivery report callbacks to client endpo
 TestSecurityInputSanitization  5       SQL injection, XSS, path traversal protection
 TestUnicodeEncoding            4       Emoji, international characters, Unicode filenames
 TestHttpAttachmentFetch        4       HTTP URL attachment fetching
+TestBounceDetection            5       X-Genro-Mail-ID header, bounce fields in API
+TestBatchCodeOperations        5       batch_code field, suspend/activate by batch
+TestExtendedSuspendActivate    7       Suspend/activate counts, idempotency, isolation
+**TestBounceEndToEnd**         10      Full bounce detection with IMAP/DSN
 ============================== ======= ===============================================
 
 Health & API Basics
@@ -335,6 +444,167 @@ HTTP Attachment Fetch
    test_fetch_multiple_http_attachments      - Multiple HTTP URL fetches
    test_http_attachment_timeout              - Timeout handled gracefully
    test_http_attachment_invalid_url          - Invalid URLs handled gracefully
+
+Bounce Detection
+~~~~~~~~~~~~~~~~
+
+.. code-block:: text
+
+   test_x_genro_mail_id_header_added         - X-Genro-Mail-ID header in outgoing emails
+   test_bounce_fields_in_message_list        - Bounce fields present in /messages response
+   test_message_includes_bounce_tracking_fields - MessageRecord has bounce fields
+   test_multiple_messages_unique_mail_ids    - Each message gets unique Mail-ID
+   test_bounce_header_with_custom_headers    - X-Genro-Mail-ID coexists with custom headers
+
+Batch Code Operations
+~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: text
+
+   test_send_messages_with_batch_code        - Messages with batch_code are stored correctly
+   test_suspend_specific_batch_code          - Suspend only specific batch_code
+   test_activate_specific_batch_code         - Activate specific batch_code
+   test_suspend_batch_does_not_affect_others - Suspended batch doesn't affect other batches
+   test_suspended_batch_messages_not_sent    - Suspended batch messages remain pending
+
+Extended Suspend/Activate
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: text
+
+   test_suspend_returns_pending_count        - Suspend returns count of pending messages
+   test_activate_returns_activated_count     - Activate returns count of activated messages
+   test_suspend_idempotent                   - Multiple suspends are idempotent
+   test_activate_idempotent                  - Multiple activates are idempotent
+   test_tenant_isolation_in_suspend          - Suspend doesn't affect other tenants
+   test_suspend_with_deferred_messages       - Deferred messages handled in suspend
+   test_activate_resumes_deferred_timing     - Activate preserves deferred timing
+
+Bounce End-to-End
+~~~~~~~~~~~~~~~~~
+
+.. code-block:: text
+
+   test_imap_server_accessible               - Verify Dovecot IMAP server is accessible
+   test_bounce_email_injection               - Can inject bounce email into IMAP mailbox
+   test_dsn_bounce_format_valid              - Generated DSN bounces are properly formatted
+   test_soft_bounce_email_format             - Soft bounce (4xx) format is correct
+   test_bounce_parser_extracts_original_id   - BounceParser extracts X-Genro-Mail-ID
+   test_bounce_parser_soft_vs_hard           - BounceParser classifies hard/soft bounces
+   test_message_sent_includes_tracking_header - Sent messages include X-Genro-Mail-ID
+   test_bounce_updates_message_record        - Bounce detection updates message in DB
+   test_multiple_bounces_correlation         - Multiple bounces correlated to correct messages
+
+**Infrastructure**:
+
+- Dovecot IMAP server (port 10143) for bounce mailbox
+- DSN (RFC 3464) formatted bounce emails
+- IMAP APPEND for injecting test bounces
+
+**Test Flow**:
+
+.. mermaid::
+
+   sequenceDiagram
+       participant T as pytest
+       participant P as Mail Proxy
+       participant S as MailHog SMTP
+       participant I as Dovecot IMAP
+       participant BR as BounceReceiver
+
+       T->>P: POST /commands/add-messages
+       P->>S: SMTP SEND (X-Genro-Mail-ID: msg-123)
+       T->>I: IMAP APPEND (DSN bounce with X-Genro-Mail-ID)
+       BR->>I: IMAP FETCH (polling)
+       BR->>BR: BounceParser.parse()
+       BR->>P: mark_bounced(msg-123, hard, 550)
+       T->>P: GET /messages
+       P-->>T: message with bounce_type, bounce_code
+
+
+Test Coverage Gaps
+------------------
+
+The following features are **NOT YET TESTED** in the fullstack integration tests:
+
+Bounce Detection - Live BounceReceiver (PARTIALLY TESTED)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The bounce end-to-end tests verify DSN parsing and correlation, but **do not test**
+the full live polling flow:
+
+.. warning::
+
+   **Tests that require live BounceReceiver:**
+
+   - BounceReceiver automatic IMAP polling (tests use direct injection)
+   - Bounce notification to client via delivery reports
+   - bounce_reported_ts update after client notification
+   - Real DSN/MDN emails from external MTAs
+
+**What IS tested:**
+
+- ✅ DSN (RFC 3464) bounce email format generation
+- ✅ BounceParser extraction of X-Genro-Mail-ID
+- ✅ Hard vs soft bounce classification
+- ✅ IMAP injection and retrieval
+- ✅ X-Genro-Mail-ID header in outgoing emails
+
+PEC Support (NOT TESTED)
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Italian Certified Email (PEC) is **not tested**:
+
+.. warning::
+
+   **Missing PEC tests:**
+
+   - PEC ricevuta di accettazione (RdA) parsing
+   - PEC ricevuta di consegna (RdC) parsing
+   - PEC error notifications
+   - S/MIME envelope parsing
+   - pec_rda_ts, pec_rdc_ts, pec_error fields update
+
+Message Lifecycle - Retention (NOT TESTED)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The retention policy and cleanup are **not tested**:
+
+.. warning::
+
+   **Missing retention tests:**
+
+   - Messages deleted after retention period
+   - ``report_retention_seconds`` configuration
+   - Manual cleanup via ``/commands/cleanup-messages``
+   - Retention applied only to reported messages
+
+Rate Limiting (PARTIALLY TESTED)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Rate limiting is tested at SMTP level but **not at account level**:
+
+.. warning::
+
+   **Missing rate limit tests:**
+
+   - ``limit_per_minute`` account configuration
+   - ``limit_per_hour`` account configuration
+   - ``limit_per_day`` account configuration
+   - ``limit_behavior`` (defer vs reject)
+
+Per-Tenant API Keys (NOT TESTED)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Per-tenant API authentication is **not tested**:
+
+.. warning::
+
+   **Missing per-tenant auth tests:**
+
+   - Tenant-specific API tokens
+   - Token validation per tenant
+   - Token rotation
 
 
 Running the Tests

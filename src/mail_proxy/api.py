@@ -280,6 +280,7 @@ class MessageRecord(BaseModel):
     id: str
     priority: int
     account_id: str | None = None
+    batch_code: str | None = None
     deferred_ts: int | None = None
     sent_ts: int | None = None
     error_ts: int | None = None

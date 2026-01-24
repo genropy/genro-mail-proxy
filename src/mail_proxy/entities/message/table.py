@@ -47,6 +47,7 @@ class MessagesTable(Table):
         c.column("bounce_code", String)  # e.g. '550', '421'
         c.column("bounce_reason", String)
         c.column("bounce_ts", Timestamp)
+        c.column("bounce_reported_ts", Integer)  # when client was notified of bounce
         # EE columns - PEC Support
         c.column("pec_rda_ts", Timestamp)  # ricevuta di accettazione
         c.column("pec_rdc_ts", Timestamp)  # ricevuta di consegna
@@ -132,6 +133,7 @@ class MessagesTable(Table):
         # - t.suspended_batches = '*' → fully suspended (skip all)
         # - m.batch_code is in suspended list → skip
         # - m.batch_code IS NULL and suspended_batches != '*' → not suspended
+        # Note: Use named placeholders for LIKE wildcards to avoid psycopg % interpretation
         suspension_filter = """
             (
                 t.suspended_batches IS NULL
@@ -139,11 +141,13 @@ class MessagesTable(Table):
                     t.suspended_batches != '*'
                     AND (
                         m.batch_code IS NULL
-                        OR NOT (',' || t.suspended_batches || ',' LIKE '%,' || m.batch_code || ',%')
+                        OR NOT (',' || t.suspended_batches || ',' LIKE :like_prefix || m.batch_code || :like_suffix)
                     )
                 )
             )
         """
+        params["like_prefix"] = "%,"
+        params["like_suffix"] = ",%"
         conditions.append(suspension_filter)
 
         query = f"""
@@ -215,6 +219,16 @@ class MessagesTable(Table):
             """,
             {"payload": json.dumps(payload), "msg_id": msg_id},
         )
+
+    async def get(self, msg_id: str) -> dict[str, Any] | None:
+        """Get a single message by ID. Returns None if not found."""
+        row = await self.db.adapter.fetch_one(
+            "SELECT * FROM messages WHERE id = :id",
+            {"id": msg_id},
+        )
+        if row is None:
+            return None
+        return self._decode_payload(row)
 
     async def remove(self, msg_id: str) -> bool:
         """Remove a message regardless of its state. Returns True if deleted."""
@@ -298,15 +312,28 @@ class MessagesTable(Table):
         )
 
     async def fetch_reports(self, limit: int) -> list[dict[str, Any]]:
-        """Return messages that need to be reported back to the client."""
+        """Return messages that need to be reported back to the client.
+
+        Includes:
+        - Messages with sent_ts or error_ts that haven't been reported yet
+        - Messages with bounce_ts that haven't had their bounce reported yet
+          (these may have already been reported as 'sent', but now need a bounce update)
+        """
         rows = await self.db.adapter.fetch_all(
             """
             SELECT m.id, m.account_id, m.priority, m.payload, m.sent_ts, m.error_ts,
-                   m.error, m.deferred_ts, a.tenant_id
+                   m.error, m.deferred_ts, a.tenant_id,
+                   m.bounce_type, m.bounce_code, m.bounce_reason, m.bounce_ts,
+                   m.bounce_reported_ts
             FROM messages m
             LEFT JOIN accounts a ON m.account_id = a.id
-            WHERE m.reported_ts IS NULL
-              AND (m.sent_ts IS NOT NULL OR m.error_ts IS NOT NULL)
+            WHERE (
+                -- Case 1: Never reported (standard delivery report)
+                (m.reported_ts IS NULL AND (m.sent_ts IS NOT NULL OR m.error_ts IS NOT NULL))
+                OR
+                -- Case 2: Has bounce but bounce not yet reported to client
+                (m.bounce_ts IS NOT NULL AND m.bounce_reported_ts IS NULL)
+            )
             ORDER BY m.updated_at ASC, m.id ASC
             LIMIT :limit
             """,
@@ -314,12 +341,15 @@ class MessagesTable(Table):
         )
         return [self._decode_payload(row) for row in rows]
 
-    async def mark_reported(self, message_ids: Iterable[str], reported_ts: int) -> None:
+    async def mark_reported(
+        self,
+        message_ids: Iterable[str],
+        reported_ts: int,
+    ) -> None:
         """Set the reported timestamp for the provided messages."""
         ids = [mid for mid in message_ids if mid]
         if not ids:
             return
-
         params: dict[str, Any] = {"reported_ts": reported_ts}
         params.update({f"id_{i}": mid for i, mid in enumerate(ids)})
         placeholders = ", ".join(f":id_{i}" for i in range(len(ids)))
@@ -327,6 +357,60 @@ class MessagesTable(Table):
             f"""
             UPDATE messages
             SET reported_ts = :reported_ts, updated_at = CURRENT_TIMESTAMP
+            WHERE id IN ({placeholders})
+            """,
+            params,
+        )
+
+    async def mark_bounced(
+        self,
+        msg_id: str,
+        bounce_type: str,
+        bounce_code: str | None = None,
+        bounce_reason: str | None = None,
+    ) -> None:
+        """Mark a message as bounced.
+
+        Args:
+            msg_id: Message ID.
+            bounce_type: 'hard' or 'soft'.
+            bounce_code: SMTP error code (e.g. '550', '421').
+            bounce_reason: Human-readable reason.
+        """
+        await self.execute(
+            """
+            UPDATE messages
+            SET bounce_type = :bounce_type,
+                bounce_code = :bounce_code,
+                bounce_reason = :bounce_reason,
+                bounce_ts = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = :msg_id
+            """,
+            {
+                "msg_id": msg_id,
+                "bounce_type": bounce_type,
+                "bounce_code": bounce_code,
+                "bounce_reason": bounce_reason,
+            },
+        )
+
+    async def mark_bounce_reported(
+        self,
+        message_ids: Iterable[str],
+        reported_ts: int,
+    ) -> None:
+        """Set the bounce_reported_ts for messages whose bounce was reported to client."""
+        ids = [mid for mid in message_ids if mid]
+        if not ids:
+            return
+        params: dict[str, Any] = {"bounce_reported_ts": reported_ts}
+        params.update({f"id_{i}": mid for i, mid in enumerate(ids)})
+        placeholders = ", ".join(f":id_{i}" for i in range(len(ids)))
+        await self.execute(
+            f"""
+            UPDATE messages
+            SET bounce_reported_ts = :bounce_reported_ts, updated_at = CURRENT_TIMESTAMP
             WHERE id IN ({placeholders})
             """,
             params,
@@ -360,7 +444,7 @@ class MessagesTable(Table):
         if tenant_id:
             # Join with accounts to filter by tenant_id
             query = """
-                SELECT m.id, m.account_id, m.priority, m.payload, m.deferred_ts,
+                SELECT m.id, m.account_id, m.priority, m.payload, m.batch_code, m.deferred_ts,
                        m.sent_ts, m.error_ts, m.error, m.reported_ts,
                        m.created_at, m.updated_at
                 FROM messages m
@@ -370,7 +454,7 @@ class MessagesTable(Table):
             params["tenant_id"] = tenant_id
         else:
             query = """
-                SELECT id, account_id, priority, payload, deferred_ts, sent_ts, error_ts,
+                SELECT id, account_id, priority, payload, batch_code, deferred_ts, sent_ts, error_ts,
                        error, reported_ts, created_at, updated_at
                 FROM messages
             """

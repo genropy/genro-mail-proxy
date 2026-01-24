@@ -142,6 +142,27 @@ services:
       - testnet
 
   # ============================================
+  # IMAP SERVER (for bounce detection testing)
+  # ============================================
+  dovecot:
+    image: dovecot/dovecot:latest
+    ports:
+      - "10143:143"   # IMAP (non-SSL for testing)
+      - "10993:993"   # IMAPS
+    volumes:
+      - ./dovecot/dovecot.conf:/etc/dovecot/local.conf:ro
+      - ./dovecot/users:/etc/dovecot/users:ro
+      - dovecot-mail:/var/mail
+    healthcheck:
+      test: ["CMD", "doveadm", "log", "errors"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - testnet
+
+  # ============================================
   # CLIENT ENDPOINTS (Echo servers for delivery reports)
   # ============================================
   client-tenant1:
@@ -218,3 +239,4 @@ networks:
 volumes:
   pgdata:
   minio-data:
+  dovecot-mail:

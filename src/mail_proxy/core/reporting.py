@@ -140,20 +140,44 @@ class ReporterMixin:
             return total_queued
 
         # Group reports by tenant_id for per-tenant delivery
-        # Payload minimale: solo id, sent_ts, error_ts, error
+        # Payload minimale: id, sent_ts, error_ts, error + bounce fields
         reports_by_tenant: dict[str | None, list[dict[str, Any]]] = defaultdict(list)
+        # Track which messages have bounce info to report
+        bounce_message_ids: set[str] = set()
+        # Track which messages need first-time delivery report (reported_ts is NULL)
+        new_report_ids: set[str] = set()
+
         for item in reports:
             tenant_id = item.get("tenant_id")
-            payload = {
-                "id": item.get("id"),
+            msg_id = item.get("id")
+            payload: dict[str, Any] = {
+                "id": msg_id,
                 "sent_ts": item.get("sent_ts"),
                 "error_ts": item.get("error_ts"),
                 "error": item.get("error"),
             }
+            # Add bounce fields if present
+            if item.get("bounce_ts"):
+                payload["bounce_type"] = item.get("bounce_type")
+                payload["bounce_code"] = item.get("bounce_code")
+                payload["bounce_reason"] = item.get("bounce_reason")
+                payload["bounce_ts"] = item.get("bounce_ts")
+                # Track this message needs bounce_reported_ts update
+                if item.get("bounce_reported_ts") is None:
+                    bounce_message_ids.add(msg_id)
+
+            # Track if this is a new report (not a bounce-only update)
+            # A message needs reported_ts set if it has sent/error but no reported_ts yet
+            if item.get("reported_ts") is None and (
+                item.get("sent_ts") is not None or item.get("error_ts") is not None
+            ):
+                new_report_ids.add(msg_id)
+
             reports_by_tenant[tenant_id].append(payload)
 
         # Track acknowledged message IDs (only mark as reported if client confirms)
         acked_ids: list[str] = []
+        acked_bounce_ids: list[str] = []
 
         # Send reports to each tenant's endpoint
         for tenant_id, payloads in reports_by_tenant.items():
@@ -195,10 +219,19 @@ class ReporterMixin:
                 )
                 # Don't mark these as reported - they'll be retried next cycle
 
-        # Mark only acknowledged messages as reported
-        if acked_ids:
+        # Separate acked IDs into new reports vs bounce updates
+        # - new_report_ids: messages that need reported_ts set (first delivery report)
+        # - bounce_message_ids: messages that need bounce_reported_ts set
+        acked_new_ids = [mid for mid in acked_ids if mid in new_report_ids]
+        acked_bounce_ids = [mid for mid in acked_ids if mid in bounce_message_ids]
+
+        # Mark acknowledged messages as reported
+        if acked_new_ids or acked_bounce_ids:
             reported_ts = self._utc_now_epoch()
-            await self.db.mark_reported(acked_ids, reported_ts)
+            if acked_new_ids:
+                await self.db.mark_reported(acked_new_ids, reported_ts)
+            if acked_bounce_ids:
+                await self.db.mark_bounce_reported(acked_bounce_ids, reported_ts)
 
         await self._apply_retention()
         return total_queued
