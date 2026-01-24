@@ -16,21 +16,26 @@ periodic maintenance tasks. It exposes a command-based API for external
 control and integrates with Prometheus for metrics collection.
 
 Example:
-    Running the mail dispatcher::
+    Running the mail dispatcher (recommended)::
 
         from mail_proxy.core import MailProxy
 
-        core = MailProxy(
+        # Recommended: use create() for automatic initialization
+        proxy = await MailProxy.create(
             db_path="/data/mail.db",
             start_active=True,
             client_sync_url="https://api.example.com/delivery-report"
         )
-
-        await core.start()
-        # Service is now processing messages
+        # Ready to use immediately
 
         # To stop gracefully
-        await core.stop()
+        await proxy.stop()
+
+    Alternative pattern for delayed startup::
+
+        proxy = MailProxy(db_path="/data/mail.db")
+        # ... additional setup ...
+        await proxy.start()
 
 Attributes:
     PRIORITY_LABELS: Mapping of priority integers to human-readable labels.
@@ -242,6 +247,34 @@ class MailProxy(DispatcherMixin, ReporterMixin):
         self._max_concurrent_attachments = max(1, int(max_concurrent_attachments))
         self._account_semaphores: dict[str, asyncio.Semaphore] = {}
         self._attachment_semaphore: asyncio.Semaphore | None = None
+
+    @classmethod
+    async def create(cls, **kwargs) -> "MailProxy":
+        """Create and initialize a MailProxy instance.
+
+        This is the recommended way to create instances. It ensures proper
+        async initialization is completed before returning a ready-to-use proxy.
+
+        Args:
+            **kwargs: All arguments accepted by MailProxy.__init__().
+
+        Returns:
+            Fully initialized MailProxy instance with background tasks running.
+
+        Example:
+            proxy = await MailProxy.create(db_path="./mail.db")
+            # Ready to use immediately - no need to call start()
+
+        Note:
+            For cases requiring delayed startup, use the traditional pattern::
+
+                proxy = MailProxy(db_path="./mail.db")
+                # ... additional setup ...
+                await proxy.start()
+        """
+        instance = cls(**kwargs)
+        await instance.start()
+        return instance
 
     # --------------------------------------------------------------------- utils
     @staticmethod

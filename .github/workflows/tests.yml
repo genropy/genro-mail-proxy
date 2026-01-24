@@ -26,6 +26,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      - name: Security check with bandit
+        run: bandit -r src/mail_proxy -c pyproject.toml
+
       - name: Run tests with coverage
         run: |
           pytest -m "not fullstack" --cov=mail_proxy --cov-report=xml --cov-report=term

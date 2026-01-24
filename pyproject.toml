@@ -66,6 +66,7 @@ dev = [
     "aioresponses>=0.7.0",
     "aiosmtpd>=1.4.0",
     "pytest-docker>=3.0.0",
+    "bandit>=1.7.0",
 ]
 docs = [
     "sphinx>=8.0.0",
@@ -156,4 +157,17 @@ exclude_lines = [
     "if __name__ == .__main__.:",
     "@abstractmethod",
     "\\.\\.\\.",
+]
+
+[tool.bandit]
+exclude_dirs = ["tests", "docs"]
+skips = [
+    "B101",  # assert warnings (OK in production code)
+    "B104",  # binding 0.0.0.0 (intentional for containers)
+    "B105",  # hardcoded password detection (false positives on header names)
+    "B110",  # try/except/pass (defensive code patterns)
+    "B324",  # MD5 warning (used for cache keys, not security)
+    "B404",  # subprocess import (needed for CLI)
+    "B603",  # subprocess calls (CLI tool, inputs are controlled)
+    "B608",  # SQL injection (false positive - we use parameterized queries)
 ]
