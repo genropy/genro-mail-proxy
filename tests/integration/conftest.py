@@ -2,6 +2,7 @@
 """Fixtures for database integration tests using testcontainers."""
 
 import pytest
+import pytest_asyncio
 
 
 @pytest.fixture(scope="session")
@@ -22,7 +23,7 @@ def pg_container():
         yield postgres.get_connection_url()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def pg_db(pg_container):
     """Create a SqlDb instance connected to PostgreSQL container.
 
@@ -53,7 +54,7 @@ async def pg_db(pg_container):
     await db.close()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def pg_adapter(pg_container):
     """Create a raw PostgresAdapter connected to the container.
 

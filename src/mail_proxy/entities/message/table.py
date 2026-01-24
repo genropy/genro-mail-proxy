@@ -42,6 +42,16 @@ class MessagesTable(Table):
         c.column("error_ts", Integer)
         c.column("error", String)
         c.column("reported_ts", Integer)
+        # EE columns - Bounce Detection
+        c.column("bounce_type", String)  # 'hard', 'soft', NULL
+        c.column("bounce_code", String)  # e.g. '550', '421'
+        c.column("bounce_reason", String)
+        c.column("bounce_ts", Timestamp)
+        # EE columns - PEC Support
+        c.column("pec_rda_ts", Timestamp)  # ricevuta di accettazione
+        c.column("pec_rdc_ts", Timestamp)  # ricevuta di consegna
+        c.column("pec_error", String)
+        c.column("pec_error_ts", Timestamp)
 
     async def insert_batch(self, entries: Sequence[dict[str, Any]]) -> list[str]:
         """Persist a batch of messages for delivery. Returns list of inserted IDs."""

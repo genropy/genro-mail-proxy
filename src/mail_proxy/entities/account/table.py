@@ -42,6 +42,17 @@ class AccountsTable(Table):
         c.column("batch_size", Integer)
         c.column("created_at", Timestamp, default="CURRENT_TIMESTAMP")
         c.column("updated_at", Timestamp, default="CURRENT_TIMESTAMP")
+        # EE columns - IMAP/PEC config
+        c.column("is_pec_account", Integer, default=0)
+        c.column("imap_host", String)
+        c.column("imap_port", Integer, default=993)
+        c.column("imap_user", String)
+        c.column("imap_password", String)
+        c.column("imap_folder", String, default="INBOX")
+        # EE columns - IMAP sync state
+        c.column("imap_last_uid", Integer)
+        c.column("imap_last_sync", Timestamp)
+        c.column("imap_uidvalidity", Integer)
 
     async def add(self, acc: dict[str, Any]) -> None:
         """Insert or update an SMTP account."""
