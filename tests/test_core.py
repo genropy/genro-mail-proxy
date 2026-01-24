@@ -887,58 +887,6 @@ async def test_account_configuration_error():
 
 
 @pytest.mark.asyncio
-async def test_classify_smtp_error_timeout():
-    """Test SMTP error classification for timeout errors."""
-    from mail_proxy.core import _classify_smtp_error
-
-    # Timeout errors are temporary
-    is_temp, code = _classify_smtp_error(asyncio.TimeoutError())
-    assert is_temp is True
-    assert code is None
-
-    is_temp, code = _classify_smtp_error(TimeoutError("connection timed out"))
-    assert is_temp is True
-
-    is_temp, code = _classify_smtp_error(ConnectionError("refused"))
-    assert is_temp is True
-
-
-@pytest.mark.asyncio
-async def test_classify_smtp_error_permanent():
-    """Test SMTP error classification for permanent errors."""
-    from mail_proxy.core import _classify_smtp_error
-
-    # SSL errors are permanent
-    is_temp, code = _classify_smtp_error(Exception("wrong_version_number"))
-    assert is_temp is False
-
-    is_temp, code = _classify_smtp_error(Exception("authentication failed"))
-    assert is_temp is False
-
-    is_temp, code = _classify_smtp_error(Exception("535 Authentication failed"))
-    assert is_temp is False
-
-
-@pytest.mark.asyncio
-async def test_calculate_retry_delay():
-    """Test retry delay calculation."""
-    from mail_proxy.core import DEFAULT_RETRY_DELAYS, _calculate_retry_delay
-
-    # Use default delays
-    assert _calculate_retry_delay(0) == DEFAULT_RETRY_DELAYS[0]
-    assert _calculate_retry_delay(1) == DEFAULT_RETRY_DELAYS[1]
-
-    # Beyond the list uses last value
-    assert _calculate_retry_delay(100) == DEFAULT_RETRY_DELAYS[-1]
-
-    # Custom delays
-    custom = [10, 20, 30]
-    assert _calculate_retry_delay(0, custom) == 10
-    assert _calculate_retry_delay(2, custom) == 30
-    assert _calculate_retry_delay(5, custom) == 30  # last value
-
-
-@pytest.mark.asyncio
 async def test_normalise_priority_edge_cases(tmp_path):
     """Test priority normalization with edge cases."""
     core = await make_core(tmp_path)

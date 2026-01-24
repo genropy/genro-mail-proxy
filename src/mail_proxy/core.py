@@ -36,8 +36,6 @@ Attributes:
     PRIORITY_LABELS: Mapping of priority integers to human-readable labels.
     LABEL_TO_PRIORITY: Reverse mapping from labels to priority integers.
     DEFAULT_PRIORITY: Default message priority (2 = "medium").
-    DEFAULT_MAX_RETRIES: Maximum retry attempts for temporary failures.
-    DEFAULT_RETRY_DELAYS: Exponential backoff delay schedule in seconds.
 """
 
 from __future__ import annotations
@@ -51,21 +49,21 @@ from email.message import EmailMessage
 from typing import Any
 
 import aiohttp
-import aiosmtplib
 
 from .attachments import AttachmentManager
 from .attachments.cache import TieredCache
 from .attachments.large_file_storage import LargeFileStorage, LargeFileStorageError
 from .config_loader import CacheConfig, load_cache_config
-from .logger import get_logger
-from .mailproxy_db import MailProxyDb
 from .entities.tenant.schema import (
     LargeFileAction,
     get_tenant_attachment_url,
     get_tenant_sync_url,
 )
+from .logger import get_logger
+from .mailproxy_db import MailProxyDb
 from .prometheus import MailMetrics
 from .rate_limit import RateLimiter
+from .retry import DEFAULT_MAX_RETRIES, DEFAULT_RETRY_DELAYS, RetryStrategy
 from .smtp_pool import SMTPPool
 
 PRIORITY_LABELS = {
@@ -77,9 +75,6 @@ PRIORITY_LABELS = {
 LABEL_TO_PRIORITY = {label: value for value, label in PRIORITY_LABELS.items()}
 DEFAULT_PRIORITY = 2
 
-# Default retry configuration
-DEFAULT_MAX_RETRIES = 5
-DEFAULT_RETRY_DELAYS = [60, 300, 900, 3600, 7200]  # 1min, 5min, 15min, 1h, 2h
 
 
 class AccountConfigurationError(RuntimeError):
@@ -100,94 +95,6 @@ class AttachmentTooLargeError(ValueError):
         super().__init__(
             f"Attachment '{filename}' ({size_mb:.1f} MB) exceeds limit ({max_size_mb} MB)"
         )
-
-
-def _classify_smtp_error(exc: Exception) -> tuple[bool, int | None]:
-    """
-    Classify an SMTP error as temporary or permanent.
-
-    Returns:
-        tuple: (is_temporary, smtp_code)
-            - is_temporary: True if the error should trigger a retry
-            - smtp_code: The SMTP error code if available, None otherwise
-    """
-    # Extract SMTP code from aiosmtplib exceptions
-    smtp_code = None
-    if isinstance(exc, aiosmtplib.SMTPException):
-        # aiosmtplib stores code in different attributes depending on exception type
-        smtp_code = getattr(exc, 'smtp_code', None) or getattr(exc, 'code', None)
-
-    # Network/timeout errors are temporary
-    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError)):
-        return True, smtp_code
-
-    # SMTP-specific temporary errors (4xx codes)
-    if smtp_code:
-        # 4xx codes are temporary failures
-        if 400 <= smtp_code < 500:
-            return True, smtp_code
-        # 5xx codes are permanent failures
-        if 500 <= smtp_code < 600:
-            return False, smtp_code
-
-    # Check error message for common temporary error patterns
-    error_msg = str(exc).lower()
-    temporary_patterns = [
-        '421',  # Service not available
-        '450',  # Mailbox unavailable
-        '451',  # Local error in processing
-        '452',  # Insufficient system storage
-        'timeout',
-        'connection refused',
-        'connection reset',
-        'temporarily unavailable',
-        'try again',
-        'throttl',  # throttled/throttling
-    ]
-    for pattern in temporary_patterns:
-        if pattern in error_msg:
-            return True, smtp_code
-
-    # SSL/TLS configuration errors are permanent (won't fix themselves on retry)
-    permanent_patterns = [
-        'wrong_version_number',  # TLS/STARTTLS mismatch
-        'certificate verify failed',
-        'ssl handshake',
-        'certificate_unknown',
-        'unknown_ca',
-        'certificate has expired',
-        'self signed certificate',
-        'authentication failed',
-        'auth',  # Authentication errors (wrong credentials)
-        '535',  # Authentication credentials invalid
-        '534',  # Authentication mechanism too weak
-        '530',  # Authentication required
-    ]
-    for pattern in permanent_patterns:
-        if pattern in error_msg:
-            return False, smtp_code
-
-    # Default: treat unknown errors as temporary (safer for retry)
-    return True, smtp_code
-
-
-def _calculate_retry_delay(retry_count: int, delays: list[int] = None) -> int:
-    """
-    Calculate the delay in seconds before the next retry attempt.
-
-    Args:
-        retry_count: Number of previous retry attempts (0-indexed)
-        delays: Optional list of delays in seconds for each retry
-
-    Returns:
-        Delay in seconds before next retry
-    """
-    if delays is None:
-        delays = DEFAULT_RETRY_DELAYS
-    if retry_count >= len(delays):
-        # Use the last delay for all subsequent retries
-        return delays[-1]
-    return delays[retry_count]
 
 
 class MailProxy:
@@ -240,7 +147,8 @@ class MailProxy:
         batch_size_per_account: int = 50,
         test_mode: bool = False,
         log_delivery_activity: bool = False,
-        max_retries: int = DEFAULT_MAX_RETRIES,
+        retry_strategy: RetryStrategy | None = None,
+        max_retries: int | None = None,
         retry_delays: list[int] | None = None,
         max_concurrent_sends: int = 10,
         max_concurrent_per_account: int = 3,
@@ -271,8 +179,10 @@ class MailProxy:
             batch_size_per_account: Max messages to send per account per cycle.
             test_mode: Enable test mode (disables automatic loop processing).
             log_delivery_activity: Enable verbose delivery activity logging.
-            max_retries: Maximum retry attempts for temporary SMTP failures.
-            retry_delays: Custom list of retry delay intervals in seconds.
+            retry_strategy: RetryStrategy instance for configuring retry behavior.
+                If provided, max_retries and retry_delays are ignored.
+            max_retries: Maximum retry attempts (deprecated, use retry_strategy).
+            retry_delays: Custom retry delays (deprecated, use retry_strategy).
             max_concurrent_sends: Maximum concurrent SMTP sends globally.
             max_concurrent_per_account: Maximum concurrent sends per SMTP account.
             max_concurrent_attachments: Maximum concurrent attachment fetches to
@@ -326,8 +236,14 @@ class MailProxy:
         priority_value, _ = self._normalise_priority(default_priority, DEFAULT_PRIORITY)
         self._default_priority = priority_value
         self._log_delivery_activity = bool(log_delivery_activity)
-        self._max_retries = max(0, int(max_retries))
-        self._retry_delays = retry_delays or DEFAULT_RETRY_DELAYS
+        # Build retry strategy from explicit param or legacy params
+        if retry_strategy is not None:
+            self._retry_strategy = retry_strategy
+        else:
+            self._retry_strategy = RetryStrategy(
+                max_retries=max_retries if max_retries is not None else DEFAULT_MAX_RETRIES,
+                delays=tuple(retry_delays) if retry_delays else DEFAULT_RETRY_DELAYS,
+            )
         self._batch_size_per_account = max(1, int(batch_size_per_account))
         self._max_concurrent_sends = max(1, int(max_concurrent_sends))
         self._max_concurrent_per_account = max(1, int(max_concurrent_per_account))
@@ -1040,18 +956,16 @@ class MailProxy:
                 # Wrap send_message in timeout to prevent hanging (max 30s for large attachments)
                 await asyncio.wait_for(smtp.send_message(msg, sender=envelope_sender), timeout=30.0)
         except Exception as exc:
-            # Classify the error as temporary or permanent
-            is_temporary, smtp_code = _classify_smtp_error(exc)
-
-            # Get current retry count from payload
+            # Classify the error and get retry count
+            is_temporary, smtp_code = self._retry_strategy.classify_error(exc)
             retry_count = payload.get("retry_count", 0)
 
-            # Determine if we should retry
-            should_retry = is_temporary and retry_count < self._max_retries
+            # Determine if we should retry using strategy
+            should_retry = self._retry_strategy.should_retry(retry_count, exc)
 
             if should_retry:
-                # Calculate next retry timestamp
-                delay = _calculate_retry_delay(retry_count, self._retry_delays)
+                # Calculate next retry timestamp using strategy
+                delay = self._retry_strategy.calculate_delay(retry_count)
                 deferred_until = self._utc_now_epoch() + delay
 
                 # Update payload with incremented retry count
@@ -1065,11 +979,12 @@ class MailProxy:
 
                 # Log the retry attempt
                 error_info = f"{exc} (SMTP {smtp_code})" if smtp_code else str(exc)
+                max_retries = self._retry_strategy.max_retries
                 self.logger.warning(
                     "Temporary error for message %s (attempt %d/%d): %s - retrying in %ds",
                     msg_id,
                     retry_count + 1,
-                    self._max_retries,
+                    max_retries,
                     error_info,
                     delay,
                 )
@@ -1087,9 +1002,10 @@ class MailProxy:
                 # Permanent error or max retries exceeded - mark as failed
                 error_ts = self._utc_now_epoch()
                 error_info = f"{exc} (SMTP {smtp_code})" if smtp_code else str(exc)
+                max_retries = self._retry_strategy.max_retries
 
-                if retry_count >= self._max_retries:
-                    error_info = f"Max retries ({self._max_retries}) exceeded: {error_info}"
+                if retry_count >= max_retries:
+                    error_info = f"Max retries ({max_retries}) exceeded: {error_info}"
                     self.logger.error(
                         "Message %s failed permanently after %d attempts: %s",
                         msg_id,
