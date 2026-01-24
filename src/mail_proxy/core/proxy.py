@@ -684,8 +684,8 @@ class MailProxy(DispatcherMixin, ReporterMixin):
     async def _validate_enqueue_payload(self, payload: dict[str, Any]) -> tuple[bool, str | None]:
         """Validate a message payload before enqueueing.
 
-        Checks for required fields (id, from, to) and verifies that the
-        specified SMTP account exists if provided.
+        Checks for required fields (id, from, to, subject, body) and verifies
+        that the specified SMTP account exists if provided.
 
         Args:
             payload: Message payload dict to validate.
@@ -706,6 +706,11 @@ class MailProxy(DispatcherMixin, ReporterMixin):
         if isinstance(recipients, (list, tuple, set)):
             if not any(recipients):
                 return False, "missing to"
+        subject = payload.get("subject")
+        if not subject:
+            return False, "missing subject"
+        if not payload.get("body"):
+            return False, "missing body"
         account_id = payload.get("account_id")
         if account_id:
             try:
