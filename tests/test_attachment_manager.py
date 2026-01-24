@@ -262,52 +262,6 @@ class TestFetchWithCache:
             assert cached == content
 
 
-class TestFetchBatch:
-    """Tests for batch fetching."""
-
-    @pytest.mark.asyncio
-    async def test_batch_fetch_base64(self):
-        """Test batch fetching base64 attachments."""
-        manager = AttachmentManager()
-
-        content1 = b"content 1"
-        content2 = b"content 2"
-        enc1 = base64.b64encode(content1).decode()
-        enc2 = base64.b64encode(content2).decode()
-
-        results = await manager.fetch_batch([
-            {"filename": "file1.txt", "storage_path": enc1, "fetch_mode": "base64"},
-            {"filename": "file2.txt", "storage_path": enc2, "fetch_mode": "base64"},
-        ])
-
-        assert enc1 in results
-        assert enc2 in results
-        assert results[enc1][0] == content1
-        assert results[enc2][0] == content2
-
-    @pytest.mark.asyncio
-    async def test_batch_uses_cache(self):
-        """Test that batch fetch uses cache."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cache = TieredCache(memory_max_mb=10, disk_dir=tmpdir)
-            await cache.init()
-
-            # Pre-populate cache
-            content = b"cached content"
-            md5 = hashlib.md5(content).hexdigest()
-            await cache.set(md5, content)
-
-            manager = AttachmentManager(cache=cache)
-            results = await manager.fetch_batch([
-                {"filename": f"file_{{MD5:{md5}}}.txt", "storage_path": "base64:unused"},
-            ])
-
-            # Should have cache hit
-            assert len(results) == 1
-            storage_path, (fetched_content, filename) = list(results.items())[0]
-            assert fetched_content == content
-
-
 class TestGuessMime:
     """Tests for MIME type detection."""
 

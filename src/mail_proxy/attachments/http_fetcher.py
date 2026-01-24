@@ -1,11 +1,9 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
-"""HTTP attachment fetcher with batching support.
+"""HTTP attachment fetcher.
 
 This module provides a fetcher for attachments served via HTTP endpoints.
-It supports batching multiple requests to the same server into a single
-POST request with multipart response for efficiency.
-
-The fetcher sends POST requests with JSON body containing the storage_path.
+The fetcher sends POST requests with JSON body containing the storage_path,
+or GET requests for direct URLs.
 
 Example:
     Fetching attachments via HTTP::
@@ -15,30 +13,24 @@ Example:
             auth_config={"method": "bearer", "token": "secret"}
         )
 
-        # Single fetch - sends POST with {"storage_path": "vol:path/to/file.pdf"}
+        # Endpoint-based fetch - sends POST with {"storage_path": "vol:path/to/file.pdf"}
         content = await fetcher.fetch("vol:path/to/file.pdf")
 
-        # Batch fetch (more efficient)
-        results = await fetcher.fetch_batch([
-            {"storage_path": "vol:path/to/file1.pdf", "fetch_mode": "endpoint"},
-            {"storage_path": "vol:path/to/file2.pdf", "fetch_mode": "endpoint"},
-        ])
+        # Direct URL fetch - sends GET
+        content = await fetcher.fetch("https://example.com/file.pdf")
 """
 
 from __future__ import annotations
 
 import base64
 import re
-from typing import Any
-
 import aiohttp
 
 
 class HttpFetcher:
-    """Fetcher for HTTP-served attachments with batching support.
+    """Fetcher for HTTP-served attachments.
 
     Supports authentication via bearer token or basic auth.
-    Can batch multiple requests to the same server for efficiency.
 
     Attributes:
         _default_endpoint: Default URL for requests without explicit server.
@@ -160,160 +152,6 @@ class HttpFetcher:
                 ) as response:
                     response.raise_for_status()
                     return await response.read()
-
-    async def fetch_batch(
-        self,
-        attachments: list[dict[str, Any]],
-    ) -> dict[str, bytes]:
-        """Fetch multiple attachments, batching by server.
-
-        Groups attachments by server URL and sends batched requests
-        where possible. The server should respond with multipart/mixed
-        content containing all requested files.
-
-        Args:
-            attachments: List of attachment dicts with "storage_path" and
-                "fetch_mode" keys.
-
-        Returns:
-            Dictionary mapping original storage_path to content bytes.
-
-        Raises:
-            aiohttp.ClientError: If an HTTP request fails.
-        """
-        results: dict[str, bytes] = {}
-
-        # Group by server
-        by_server: dict[str, list[tuple[str, str]]] = {}
-        for att in attachments:
-            storage_path = att.get("storage_path", "")
-            if not storage_path:
-                continue
-
-            try:
-                server_url, params = self._parse_path(storage_path)
-                by_server.setdefault(server_url, []).append((storage_path, params))
-            except ValueError:
-                continue
-
-        headers = self._get_auth_headers()
-
-        async with aiohttp.ClientSession() as session:
-            for server_url, items in by_server.items():
-                if len(items) == 1:
-                    # Single item - use simple fetch
-                    storage_path, params = items[0]
-                    if not params:
-                        # Direct URL (http_url mode) - use GET
-                        async with session.get(server_url, headers=headers) as response:
-                            response.raise_for_status()
-                            results[storage_path] = await response.read()
-                    else:
-                        # Endpoint-based fetch - use POST with JSON body
-                        async with session.post(
-                            server_url,
-                            json={"storage_path": params},
-                            headers=headers,
-                        ) as response:
-                            response.raise_for_status()
-                            results[storage_path] = await response.read()
-                else:
-                    # Multiple items - check if all are direct URLs
-                    all_direct = all(not params for _, params in items)
-                    if all_direct:
-                        # All direct URLs - fetch individually with GET
-                        for storage_path, _ in items:
-                            async with session.get(server_url, headers=headers) as response:
-                                response.raise_for_status()
-                                results[storage_path] = await response.read()
-                    else:
-                        # Endpoint-based - try batch request
-                        params_list = [params for _, params in items]
-                        try:
-                            batch_results = await self._fetch_batch_from_server(
-                                session, server_url, params_list, headers
-                            )
-                            for (storage_path, _), content in zip(items, batch_results, strict=True):
-                                results[storage_path] = content
-                        except Exception:
-                            # Fallback to individual requests if batch fails
-                            for storage_path, params in items:
-                                if not params:
-                                    async with session.get(server_url, headers=headers) as response:
-                                        response.raise_for_status()
-                                        results[storage_path] = await response.read()
-                                else:
-                                    async with session.post(
-                                        server_url,
-                                        json={"storage_path": params},
-                                        headers=headers,
-                                    ) as response:
-                                        response.raise_for_status()
-                                        results[storage_path] = await response.read()
-
-        return results
-
-    async def _fetch_batch_from_server(
-        self,
-        session: aiohttp.ClientSession,
-        server_url: str,
-        params_list: list[str],
-        headers: dict[str, str],
-    ) -> list[bytes]:
-        """Send a batch request and parse multipart response.
-
-        Args:
-            session: aiohttp client session.
-            server_url: Server URL to POST to.
-            params_list: List of params strings to request.
-            headers: HTTP headers including auth.
-
-        Returns:
-            List of content bytes in same order as params_list.
-        """
-        async with session.post(
-            server_url,
-            json={"attachments": params_list},
-            headers={**headers, "Content-Type": "application/json"},
-        ) as response:
-            response.raise_for_status()
-
-            content_type = response.headers.get("Content-Type", "")
-
-            if "multipart/mixed" in content_type:
-                # Parse multipart response
-                return await self._parse_multipart_response(response)
-            elif "application/json" in content_type:
-                # JSON response with base64-encoded contents
-                data = await response.json()
-                return [
-                    base64.b64decode(item.get("content", ""))
-                    for item in data.get("attachments", [])
-                ]
-            else:
-                # Single binary response (shouldn't happen for batch)
-                return [await response.read()]
-
-    async def _parse_multipart_response(
-        self,
-        response: aiohttp.ClientResponse,
-    ) -> list[bytes]:
-        """Parse a multipart/mixed response into content list.
-
-        Args:
-            response: aiohttp response with multipart content.
-
-        Returns:
-            List of content bytes from each part.
-        """
-        results = []
-        reader = aiohttp.MultipartReader.from_response(response)
-
-        async for part in reader:
-            content = await part.read()
-            results.append(content)
-
-        return results
 
     @property
     def default_endpoint(self) -> str | None:
