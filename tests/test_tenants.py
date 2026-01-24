@@ -394,3 +394,142 @@ async def test_fetch_reports_multiple_tenants(tmp_path):
 
     assert len(by_tenant["tenant1"]) == 2
     assert len(by_tenant["tenant2"]) == 1
+
+
+# ----------------------------------------------------------------- API Key Tests
+
+
+@pytest.mark.asyncio
+async def test_create_api_key(tmp_path):
+    """Test creating an API key for a tenant."""
+    db = MailProxyDb(str(tmp_path / "test.db"))
+    await db.init_db()
+
+    await db.add_tenant({"id": "acme", "name": "ACME Corp"})
+
+    raw_key = await db.tenants.create_api_key("acme")
+
+    assert raw_key is not None
+    assert len(raw_key) > 20  # secrets.token_urlsafe(32) generates ~43 chars
+
+    # Verify hash is saved in DB
+    tenant = await db.get_tenant("acme")
+    assert tenant["api_key_hash"] is not None
+    assert tenant["api_key_expires_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_api_key_with_expiration(tmp_path):
+    """Test creating an API key with expiration."""
+    import time
+
+    db = MailProxyDb(str(tmp_path / "test.db"))
+    await db.init_db()
+
+    await db.add_tenant({"id": "acme", "name": "ACME Corp"})
+
+    expires_at = int(time.time()) + 3600  # 1 hour from now
+    raw_key = await db.tenants.create_api_key("acme", expires_at=expires_at)
+
+    assert raw_key is not None
+
+    tenant = await db.get_tenant("acme")
+    assert tenant["api_key_expires_at"] == expires_at
+
+
+@pytest.mark.asyncio
+async def test_create_api_key_nonexistent_tenant(tmp_path):
+    """Test create_api_key returns None for nonexistent tenant."""
+    db = MailProxyDb(str(tmp_path / "test.db"))
+    await db.init_db()
+
+    raw_key = await db.tenants.create_api_key("nonexistent")
+
+    assert raw_key is None
+
+
+@pytest.mark.asyncio
+async def test_get_tenant_by_token(tmp_path):
+    """Test looking up tenant by API token."""
+    db = MailProxyDb(str(tmp_path / "test.db"))
+    await db.init_db()
+
+    await db.add_tenant({"id": "acme", "name": "ACME Corp"})
+    raw_key = await db.tenants.create_api_key("acme")
+
+    tenant = await db.tenants.get_tenant_by_token(raw_key)
+
+    assert tenant is not None
+    assert tenant["id"] == "acme"
+    assert tenant["name"] == "ACME Corp"
+
+
+@pytest.mark.asyncio
+async def test_get_tenant_by_token_invalid(tmp_path):
+    """Test get_tenant_by_token returns None for invalid token."""
+    db = MailProxyDb(str(tmp_path / "test.db"))
+    await db.init_db()
+
+    await db.add_tenant({"id": "acme", "name": "ACME Corp"})
+    await db.tenants.create_api_key("acme")
+
+    tenant = await db.tenants.get_tenant_by_token("invalid-token-12345")
+
+    assert tenant is None
+
+
+@pytest.mark.asyncio
+async def test_get_tenant_by_token_expired(tmp_path):
+    """Test get_tenant_by_token returns None for expired token."""
+    import time
+
+    db = MailProxyDb(str(tmp_path / "test.db"))
+    await db.init_db()
+
+    await db.add_tenant({"id": "acme", "name": "ACME Corp"})
+
+    # Create key with past expiration
+    expires_at = int(time.time()) - 3600  # 1 hour ago
+    raw_key = await db.tenants.create_api_key("acme", expires_at=expires_at)
+
+    tenant = await db.tenants.get_tenant_by_token(raw_key)
+
+    assert tenant is None
+
+
+@pytest.mark.asyncio
+async def test_revoke_api_key(tmp_path):
+    """Test revoking an API key."""
+    db = MailProxyDb(str(tmp_path / "test.db"))
+    await db.init_db()
+
+    await db.add_tenant({"id": "acme", "name": "ACME Corp"})
+    raw_key = await db.tenants.create_api_key("acme")
+
+    # Key works before revocation
+    tenant = await db.tenants.get_tenant_by_token(raw_key)
+    assert tenant is not None
+
+    # Revoke
+    result = await db.tenants.revoke_api_key("acme")
+    assert result is True
+
+    # Key no longer works
+    tenant = await db.tenants.get_tenant_by_token(raw_key)
+    assert tenant is None
+
+    # DB fields are cleared
+    tenant_data = await db.get_tenant("acme")
+    assert tenant_data["api_key_hash"] is None
+    assert tenant_data["api_key_expires_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_revoke_api_key_nonexistent(tmp_path):
+    """Test revoke_api_key returns False for nonexistent tenant."""
+    db = MailProxyDb(str(tmp_path / "test.db"))
+    await db.init_db()
+
+    result = await db.tenants.revoke_api_key("nonexistent")
+
+    assert result is False
