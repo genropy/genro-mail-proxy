@@ -55,7 +55,7 @@ def test_returns_500_when_service_missing():
     create_app(DummyService(), api_token=API_TOKEN)
     api.service = None
     client = TestClient(api.app)
-    response = client.post("/commands/run-now?tenant_id=test-tenant", headers={API_TOKEN_HEADER_NAME: API_TOKEN})
+    response = client.post("/commands/run-now", headers={API_TOKEN_HEADER_NAME: API_TOKEN})
     assert response.status_code == 500
     assert response.json()["detail"] == "Service not initialized"
 
@@ -75,7 +75,7 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
     assert status["ok"] is True
     assert status["active"] is True
 
-    assert client.post("/commands/run-now?tenant_id=test-tenant").json()["ok"] is True
+    assert client.post("/commands/run-now").json()["ok"] is True
     assert client.post("/commands/suspend").json()["ok"] is True
     assert client.post("/commands/activate").json()["ok"] is True
 
@@ -111,7 +111,7 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
     assert client.get("/messages?tenant_id=test-tenant").json()["ok"] is True
 
     expected_calls = [
-        ("run now", {"tenant_id": "test-tenant"}),
+        ("run now", {}),
         ("suspend", {}),
         ("activate", {}),
         (
@@ -258,7 +258,7 @@ def test_service_not_initialized_all_commands():
 
     # Test all command endpoints
     endpoints_to_test = [
-        ("POST", "/commands/run-now?tenant_id=test-tenant", None),
+        ("POST", "/commands/run-now", None),
         ("POST", "/commands/suspend", None),
         ("POST", "/commands/activate", None),
         ("POST", "/commands/add-messages", {"messages": []}),
@@ -757,30 +757,6 @@ def test_nonexistent_tenant_returns_empty():
 # ============================================================================
 # Write Endpoint Tenant Isolation Security Tests (Issue #31)
 # ============================================================================
-
-def test_run_now_requires_tenant_id():
-    """Test that /commands/run-now endpoint requires tenant_id parameter."""
-    svc = DummyService()
-    client = TestClient(create_app(svc, api_token=API_TOKEN))
-    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
-
-    # Request without tenant_id should fail with 422 validation error
-    response = client.post("/commands/run-now")
-    assert response.status_code == 422
-
-
-def test_run_now_passes_tenant_id_to_service():
-    """Test that /commands/run-now passes tenant_id to service."""
-    svc = DummyService()
-    client = TestClient(create_app(svc, api_token=API_TOKEN))
-    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
-
-    response = client.post("/commands/run-now?tenant_id=tenant-alpha")
-    assert response.status_code == 200
-
-    # Verify tenant_id was passed to service
-    assert svc.calls[-1] == ("run now", {"tenant_id": "tenant-alpha"})
-
 
 def test_delete_messages_requires_tenant_id():
     """Test that /commands/delete-messages requires tenant_id in payload."""

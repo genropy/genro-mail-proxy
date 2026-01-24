@@ -109,4 +109,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 # Create the configured application
-app = create_app(_core, api_token=_api_token, lifespan=lifespan)
+app = create_app(
+    _core,
+    api_token=_api_token,
+    lifespan=lifespan,
+)

@@ -1089,11 +1089,11 @@ async def test_priority_immediate_processed_first(tmp_path):
 
     # Add messages: some regular, some immediate
     messages = [
-        {"id": "regular1", "account_id": "acc", "priority": 2, "from": "a@x.com", "to": ["b@x.com"], "body": "r1"},
-        {"id": "regular2", "account_id": "acc", "priority": 2, "from": "a@x.com", "to": ["b@x.com"], "body": "r2"},
-        {"id": "immediate1", "account_id": "acc", "priority": 0, "from": "a@x.com", "to": ["b@x.com"], "body": "i1"},
-        {"id": "regular3", "account_id": "acc", "priority": 3, "from": "a@x.com", "to": ["b@x.com"], "body": "r3"},
-        {"id": "immediate2", "account_id": "acc", "priority": 0, "from": "a@x.com", "to": ["b@x.com"], "body": "i2"},
+        {"id": "regular1", "account_id": "acc", "priority": 2, "from": "a@x.com", "to": ["b@x.com"], "subject": "r1", "body": "r1"},
+        {"id": "regular2", "account_id": "acc", "priority": 2, "from": "a@x.com", "to": ["b@x.com"], "subject": "r2", "body": "r2"},
+        {"id": "immediate1", "account_id": "acc", "priority": 0, "from": "a@x.com", "to": ["b@x.com"], "subject": "i1", "body": "i1"},
+        {"id": "regular3", "account_id": "acc", "priority": 3, "from": "a@x.com", "to": ["b@x.com"], "subject": "r3", "body": "r3"},
+        {"id": "immediate2", "account_id": "acc", "priority": 0, "from": "a@x.com", "to": ["b@x.com"], "subject": "i2", "body": "i2"},
     ]
     await core.handle_command("addMessages", {"messages": messages})
 

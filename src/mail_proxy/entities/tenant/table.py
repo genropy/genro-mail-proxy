@@ -28,6 +28,8 @@ class TenantsTable(Table):
         c.column("rate_limits", String, json_encoded=True)
         c.column("large_file_config", String, json_encoded=True)
         c.column("active", Integer, default=1)
+        c.column("api_key_hash", String)
+        c.column("api_key_expires_at", Timestamp)
         c.column("created_at", Timestamp, default="CURRENT_TIMESTAMP")
         c.column("updated_at", Timestamp, default="CURRENT_TIMESTAMP")
 
@@ -122,6 +124,89 @@ class TenantsTable(Table):
         """Convert active INTEGER to bool."""
         tenant["active"] = bool(tenant.get("active", 1))
         return tenant
+
+    # ----------------------------------------------------------------- API Keys
+
+    async def create_api_key(
+        self, tenant_id: str, expires_at: int | None = None
+    ) -> str | None:
+        """Create a new API key for a tenant.
+
+        Args:
+            tenant_id: The tenant ID.
+            expires_at: Optional Unix timestamp for key expiration.
+
+        Returns:
+            The raw API key (show once), or None if tenant not found.
+        """
+        import hashlib
+        import secrets
+
+        tenant = await self.get(tenant_id)
+        if not tenant:
+            return None
+
+        raw_key = secrets.token_urlsafe(32)
+        key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+
+        await self.execute(
+            """
+            UPDATE tenants
+            SET api_key_hash = :key_hash,
+                api_key_expires_at = :expires_at,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = :tenant_id
+            """,
+            {"tenant_id": tenant_id, "key_hash": key_hash, "expires_at": expires_at},
+        )
+        return raw_key
+
+    async def get_tenant_by_token(self, raw_key: str) -> dict[str, Any] | None:
+        """Find tenant by API key token.
+
+        Args:
+            raw_key: The raw API key to look up.
+
+        Returns:
+            Tenant dict if found and not expired, None otherwise.
+        """
+        import hashlib
+        import time
+
+        key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+        tenant = await self.fetch_one(
+            "SELECT * FROM tenants WHERE api_key_hash = :key_hash",
+            {"key_hash": key_hash},
+        )
+        if not tenant:
+            return None
+
+        expires_at = tenant.get("api_key_expires_at")
+        if expires_at and expires_at < time.time():
+            return None  # Expired
+
+        return self._decode_active(tenant)
+
+    async def revoke_api_key(self, tenant_id: str) -> bool:
+        """Revoke the API key for a tenant.
+
+        Args:
+            tenant_id: The tenant ID.
+
+        Returns:
+            True if key was revoked, False if tenant not found.
+        """
+        rowcount = await self.execute(
+            """
+            UPDATE tenants
+            SET api_key_hash = NULL,
+                api_key_expires_at = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = :tenant_id
+            """,
+            {"tenant_id": tenant_id},
+        )
+        return rowcount > 0
 
 
 __all__ = ["TenantsTable"]

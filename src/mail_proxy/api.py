@@ -67,21 +67,66 @@ API_TOKEN_HEADER_NAME = "X-API-Token"
 api_key_scheme = APIKeyHeader(name=API_TOKEN_HEADER_NAME, auto_error=False)
 app.state.api_token = None
 
+
+async def verify_tenant_token(tenant_id: str | None, api_token: str | None, global_token: str | None) -> None:
+    """Verify API token for a request, with tenant-specific key support.
+
+    Authentication logic:
+    1. Look up token in tenants table (by hash)
+    2. If found → token belongs to a tenant, verify tenant_id matches
+    3. If not found → verify against global token
+
+    Args:
+        tenant_id: The tenant ID from the request (may be None for some endpoints).
+        api_token: The token from X-API-Token header.
+        global_token: The configured global API token.
+
+    Raises:
+        HTTPException: 401 if token is invalid or tenant_id mismatch.
+    """
+    if not api_token:
+        if global_token is not None:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing API token")
+        return  # No token configured, allow access
+
+    # Look up token in tenants table
+    if service and getattr(service, "db", None):
+        token_tenant = await service.db.tenants.get_tenant_by_token(api_token)
+        if token_tenant:
+            # Token belongs to a tenant - verify tenant_id matches
+            if tenant_id and token_tenant["id"] != tenant_id:
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token not authorized for this tenant")
+            return  # Valid tenant token
+
+    # Token not found in tenants - verify against global token
+    if global_token is None:
+        return  # No global token configured, allow access
+    if not secrets.compare_digest(api_token, global_token):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing API token")
+
+
 async def require_token(
     request: Request,
     api_token: str | None = Depends(api_key_scheme)
 ) -> None:
     """Validate the API token carried in the ``X-API-Token`` header.
 
-    If a token has been configured through :func:`create_app` and a request
-    provides either a missing or different value, a ``401`` error is raised.
-    When no token is configured the dependency is effectively bypassed.
+    For endpoints without tenant_id, verifies against global token only.
+    For endpoints with tenant_id, the endpoint calls verify_tenant_token()
+    to support per-tenant API keys.
     """
+    # Store token in request state for later tenant-aware verification
+    request.state.api_token = api_token
+
+    # Verify against global token for all endpoints
     expected = getattr(request.app.state, "api_token", None)
     if expected is None:
-        return
-    if not api_token or not secrets.compare_digest(api_token, expected):
+        return  # No global token configured
+    if not api_token:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing API token")
+    if not secrets.compare_digest(api_token, expected):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing API token")
+
 
 auth_dependency = Depends(require_token)
 
@@ -307,7 +352,8 @@ class TenantsResponse(CommandStatus):
 def create_app(
     svc: MailProxy,
     api_token: str | None = None,
-    lifespan: Callable[[FastAPI], AbstractAsyncContextManager] | None = None
+    lifespan: Callable[[FastAPI], AbstractAsyncContextManager] | None = None,
+    tenant_tokens_enabled: bool = False,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
@@ -319,8 +365,13 @@ def create_app(
     api_token:
         Optional secret used to protect every endpoint. When provided, the
         ``X-API-Token`` header must match this value on every request.
+        Ignored when ``tenant_tokens_enabled=True``.
     lifespan:
         Optional lifespan context manager for startup/shutdown events.
+    tenant_tokens_enabled:
+        When True, enables per-tenant API keys instead of a global token.
+        Each tenant must have an API key created via the CLI or API.
+        The tenant_id is automatically extracted from the token.
 
     Returns
     -------
@@ -335,6 +386,7 @@ def create_app(
     api = FastAPI(title="Async Mail Service", lifespan=lifespan) if lifespan is not None else app
 
     api.state.api_token = api_token
+    api.state.tenant_tokens_enabled = tenant_tokens_enabled
     router = APIRouter(prefix="/commands", tags=["commands"], dependencies=[auth_dependency])
 
     @api.exception_handler(RequestValidationError)
@@ -479,7 +531,7 @@ def create_app(
         return AddMessagesResponse.model_validate(result)
 
     @router.post("/delete-messages", response_model=DeleteMessagesResponse, response_model_exclude_none=True)
-    async def delete_messages(tenant_id: str, payload: DeleteMessagesPayload):
+    async def delete_messages(request: Request, tenant_id: str, payload: DeleteMessagesPayload):
         """Remove messages from the queue by their IDs.
 
         Deletes specified messages from both the queue and tracking tables.
@@ -496,12 +548,14 @@ def create_app(
 
         Raises:
             HTTPException: 400 if tenant_id is missing.
+            HTTPException: 401 if API token is invalid.
             HTTPException: 500 if the service is not initialized.
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
         if not tenant_id:
             raise HTTPException(400, "tenant_id is required")
+        await verify_tenant_token(tenant_id, getattr(request.state, "api_token", None), getattr(request.app.state, "api_token", None))
         command_data = {"tenant_id": tenant_id, "ids": payload.ids}
         result = await service.handle_command("deleteMessages", command_data)
         if not result.get("ok"):
@@ -509,7 +563,7 @@ def create_app(
         return DeleteMessagesResponse.model_validate(result)
 
     @router.post("/cleanup-messages", response_model=CleanupMessagesResponse, response_model_exclude_none=True)
-    async def cleanup_messages(tenant_id: str, payload: CleanupMessagesPayload):
+    async def cleanup_messages(request: Request, tenant_id: str, payload: CleanupMessagesPayload):
         """Manually trigger cleanup of reported messages older than retention period.
 
         Only cleans up messages belonging to the specified tenant.
@@ -521,13 +575,15 @@ def create_app(
 
         Raises:
             HTTPException: 400 if tenant_id is missing.
+            HTTPException: 401 if API token is invalid.
             HTTPException: 500 if the service is not initialized.
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
         if not tenant_id:
             raise HTTPException(400, "tenant_id is required")
-        command_data = {"tenant_id": tenant_id}
+        await verify_tenant_token(tenant_id, getattr(request.state, "api_token", None), getattr(request.app.state, "api_token", None))
+        command_data: dict[str, str | int] = {"tenant_id": tenant_id}
         if payload.older_than_seconds is not None:
             command_data["older_than_seconds"] = payload.older_than_seconds
         result = await service.handle_command("cleanupMessages", command_data)
@@ -557,7 +613,7 @@ def create_app(
         return BasicOkResponse.model_validate(result)
 
     @api.get("/accounts", response_model=AccountsResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
-    async def list_accounts(tenant_id: str):
+    async def list_accounts(request: Request, tenant_id: str):
         """Retrieve SMTP accounts for a specific tenant.
 
         Returns the list of registered SMTP accounts with their configuration
@@ -571,17 +627,19 @@ def create_app(
 
         Raises:
             HTTPException: 400 if tenant_id is missing.
+            HTTPException: 401 if API token is invalid.
             HTTPException: 500 if the service is not initialized.
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
         if not tenant_id:
             raise HTTPException(400, "tenant_id is required")
+        await verify_tenant_token(tenant_id, getattr(request.state, "api_token", None), getattr(request.app.state, "api_token", None))
         result = await service.handle_command("listAccounts", {"tenant_id": tenant_id})
         return AccountsResponse.model_validate(result)
 
     @api.delete("/account/{account_id}", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
-    async def delete_account(account_id: str, tenant_id: str):
+    async def delete_account(request: Request, account_id: str, tenant_id: str):
         """Delete an SMTP account by its ID.
 
         Removes the account configuration and cleans up associated scheduler state.
@@ -596,19 +654,21 @@ def create_app(
 
         Raises:
             HTTPException: 400 if tenant_id is missing or account doesn't belong to tenant.
+            HTTPException: 401 if API token is invalid.
             HTTPException: 500 if the service is not initialized.
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
         if not tenant_id:
             raise HTTPException(400, "tenant_id is required")
+        await verify_tenant_token(tenant_id, getattr(request.state, "api_token", None), getattr(request.app.state, "api_token", None))
         result = await service.handle_command("deleteAccount", {"id": account_id, "tenant_id": tenant_id})
         if not result.get("ok"):
             raise HTTPException(400, result.get("error", "Unknown error"))
         return BasicOkResponse.model_validate(result)
 
     @api.get("/messages", response_model=MessagesResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
-    async def all_messages(tenant_id: str, active_only: bool = False):
+    async def all_messages(request: Request, tenant_id: str, active_only: bool = False):
         """List messages for a specific tenant.
 
         Returns message records including payload, status timestamps,
@@ -623,12 +683,14 @@ def create_app(
 
         Raises:
             HTTPException: 400 if tenant_id is missing.
+            HTTPException: 401 if API token is invalid.
             HTTPException: 500 if the service is not initialized.
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
         if not tenant_id:
             raise HTTPException(400, "tenant_id is required")
+        await verify_tenant_token(tenant_id, getattr(request.state, "api_token", None), getattr(request.app.state, "api_token", None))
         result = await service.handle_command("listMessages", {
             "tenant_id": tenant_id,
             "active_only": active_only
@@ -693,7 +755,7 @@ def create_app(
         return TenantsResponse.model_validate(result)
 
     @api.get("/tenant/{tenant_id}", response_model=TenantInfo, response_model_exclude_none=True, dependencies=[auth_dependency])
-    async def get_tenant(tenant_id: str):
+    async def get_tenant(request: Request, tenant_id: str):
         """Retrieve a specific tenant configuration.
 
         Args:
@@ -703,11 +765,13 @@ def create_app(
             TenantInfo: Complete tenant configuration.
 
         Raises:
+            HTTPException: 401 if API token is invalid.
             HTTPException: 404 if the tenant is not found.
             HTTPException: 500 if the service is not initialized.
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
+        await verify_tenant_token(tenant_id, getattr(request.state, "api_token", None), getattr(request.app.state, "api_token", None))
         result = await service.handle_command("getTenant", {"id": tenant_id})
         if not result.get("ok"):
             raise HTTPException(404, f"Tenant '{tenant_id}' not found")
@@ -716,7 +780,7 @@ def create_app(
         return TenantInfo(**result)
 
     @api.put("/tenant/{tenant_id}", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
-    async def update_tenant(tenant_id: str, payload: TenantUpdatePayload):
+    async def update_tenant(request: Request, tenant_id: str, payload: TenantUpdatePayload):
         """Update an existing tenant's configuration.
 
         Applies partial updates to the tenant. Only provided fields are updated;
@@ -730,11 +794,13 @@ def create_app(
             BasicOkResponse: Confirmation with ``ok=True``.
 
         Raises:
+            HTTPException: 401 if API token is invalid.
             HTTPException: 404 if the tenant is not found.
             HTTPException: 500 if the service is not initialized.
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
+        await verify_tenant_token(tenant_id, getattr(request.state, "api_token", None), getattr(request.app.state, "api_token", None))
         update_data = payload.model_dump(exclude_none=True)
         update_data["id"] = tenant_id
         result = await service.handle_command("updateTenant", update_data)
@@ -743,7 +809,7 @@ def create_app(
         return BasicOkResponse.model_validate(result)
 
     @api.delete("/tenant/{tenant_id}", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
-    async def delete_tenant(tenant_id: str):
+    async def delete_tenant(request: Request, tenant_id: str):
         """Delete a tenant and all associated resources.
 
         Removes the tenant along with all its SMTP accounts and queued messages.
@@ -756,11 +822,13 @@ def create_app(
             BasicOkResponse: Confirmation with ``ok=True``.
 
         Raises:
+            HTTPException: 401 if API token is invalid.
             HTTPException: 404 if the tenant is not found.
             HTTPException: 500 if the service is not initialized.
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
+        await verify_tenant_token(tenant_id, getattr(request.state, "api_token", None), getattr(request.app.state, "api_token", None))
         result = await service.handle_command("deleteTenant", {"id": tenant_id})
         if not result.get("ok"):
             raise HTTPException(404, f"Tenant '{tenant_id}' not found")
