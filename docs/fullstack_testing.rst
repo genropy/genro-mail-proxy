@@ -550,6 +550,30 @@ the full live polling flow:
 - ✅ IMAP injection and retrieval
 - ✅ X-Genro-Mail-ID header in outgoing emails
 
+**Suggested tests to add (HIGH PRIORITY):**
+
+1. **Live polling test** - Start BounceReceiver, inject DSN, wait for automatic detection:
+
+   .. code-block:: python
+
+      async def wait_for_bounce(api_client, msg_id, timeout=30):
+          """Wait for BounceReceiver to detect and process a bounce."""
+          start = time.time()
+          while time.time() - start < timeout:
+              resp = await api_client.get(f"/messages/{msg_id}")
+              if resp.json().get("bounce_ts") is not None:
+                  return resp.json()
+              await asyncio.sleep(1.5)  # > poll interval
+          pytest.fail(f"Bounce not detected for {msg_id} within {timeout}s")
+
+2. **Delivery report with bounce info** - Verify echo server receives bounce data:
+
+   .. code-block:: python
+
+      # After bounce detected, trigger delivery report
+      # Check echo server received: {"bounce": {"type": "hard", "code": "550", ...}}
+      # Verify bounce_reported_ts > bounce_ts
+
 PEC Support (NOT TESTED)
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -565,6 +589,13 @@ Italian Certified Email (PEC) is **not tested**:
    - S/MIME envelope parsing
    - pec_rda_ts, pec_rdc_ts, pec_error fields update
 
+**Implementation approach:**
+
+- Use same Dovecot infrastructure
+- Inject fake PEC emails (multipart/signed + report)
+- Start with unit tests for PEC parser, then integrate in fullstack
+- Use ``email``, ``dkim``, ``cryptography`` libraries for S/MIME envelope generation
+
 Message Lifecycle - Retention (NOT TESTED)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -578,6 +609,15 @@ The retention policy and cleanup are **not tested**:
    - ``report_retention_seconds`` configuration
    - Manual cleanup via ``/commands/cleanup-messages``
    - Retention applied only to reported messages
+
+**Suggested tests (MEDIUM PRIORITY, 4-6 tests):**
+
+1. Configure ``report_retention_seconds=60`` in tenant
+2. Send messages → trigger report (success + bounce)
+3. Advance time (use ``freezegun`` or mock ``time.time``)
+4. Call ``/commands/cleanup-messages`` or wait for automatic cycle
+5. Verify DELETE only for old ``reported_ts`` messages
+6. Edge case: BOUNCED but not reported → should NOT be deleted
 
 Rate Limiting (PARTIALLY TESTED)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -593,6 +633,13 @@ Rate limiting is tested at SMTP level but **not at account level**:
    - ``limit_per_day`` account configuration
    - ``limit_behavior`` (defer vs reject)
 
+**Suggested tests:**
+
+1. Create account with ``limit_per_minute=3``
+2. Send 5 messages rapidly
+3. Verify defer/reject on excess messages
+4. Test ``limit_behavior`` configuration
+
 Per-Tenant API Keys (NOT TESTED)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -605,6 +652,386 @@ Per-tenant API authentication is **not tested**:
    - Tenant-specific API tokens
    - Token validation per tenant
    - Token rotation
+
+**Suggested tests:**
+
+1. Create token for specific tenant
+2. Test isolated authentication per tenant
+3. Wrong token → 403
+4. Token from another tenant → 403
+
+
+Test Roadmap - Priority Summary
+-------------------------------
+
+The following table summarizes the test gaps and their priority:
+
+==================== ========== ===============================================
+Feature              Priority   Effort
+==================== ========== ===============================================
+Live bounce polling  HIGH       1-2 tests, uses existing infrastructure
+Bounce delivery rpt  HIGH       1 test, extends existing delivery report tests
+Retention cleanup    MEDIUM     4-6 tests, needs time mocking (freezegun)
+Rate limit account   MEDIUM     3-4 tests, straightforward
+Per-tenant API keys  LOW        3-4 tests, depends on feature usage
+PEC support          LOW        5-10 tests, complex S/MIME parsing
+==================== ========== ===============================================
+
+**Recommended implementation order:**
+
+1. Live bounce polling + delivery report (closes bounce to ~95%)
+2. Retention cleanup (important for production)
+3. Rate limiting account-level
+4. Per-tenant API keys (if used in production)
+5. PEC support (Italian market specific)
+
+
+DX Improvements - Suggested Enhancements
+----------------------------------------
+
+The following improvements would enhance developer experience:
+
+Improved Dovecot Healthcheck
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Current healthcheck uses ``doveadm log errors``. A more robust check:
+
+.. code-block:: yaml
+
+   healthcheck:
+     test: ["CMD", "sh", "-c", "echo 'A1 LOGOUT' | nc localhost 143 | grep '* OK'"]
+     interval: 5s
+     timeout: 5s
+     retries: 5
+
+IMAP Client Fixture
+~~~~~~~~~~~~~~~~~~~
+
+A pytest fixture for IMAP operations would simplify bounce tests:
+
+.. code-block:: python
+
+   import imaplib
+   import pytest
+
+   @pytest.fixture
+   def imap_bounce():
+       """IMAP client connected to bounce mailbox."""
+       M = imaplib.IMAP4("localhost", 10143)
+       M.login("bounces@localhost", "bouncepass")
+       M.select("INBOX")
+       yield M
+       M.logout()
+
+   # Usage in tests:
+   async def test_bounce_injection(imap_bounce, api_client):
+       dsn = create_dsn_bounce_email(msg_id, hard=True)
+       imap_bounce.append(
+           "INBOX", "",
+           imaplib.Time2Internaldate(time.time()),
+           dsn.encode()
+       )
+
+Test Markers
+~~~~~~~~~~~~
+
+Add markers for selective test execution:
+
+.. code-block:: python
+
+   @pytest.mark.bounce_e2e
+   async def test_bounce_live_polling(...):
+       ...
+
+   @pytest.mark.chaos
+   async def test_random_smtp_behavior(...):
+       ...
+
+Run with:
+
+.. code-block:: bash
+
+   # Run bounce tests only
+   pytest -m bounce_e2e -v
+
+   # Run all except chaos tests (recommended for CI)
+   pytest -m "not chaos" -v
+
+   # Run chaos tests separately
+   pytest -m chaos -v
+
+
+Test Profiles
+~~~~~~~~~~~~~
+
+Organize tests into profiles for different use cases:
+
+=================== ============================================== ==============
+Profile             Description                                    Markers
+=================== ============================================== ==============
+**smoke**           Quick happy-path validation                    ``-m smoke``
+**fullstack**       Complete test suite (default)                  no marker
+**bounce_e2e**      Bounce detection only                          ``-m bounce_e2e``
+**chaos**           Random failures, timeouts, edge cases          ``-m chaos``
+=================== ============================================== ==============
+
+**Recommended CI configuration:**
+
+.. code-block:: yaml
+
+   # Fast feedback (< 2 min)
+   - pytest -m smoke -v
+
+   # Full validation (exclude chaos)
+   - pytest -m "not chaos" -v
+
+   # Nightly/weekly chaos testing
+   - pytest -m chaos -v --timeout=120
+
+
+Deterministic Chaos Testing
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``smtp-random`` server introduces non-determinism. To make failures reproducible:
+
+1. **Add seed support** to error-smtp server:
+
+   .. code-block:: python
+
+      # In server.py
+      import os
+      import random
+
+      seed = int(os.environ.get("SMTP_RANDOM_SEED", 0))
+      if seed:
+          random.seed(seed)
+
+2. **Log the seed** when tests fail for reproduction:
+
+   .. code-block:: python
+
+      @pytest.fixture(scope="session")
+      def chaos_seed():
+          seed = int(os.environ.get("SMTP_RANDOM_SEED", time.time()))
+          print(f"Chaos seed: {seed}")
+          return seed
+
+3. **Reproduce failures** by setting the seed:
+
+   .. code-block:: bash
+
+      SMTP_RANDOM_SEED=12345 pytest -m chaos -v
+
+
+On-Failure Diagnostics
+~~~~~~~~~~~~~~~~~~~~~~
+
+Automatic diagnostics when tests fail dramatically reduce debugging time:
+
+.. code-block:: python
+
+   import pytest
+
+   @pytest.hookimpl(tryfirst=True, hookwrapper=True)
+   def pytest_runtest_makereport(item, call):
+       outcome = yield
+       report = outcome.get_result()
+
+       if report.when == "call" and report.failed:
+           # Collect diagnostics
+           print("\n=== FAILURE DIAGNOSTICS ===")
+
+           # Docker service status
+           import subprocess
+           result = subprocess.run(
+               ["docker", "compose", "-f", "tests/docker/docker-compose.fulltest.yml", "ps"],
+               capture_output=True, text=True
+           )
+           print(f"Docker status:\n{result.stdout}")
+
+           # Mail proxy logs (last 20 lines)
+           result = subprocess.run(
+               ["docker", "compose", "-f", "tests/docker/docker-compose.fulltest.yml",
+                "logs", "mailproxy", "--tail", "20"],
+               capture_output=True, text=True
+           )
+           print(f"Mail proxy logs:\n{result.stdout}")
+
+           # MailHog message count
+           import httpx
+           try:
+               resp = httpx.get("http://localhost:8025/api/v2/messages", timeout=5)
+               count = len(resp.json().get("items", []))
+               print(f"MailHog T1 messages: {count}")
+           except Exception as e:
+               print(f"MailHog check failed: {e}")
+
+
+Isolation and Cleanup
+~~~~~~~~~~~~~~~~~~~~~
+
+Ensure tests don't interfere with each other:
+
+**Database isolation:**
+
+.. code-block:: python
+
+   @pytest.fixture(scope="function")
+   async def clean_db(api_client):
+       """Clean test data before each test."""
+       # Delete test messages
+       await api_client.delete("/messages/cleanup-all-test")
+       yield
+       # Cleanup after test
+       await api_client.delete("/messages/cleanup-all-test")
+
+**MinIO isolation:**
+
+.. code-block:: python
+
+   @pytest.fixture(scope="session")
+   def test_run_id():
+       """Unique prefix for this test run."""
+       return f"test-{int(time.time())}"
+
+   # Use prefix in attachments: attachments/{test_run_id}/...
+
+**MailHog cleanup:**
+
+.. code-block:: python
+
+   @pytest.fixture(scope="class", autouse=True)
+   async def clean_mailhog():
+       """Clear MailHog before each test class."""
+       async with httpx.AsyncClient() as client:
+           await client.delete("http://localhost:8025/api/v1/messages")
+           await client.delete("http://localhost:8026/api/v1/messages")
+       yield
+
+
+Enhanced Healthchecks
+~~~~~~~~~~~~~~~~~~~~~
+
+Current healthchecks verify "container up". Enhanced checks verify "service ready":
+
+**Mail Proxy - verify full readiness:**
+
+.. code-block:: yaml
+
+   healthcheck:
+     test: ["CMD", "curl", "-f", "http://localhost:8000/health?check=db"]
+     interval: 5s
+     timeout: 5s
+     retries: 10
+
+**MinIO - verify bucket exists:**
+
+.. code-block:: yaml
+
+   # In minio-setup, add verification
+   entrypoint: >
+     /bin/sh -c "
+       mc alias set local http://minio:9000 minioadmin minioadmin;
+       mc mb local/mail-attachments --ignore-existing;
+       mc ls local/mail-attachments;
+       echo 'MinIO setup verified';
+     "
+
+**Dovecot - verify IMAP login works:**
+
+.. code-block:: yaml
+
+   healthcheck:
+     test: ["CMD", "sh", "-c", "echo -e 'A1 LOGIN bounces@localhost bouncepass\nA2 LOGOUT' | nc localhost 143 | grep 'A1 OK'"]
+     interval: 5s
+     timeout: 5s
+     retries: 5
+
+
+Timeout Configuration
+~~~~~~~~~~~~~~~~~~~~~
+
+Use shorter timeouts in tests, longer in chaos:
+
+.. code-block:: yaml
+
+   # Standard tests: smtp-timeout with 5s delay
+   smtp-timeout:
+     environment:
+       - SMTP_TIMEOUT_SECONDS=${SMTP_TIMEOUT:-5}
+
+   # Chaos profile: 30s delay
+   # SMTP_TIMEOUT=30 docker compose up ...
+
+**Bounce polling interval:**
+
+.. code-block:: yaml
+
+   # Fast polling for tests (1 second)
+   mailproxy:
+     environment:
+       - BOUNCE_POLL_INTERVAL=${BOUNCE_POLL_INTERVAL:-1}
+
+
+Additional Test Assertions
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Beyond functional tests, add system invariant checks:
+
+**Idempotency:**
+
+.. code-block:: python
+
+   async def test_run_now_idempotent(api_client, setup_test_tenants):
+       """Multiple run-now calls don't duplicate sends."""
+       # Send one message
+       msg_id = f"idem-{time.time()}"
+       await api_client.post("/messages/add", json={"messages": [...]})
+
+       # Call run-now multiple times
+       await api_client.post("/commands/run-now")
+       await api_client.post("/commands/run-now")
+       await api_client.post("/commands/run-now")
+
+       # Should have exactly 1 email in MailHog
+       messages = await get_mailhog_messages()
+       matching = [m for m in messages if msg_id in str(m)]
+       assert len(matching) == 1, "Duplicate sends detected!"
+
+**No cross-tenant data:**
+
+.. code-block:: python
+
+   async def test_tenant_isolation_invariant(api_client, setup_test_tenants):
+       """Verify no data leaks between tenants."""
+       # Get all messages for tenant 1
+       resp1 = await api_client.get("/messages", params={"tenant_id": "test-tenant-1"})
+
+       # Get all messages for tenant 2
+       resp2 = await api_client.get("/messages", params={"tenant_id": "test-tenant-2"})
+
+       # Verify no overlap in message IDs
+       ids1 = {m["id"] for m in resp1.json()["messages"]}
+       ids2 = {m["id"] for m in resp2.json()["messages"]}
+       assert ids1.isdisjoint(ids2), "Cross-tenant data detected!"
+
+**Attachment integrity:**
+
+.. code-block:: python
+
+   async def test_attachment_integrity(api_client, minio_client):
+       """Verify uploaded attachments match original."""
+       original_content = b"test content 12345"
+       original_hash = hashlib.sha256(original_content).hexdigest()
+
+       # Send message with attachment
+       # ... (upload happens)
+
+       # Verify in MinIO
+       obj = minio_client.get_object("mail-attachments", "path/to/file")
+       stored_hash = hashlib.sha256(obj.read()).hexdigest()
+
+       assert stored_hash == original_hash, "Attachment corruption detected!"
 
 
 Running the Tests
