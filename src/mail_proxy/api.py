@@ -29,6 +29,7 @@ Example:
 """
 
 import logging
+import secrets
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime
@@ -79,7 +80,7 @@ async def require_token(
     expected = getattr(request.app.state, "api_token", None)
     if expected is None:
         return
-    if not api_token or api_token != expected:
+    if not api_token or not secrets.compare_digest(api_token, expected):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing API token")
 
 auth_dependency = Depends(require_token)
