@@ -317,7 +317,7 @@ class MessageRecord(BaseModel):
     account_id: str | None = None
     batch_code: str | None = None
     deferred_ts: int | None = None
-    sent_ts: int | None = None
+    sent_ts: int | None = Field(default=None, validation_alias="smtp_ts")
     error_ts: int | None = None
     error: str | None = None
     reported_ts: int | None = None
