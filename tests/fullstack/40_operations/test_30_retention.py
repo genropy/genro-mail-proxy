@@ -78,12 +78,9 @@ class TestRetentionCleanup:
         found = [m for m in messages if m.get("id") == msg_id]
         assert len(found) > 0, "Message should exist before cleanup"
 
-        # Trigger cleanup (if cleanup API exists)
-        # Note: This test assumes a cleanup API or scheduled job exists
-        resp = await api_client.post("/commands/cleanup?tenant_id=test-tenant-1")
-        # If cleanup API doesn't exist, skip assertion
-        if resp.status_code == 404:
-            pytest.skip("Cleanup API not implemented")
+        # Trigger cleanup
+        resp = await api_client.post("/commands/cleanup-messages?tenant_id=test-tenant-1", json={})
+        assert resp.status_code == 200, f"Cleanup failed: {resp.text}"
 
         # After cleanup, very old reported messages should be removed
         # (This depends on retention_days configuration)
@@ -129,9 +126,8 @@ class TestRetentionCleanup:
         assert resp.status_code == 200
 
         # Trigger cleanup for tenant-1 only
-        resp = await api_client.post("/commands/cleanup?tenant_id=test-tenant-1")
-        if resp.status_code == 404:
-            pytest.skip("Cleanup API not implemented")
+        resp = await api_client.post("/commands/cleanup-messages?tenant_id=test-tenant-1", json={})
+        assert resp.status_code == 200, f"Cleanup failed: {resp.text}"
 
         # Verify tenant-2 message still exists
         resp = await api_client.get("/messages?tenant_id=test-tenant-2")
@@ -166,9 +162,8 @@ class TestRetentionCleanup:
         # DO NOT dispatch - message stays pending/unreported
 
         # Trigger cleanup
-        resp = await api_client.post("/commands/cleanup?tenant_id=test-tenant-1")
-        if resp.status_code == 404:
-            pytest.skip("Cleanup API not implemented")
+        resp = await api_client.post("/commands/cleanup-messages?tenant_id=test-tenant-1", json={})
+        assert resp.status_code == 200, f"Cleanup failed: {resp.text}"
 
         # Verify message still exists (unreported messages preserved)
         resp = await api_client.get("/messages?tenant_id=test-tenant-1")
@@ -214,9 +209,8 @@ class TestRetentionCleanup:
         assert len(found) > 0, "Message should exist"
 
         # Trigger cleanup
-        resp = await api_client.post("/commands/cleanup?tenant_id=test-tenant-1")
-        if resp.status_code == 404:
-            pytest.skip("Cleanup API not implemented")
+        resp = await api_client.post("/commands/cleanup-messages?tenant_id=test-tenant-1", json={})
+        assert resp.status_code == 200, f"Cleanup failed: {resp.text}"
 
         # Verify message still exists
         resp = await api_client.get("/messages?tenant_id=test-tenant-1")
