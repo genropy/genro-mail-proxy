@@ -64,22 +64,39 @@ class MessageEventTable(Table):
             The ID of the inserted event.
         """
         metadata_json = json.dumps(metadata) if metadata else None
-        await self.execute(
-            """
-            INSERT INTO message_events (message_id, event_type, event_ts, description, metadata)
-            VALUES (:message_id, :event_type, :event_ts, :description, :metadata)
-            """,
-            {
-                "message_id": message_id,
-                "event_type": event_type,
-                "event_ts": event_ts,
-                "description": description,
-                "metadata": metadata_json,
-            },
-        )
-        # Get the last inserted ID
-        row = await self.db.adapter.fetch_one("SELECT last_insert_rowid() as id", {})
-        return int(row["id"]) if row else 0
+        params = {
+            "message_id": message_id,
+            "event_type": event_type,
+            "event_ts": event_ts,
+            "description": description,
+            "metadata": metadata_json,
+        }
+
+        # Check if using PostgreSQL (has psycopg pool)
+        is_postgres = hasattr(self.db.adapter, "_pool") and self.db.adapter._pool is not None
+
+        if is_postgres:
+            # PostgreSQL: use RETURNING to get the auto-generated id
+            row = await self.db.adapter.fetch_one(
+                """
+                INSERT INTO message_events (message_id, event_type, event_ts, description, metadata)
+                VALUES (:message_id, :event_type, :event_ts, :description, :metadata)
+                RETURNING id
+                """,
+                params,
+            )
+            return int(row["id"]) if row else 0
+        else:
+            # SQLite: use last_insert_rowid()
+            await self.execute(
+                """
+                INSERT INTO message_events (message_id, event_type, event_ts, description, metadata)
+                VALUES (:message_id, :event_type, :event_ts, :description, :metadata)
+                """,
+                params,
+            )
+            row = await self.db.adapter.fetch_one("SELECT last_insert_rowid() as id", {})
+            return int(row["id"]) if row else 0
 
     async def fetch_unreported(self, limit: int) -> list[dict[str, Any]]:
         """Fetch events that haven't been reported to clients yet.

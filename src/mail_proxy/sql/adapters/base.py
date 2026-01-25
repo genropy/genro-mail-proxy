@@ -24,6 +24,10 @@ class DbAdapter(ABC):
 
     placeholder: str = ":name"  # Override in subclass
 
+    def pk_column(self, name: str) -> str:
+        """Return SQL definition for autoincrement primary key column."""
+        return f'"{name}" INTEGER PRIMARY KEY'
+
     @abstractmethod
     async def connect(self) -> None:
         """Establish database connection."""

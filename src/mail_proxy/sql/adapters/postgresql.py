@@ -20,6 +20,10 @@ class PostgresAdapter(DbAdapter):
 
     placeholder = "%(name)s"
 
+    def pk_column(self, name: str) -> str:
+        """Return SQL definition for autoincrement primary key column (PostgreSQL)."""
+        return f'"{name}" SERIAL PRIMARY KEY'
+
     def __init__(self, dsn: str, pool_size: int = 10):
         self.dsn = dsn
         self.pool_size = pool_size

@@ -76,7 +76,13 @@ class Table:
 
     def create_table_sql(self) -> str:
         """Generate CREATE TABLE IF NOT EXISTS statement."""
-        col_defs = [col.to_sql() for col in self.columns.values()]
+        col_defs = []
+        for col in self.columns.values():
+            if col.primary_key and col.type_ == "INTEGER":
+                # Use adapter's pk_column for autoincrement primary key
+                col_defs.append(self.db.adapter.pk_column(col.name))
+            else:
+                col_defs.append(col.to_sql())
 
         # Add foreign key constraints
         for col in self.columns.values():
