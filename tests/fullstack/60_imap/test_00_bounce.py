@@ -9,6 +9,7 @@ import asyncio
 import time
 
 import pytest
+import pytest_asyncio
 
 httpx = pytest.importorskip("httpx")
 
@@ -199,7 +200,7 @@ class TestBounceEndToEnd:
     5. Bounce is reported to client
     """
 
-    @pytest.fixture
+    @pytest_asyncio.fixture
     async def setup_bounce_tenant(self, api_client):
         """Setup a tenant configured for bounce detection."""
         # Create bounce-enabled tenant
@@ -278,7 +279,9 @@ class TestBounceEndToEnd:
         parts = list(msg.walk())
         content_types = [p.get_content_type() for p in parts]
         assert "text/plain" in content_types
-        assert "message/delivery-status" in content_types
+        # Accept both message/delivery-status (RFC 3464) and text/delivery-status
+        # (Python email library limitation)
+        assert "message/delivery-status" in content_types or "text/delivery-status" in content_types
 
         # Verify X-Genro-Mail-ID is in the original message headers
         for part in parts:
@@ -304,7 +307,7 @@ class TestBounceEndToEnd:
 
         # Find the delivery-status part and verify it has 4xx code
         for part in msg.walk():
-            if part.get_content_type() == "message/delivery-status":
+            if part.get_content_type() in ("message/delivery-status", "text/delivery-status"):
                 payload = part.get_payload(decode=True)
                 if payload and isinstance(payload, bytes):
                     text = payload.decode("utf-8", errors="replace")
@@ -378,14 +381,14 @@ class TestBounceEndToEnd:
         emails = await wait_for_messages(MAILHOG_TENANT1_API, 1)
         assert len(emails) >= 1
 
-        # Find our email
+        # Find our email (check both header case variants)
         found_email = None
         for email in emails:
             headers = email.get("Content", {}).get("Headers", {})
-            if headers.get("X-Genro-Mail-Id"):
-                mail_id = headers["X-Genro-Mail-Id"]
-                if isinstance(mail_id, list):
-                    mail_id = mail_id[0]
+            # MailHog may use either X-Genro-Mail-Id or X-Genro-Mail-ID
+            mail_id_list = headers.get("X-Genro-Mail-Id") or headers.get("X-Genro-Mail-ID")
+            if mail_id_list:
+                mail_id = mail_id_list[0] if isinstance(mail_id_list, list) else mail_id_list
                 if mail_id == f"track-header-{ts}":
                     found_email = email
                     break

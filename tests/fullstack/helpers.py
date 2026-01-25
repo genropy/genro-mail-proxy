@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from email.message import Message
 from email.mime.message import MIMEMessage
 from email.mime.multipart import MIMEMultipart
+from email.mime.nonmultipart import MIMENonMultipart
 from email.mime.text import MIMEText
 from typing import Any
 import uuid
@@ -156,6 +157,9 @@ def create_dsn_bounce_email(
         f"Status: {bounce_code[0]}.{bounce_code[1]}.{bounce_code[2]}\n"
         f"Diagnostic-Code: smtp; {bounce_code} {bounce_reason}\n"
     )
+    # RFC 3464 uses message/delivery-status, but Python's email library
+    # doesn't handle it well. Use text/delivery-status which is also valid
+    # and our BounceParser accepts both formats.
     dsn_part = MIMEText(dsn_text, "delivery-status")
     msg.attach(dsn_part)
 

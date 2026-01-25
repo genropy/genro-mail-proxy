@@ -75,8 +75,9 @@ class BounceParser:
         for part in msg.walk():
             part_type = part.get_content_type()
 
-            # Parse delivery-status part
-            if part_type == "message/delivery-status":
+            # Parse delivery-status part (RFC 3464 uses message/delivery-status,
+            # but some MTAs use text/delivery-status - accept both)
+            if part_type in ("message/delivery-status", "text/delivery-status"):
                 payload = part.get_payload()
                 if isinstance(payload, list):
                     for status_part in payload:
@@ -96,7 +97,9 @@ class BounceParser:
                     recipient, bounce_code, bounce_type, bounce_reason = self._extract_dsn_info(payload)
 
             # Extract original message ID from attached original message
-            elif part_type in ("message/rfc822", "text/rfc822-headers"):
+            # RFC 3464 uses message/rfc822 for full message or text/rfc822-headers for headers only
+            # MIMEMessage with "rfc822-headers" produces message/rfc822-headers - accept all variants
+            elif part_type in ("message/rfc822", "message/rfc822-headers", "text/rfc822-headers"):
                 original_id = self._extract_original_id(part)
 
         return BounceInfo(
