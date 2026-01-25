@@ -66,8 +66,10 @@ jobs:
           pip install -e ".[dev,postgresql]"
 
       - name: Run database integration tests
+        env:
+          GMP_DB_PATH: postgresql://test:test@localhost:5432/test
         run: |
-          pytest tests/integration/ -m "db" -v
+          pytest tests/postgres_tests/ -v
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.11'
