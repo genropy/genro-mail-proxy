@@ -11,6 +11,8 @@ Columns migrated from instance_config key-value:
 Columns for bounce detection (EE feature):
     - bounce_enabled: Enable bounce detection
     - bounce_imap_host/port/user/password/folder: IMAP connection
+    - bounce_imap_ssl: Use SSL for IMAP connection (default: True)
+    - bounce_poll_interval: Polling interval in seconds (default: 60)
     - bounce_return_path: Return-Path header for outgoing emails
     - bounce_last_uid: Last processed UID (IMAP sync state)
     - bounce_last_sync: Last sync timestamp
@@ -19,6 +21,7 @@ Columns for bounce detection (EE feature):
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from ...sql import Integer, String, Table, Timestamp
@@ -45,6 +48,8 @@ class InstanceTable(Table):
         c.column("bounce_imap_user", String)
         c.column("bounce_imap_password", String)
         c.column("bounce_imap_folder", String, default="INBOX")
+        c.column("bounce_imap_ssl", Integer, default=1)  # Default: use SSL
+        c.column("bounce_poll_interval", Integer, default=60)  # Default: 60 seconds
         c.column("bounce_return_path", String)
 
         # Bounce IMAP sync state
@@ -72,7 +77,7 @@ class InstanceTable(Table):
         """Update the singleton instance configuration."""
         await self.ensure_instance()
         await self.update(
-            updates | {"updated_at": "CURRENT_TIMESTAMP"},
+            updates | {"updated_at": datetime.now(timezone.utc)},
             where={"id": 1},
         )
 
@@ -113,6 +118,8 @@ class InstanceTable(Table):
             "imap_user": row.get("bounce_imap_user"),
             "imap_password": row.get("bounce_imap_password"),
             "imap_folder": row.get("bounce_imap_folder") or "INBOX",
+            "imap_ssl": bool(row.get("bounce_imap_ssl", 1)),
+            "poll_interval": row.get("bounce_poll_interval") or 60,
             "return_path": row.get("bounce_return_path"),
             "last_uid": row.get("bounce_last_uid"),
             "last_sync": row.get("bounce_last_sync"),
@@ -128,6 +135,8 @@ class InstanceTable(Table):
         imap_user: str | None = None,
         imap_password: str | None = None,
         imap_folder: str | None = None,
+        imap_ssl: bool | None = None,
+        poll_interval: int | None = None,
         return_path: str | None = None,
     ) -> None:
         """Set bounce detection configuration."""
@@ -144,6 +153,10 @@ class InstanceTable(Table):
             updates["bounce_imap_password"] = imap_password
         if imap_folder is not None:
             updates["bounce_imap_folder"] = imap_folder
+        if imap_ssl is not None:
+            updates["bounce_imap_ssl"] = 1 if imap_ssl else 0
+        if poll_interval is not None:
+            updates["bounce_poll_interval"] = poll_interval
         if return_path is not None:
             updates["bounce_return_path"] = return_path
         if updates:

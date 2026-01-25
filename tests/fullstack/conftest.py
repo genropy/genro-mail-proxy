@@ -22,6 +22,8 @@ from .helpers import (
     DOVECOT_IMAP_PORT,
     DOVECOT_BOUNCE_USER,
     DOVECOT_BOUNCE_PASS,
+    DOVECOT_POLL_INTERVAL,
+    is_dovecot_available,
 )
 
 # Mark all tests in this package as fullstack
@@ -176,6 +178,43 @@ async def setup_bounce_tenant(api_client):
     assert resp.status_code in (200, 201, 409), resp.text
 
     return {"tenant": tenant_data, "account": account_data}
+
+
+@pytest_asyncio.fixture
+async def configure_bounce_receiver(api_client):
+    """Configure BounceReceiver via API for live testing.
+
+    This fixture:
+    1. Updates instance table with bounce config
+    2. Calls /instance/reload-bounce to apply the config
+    3. Yields the configuration
+    4. Disables bounce on teardown
+    """
+    if not is_dovecot_available():
+        pytest.skip("Dovecot IMAP server not available")
+
+    # Configure bounce via API
+    config = {
+        "bounce_enabled": True,
+        "bounce_imap_host": DOVECOT_IMAP_HOST,
+        "bounce_imap_port": DOVECOT_IMAP_PORT,
+        "bounce_imap_user": DOVECOT_BOUNCE_USER,
+        "bounce_imap_password": DOVECOT_BOUNCE_PASS,
+        "bounce_imap_ssl": False,
+        "bounce_poll_interval": DOVECOT_POLL_INTERVAL,
+    }
+
+    resp = await api_client.put("/instance", json=config)
+    assert resp.status_code == 200, f"Failed to update instance: {resp.text}"
+
+    resp = await api_client.post("/instance/reload-bounce")
+    assert resp.status_code == 200, f"Failed to reload bounce: {resp.text}"
+
+    yield config
+
+    # Teardown: disable bounce
+    await api_client.put("/instance", json={"bounce_enabled": False})
+    await api_client.post("/instance/reload-bounce")
 
 
 # ============================================

@@ -42,6 +42,19 @@ DOVECOT_IMAP_HOST = "localhost"
 DOVECOT_IMAP_PORT = 10143  # Non-SSL IMAP
 DOVECOT_BOUNCE_USER = "bounces@localhost"
 DOVECOT_BOUNCE_PASS = "bouncepass"
+DOVECOT_POLL_INTERVAL = 2  # Fast polling for tests
+
+
+def is_dovecot_available() -> bool:
+    """Check if Dovecot IMAP server is available."""
+    try:
+        imap = imaplib.IMAP4(DOVECOT_IMAP_HOST, DOVECOT_IMAP_PORT)
+        imap.login(DOVECOT_BOUNCE_USER, DOVECOT_BOUNCE_PASS)
+        imap.logout()
+        return True
+    except Exception:
+        return False
+
 
 # Error-simulating SMTP servers (Docker network names and external ports)
 SMTP_REJECT_HOST = "smtp-reject"

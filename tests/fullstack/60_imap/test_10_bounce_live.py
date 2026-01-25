@@ -9,27 +9,22 @@ These tests verify the BounceReceiver's live polling functionality:
 - Bounce information included in delivery reports
 - reported_ts updated after bounce detection
 
-NOTE: These tests require BounceReceiver to be running and polling the IMAP
-mailbox. They are marked with bounce_e2e marker and skipped if BounceReceiver
-is not configured (GMP_BOUNCE_ENABLED not set).
+NOTE: These tests configure BounceReceiver via API at runtime. They require
+Dovecot IMAP server to be available (docker compose --profile bounce up).
+If Dovecot is not available, tests are automatically skipped.
 
 To run these tests:
 1. Start Docker with bounce profile: docker compose --profile bounce up -d
-2. Start mailproxy with bounce config:
-   GMP_BOUNCE_ENABLED=true \
-   GMP_BOUNCE_IMAP_HOST=localhost \
-   GMP_BOUNCE_IMAP_PORT=10143 \
-   GMP_BOUNCE_IMAP_USER=bounces@localhost \
-   GMP_BOUNCE_IMAP_PASSWORD=bouncepass \
-   GMP_BOUNCE_POLL_INTERVAL=2 \
-   uvicorn mail_proxy.server:app
+2. Start mailproxy: uvicorn mail_proxy.server:app
 3. Run: pytest tests/fullstack/60_imap/test_10_bounce_live.py -v
+
+The tests will automatically configure bounce detection via PUT /instance
+and POST /instance/reload-bounce.
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 
 import pytest
@@ -44,15 +39,10 @@ from tests.fullstack.helpers import (
     wait_for_bounce,
 )
 
-# Skip all tests in this module if BounceReceiver is not enabled
 pytestmark = [
     pytest.mark.fullstack,
     pytest.mark.asyncio,
     pytest.mark.bounce_e2e,
-    pytest.mark.skipif(
-        not os.environ.get("GMP_BOUNCE_ENABLED"),
-        reason="BounceReceiver not enabled (set GMP_BOUNCE_ENABLED=true)"
-    ),
 ]
 
 
@@ -61,12 +51,12 @@ class TestBounceLivePolling:
 
     These tests require:
     - Dovecot IMAP server running (docker compose --profile bounce up)
-    - BounceReceiver configured in mailproxy service
-    - GMP_BOUNCE_POLL_INTERVAL set to 2 seconds for fast testing
+    - BounceReceiver configured via the configure_bounce_receiver fixture
+    - Poll interval set to 2 seconds for fast testing
     """
 
     async def test_live_hard_bounce_detected_automatically(
-        self, api_client, setup_bounce_tenant, clean_imap
+        self, api_client, setup_bounce_tenant, configure_bounce_receiver, clean_imap
     ):
         """Hard bounce injected into IMAP should be detected automatically.
 
@@ -121,7 +111,7 @@ class TestBounceLivePolling:
                 assert msg.get("bounce_type") == "hard"
 
     async def test_live_soft_bounce_detected(
-        self, api_client, setup_bounce_tenant, clean_imap
+        self, api_client, setup_bounce_tenant, configure_bounce_receiver, clean_imap
     ):
         """Soft bounce should be detected and classified correctly."""
         await clear_mailhog(MAILHOG_TENANT1_API)
@@ -165,7 +155,7 @@ class TestBounceLivePolling:
                 assert msg.get("bounce_type") == "soft"
 
     async def test_bounce_included_in_delivery_report(
-        self, api_client, setup_bounce_tenant, clean_imap
+        self, api_client, setup_bounce_tenant, configure_bounce_receiver, clean_imap
     ):
         """Bounced messages should be included in delivery reports."""
         await clear_mailhog(MAILHOG_TENANT1_API)
@@ -214,7 +204,7 @@ class TestBounceLivePolling:
                 assert msg.get("bounce_type") is not None
 
     async def test_multiple_bounces_processed_in_batch(
-        self, api_client, setup_bounce_tenant, clean_imap
+        self, api_client, setup_bounce_tenant, configure_bounce_receiver, clean_imap
     ):
         """Multiple bounces in IMAP should be processed in a single poll cycle."""
         await clear_mailhog(MAILHOG_TENANT1_API)
@@ -267,7 +257,7 @@ class TestBounceLivePolling:
         assert bounced_count == 3, f"Expected 3 bounced messages, got {bounced_count}"
 
     async def test_imap_message_deleted_after_processing(
-        self, api_client, setup_bounce_tenant, clean_imap
+        self, api_client, setup_bounce_tenant, configure_bounce_receiver, clean_imap
     ):
         """Processed bounce emails should be deleted from IMAP mailbox."""
         await clear_mailhog(MAILHOG_TENANT1_API)

@@ -394,6 +394,8 @@ class InstanceInfo(BaseModel):
     bounce_imap_port: int | None = 993
     bounce_imap_user: str | None = None
     bounce_imap_folder: str | None = "INBOX"
+    bounce_imap_ssl: bool = True
+    bounce_poll_interval: int = 60
     bounce_return_path: str | None = None
     bounce_last_uid: int | None = None
     bounce_last_sync: FlexibleDatetime = None
@@ -412,6 +414,8 @@ class InstanceUpdatePayload(BaseModel):
     bounce_imap_user: str | None = None
     bounce_imap_password: str | None = None
     bounce_imap_folder: str | None = None
+    bounce_imap_ssl: bool | None = None
+    bounce_poll_interval: int | None = None
     bounce_return_path: str | None = None
 
 
@@ -1000,9 +1004,13 @@ def create_app(
             # Instance doesn't exist yet, return defaults
             return InstanceInfo()
         result.pop("ok", None)
-        # Convert bounce_enabled from int to bool
+        # Convert int fields to bool for response
         if "bounce_enabled" in result:
             result["bounce_enabled"] = bool(result["bounce_enabled"])
+        if "bounce_imap_ssl" in result:
+            result["bounce_imap_ssl"] = bool(result["bounce_imap_ssl"])
+        # Remove password from response for security
+        result.pop("bounce_imap_password", None)
         return InstanceInfo(**result)
 
     @api.put("/instance", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
@@ -1024,11 +1032,61 @@ def create_app(
         if not service:
             raise HTTPException(500, "Service not initialized")
         update_data = payload.model_dump(exclude_none=True)
-        # Convert bounce_enabled to int for database
+        # Convert boolean fields to int for database
         if "bounce_enabled" in update_data:
             update_data["bounce_enabled"] = 1 if update_data["bounce_enabled"] else 0
+        if "bounce_imap_ssl" in update_data:
+            update_data["bounce_imap_ssl"] = 1 if update_data["bounce_imap_ssl"] else 0
         result = await service.handle_command("updateInstance", update_data)
         return BasicOkResponse.model_validate(result)
+
+    @api.post("/instance/reload-bounce", response_model=BasicOkResponse, dependencies=[auth_dependency])
+    async def reload_bounce_config():
+        """Reload bounce detection configuration from database.
+
+        Call this after updating bounce settings via PUT /instance to apply
+        changes without restarting the server. This will stop any existing
+        BounceReceiver and start a new one with the updated configuration.
+
+        Returns:
+            BasicOkResponse: Confirmation with ``ok=True``.
+        """
+        if not service:
+            raise HTTPException(500, "Service not initialized")
+
+        # Get updated config from DB
+        bounce_config = await service.db.instance.get_bounce_config()
+
+        if not bounce_config.get("enabled"):
+            # Stop existing bounce receiver if any
+            if hasattr(service, "_bounce_receiver") and service._bounce_receiver:
+                await service._bounce_receiver.stop()
+                service._bounce_receiver = None
+            return BasicOkResponse(ok=True)
+
+        host = bounce_config.get("imap_host")
+        if not host:
+            raise HTTPException(400, "Bounce enabled but imap_host not configured")
+
+        # Stop existing bounce receiver if any
+        if hasattr(service, "_bounce_receiver") and service._bounce_receiver:
+            await service._bounce_receiver.stop()
+            service._bounce_receiver = None
+
+        from .bounce import BounceConfig
+
+        config = BounceConfig(
+            host=host,
+            port=bounce_config.get("imap_port") or 993,
+            user=bounce_config.get("imap_user") or "",
+            password=bounce_config.get("imap_password") or "",
+            use_ssl=bounce_config.get("imap_ssl", True),
+            poll_interval=bounce_config.get("poll_interval") or 60,
+        )
+
+        service.configure_bounce_receiver(config)
+        await service._start_bounce_receiver()
+        return BasicOkResponse(ok=True)
 
     api.include_router(router)
     return api

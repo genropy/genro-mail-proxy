@@ -182,12 +182,13 @@ async def _configure_bounce_from_db() -> None:
         port=bounce_config.get("imap_port") or 993,
         user=bounce_config.get("imap_user") or "",
         password=bounce_config.get("imap_password") or "",
-        use_ssl=True,  # Default to SSL
-        poll_interval=60,  # Default poll interval
+        use_ssl=bounce_config.get("imap_ssl", True),
+        poll_interval=bounce_config.get("poll_interval") or 60,
     )
 
     _logger.info(f"Configuring bounce detection: {config.host}:{config.port}")
     _core.configure_bounce_receiver(config)
+    await _core._start_bounce_receiver()
 
 
 @asynccontextmanager
