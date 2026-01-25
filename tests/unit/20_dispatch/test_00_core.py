@@ -81,6 +81,9 @@ class DummyRateLimiter:
     async def log_send(self, account_id: str):
         self.logged.append(account_id)
 
+    async def release_slot(self, account_id: str):
+        pass
+
 
 class DummyMetrics:
     def __init__(self):

@@ -59,6 +59,9 @@ class DummyRateLimiter:
     async def log_send(self, account_id: str):
         pass
 
+    async def release_slot(self, account_id: str):
+        pass
+
 
 class DummyMetrics:
     """Dummy metrics for testing."""
