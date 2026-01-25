@@ -287,8 +287,10 @@ async def test_tenant_update_json_fields(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_fetch_reports_includes_tenant_id(tmp_path):
-    """Test that fetch_reports includes tenant_id from account."""
+async def test_events_for_tenant_account(tmp_path):
+    """Test that events can be fetched and tenant context retrieved via account."""
+    import time
+
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
@@ -313,21 +315,28 @@ async def test_fetch_reports_includes_tenant_id(tmp_path):
     }])
 
     # Mark message as sent
-    import time
     sent_ts = int(time.time())
     await db.mark_sent("msg1", sent_ts)
 
-    # Fetch reports
-    reports = await db.fetch_reports(limit=10)
-    assert len(reports) == 1
-    assert reports[0]["id"] == "msg1"
-    assert reports[0]["account_id"] == "acme-main"
-    assert reports[0]["tenant_id"] == "acme"
+    # Fetch unreported events
+    events = await db.fetch_unreported_events(limit=10)
+    assert len(events) == 1
+    assert events[0]["message_id"] == "msg1"
+
+    # Get message and verify tenant association via account
+    msg = await db.get_message("msg1")
+    assert msg["account_id"] == "acme-main"
+
+    # Verify tenant can be retrieved from account
+    tenant = await db.get_tenant_for_account("acme-main")
+    assert tenant["id"] == "acme"
 
 
 @pytest.mark.asyncio
-async def test_fetch_reports_no_tenant(tmp_path):
-    """Test fetch_reports for messages without tenant (backward compatibility)."""
+async def test_events_no_tenant(tmp_path):
+    """Test events for messages without tenant (backward compatibility)."""
+    import time
+
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
@@ -347,19 +356,23 @@ async def test_fetch_reports_no_tenant(tmp_path):
     }])
 
     # Mark message as sent
-    import time
     sent_ts = int(time.time())
     await db.mark_sent("msg1", sent_ts)
 
-    # Fetch reports - tenant_id should be None
-    reports = await db.fetch_reports(limit=10)
-    assert len(reports) == 1
-    assert reports[0]["tenant_id"] is None
+    # Fetch unreported events - tenant_id can be determined via account
+    events = await db.fetch_unreported_events(limit=10)
+    assert len(events) == 1
+
+    # Account has no tenant
+    tenant = await db.get_tenant_for_account("standalone")
+    assert tenant is None
 
 
 @pytest.mark.asyncio
-async def test_fetch_reports_multiple_tenants(tmp_path):
-    """Test fetch_reports groups correctly by tenant."""
+async def test_events_multiple_tenants(tmp_path):
+    """Test events are created for messages from multiple tenants."""
+    import time
+
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
@@ -377,23 +390,31 @@ async def test_fetch_reports_multiple_tenants(tmp_path):
     ])
 
     # Mark all as sent
-    import time
     sent_ts = int(time.time())
     for msg_id in ["msg1", "msg2", "msg3"]:
         await db.mark_sent(msg_id, sent_ts)
 
-    # Fetch reports
-    reports = await db.fetch_reports(limit=10)
-    assert len(reports) == 3
+    # Fetch unreported events
+    events = await db.fetch_unreported_events(limit=10)
+    assert len(events) == 3
 
-    # Group by tenant
-    by_tenant = {}
-    for r in reports:
-        tid = r["tenant_id"]
-        by_tenant.setdefault(tid, []).append(r)
+    # Group events by message_id and verify tenant via account lookup
+    msg_ids = {e["message_id"] for e in events}
+    assert msg_ids == {"msg1", "msg2", "msg3"}
 
-    assert len(by_tenant["tenant1"]) == 2
-    assert len(by_tenant["tenant2"]) == 1
+    # Verify tenant distribution via account lookup
+    tenant1_msgs = []
+    tenant2_msgs = []
+    for e in events:
+        msg = await db.get_message(e["message_id"])
+        tenant = await db.get_tenant_for_account(msg["account_id"])
+        if tenant and tenant["id"] == "tenant1":
+            tenant1_msgs.append(e["message_id"])
+        elif tenant and tenant["id"] == "tenant2":
+            tenant2_msgs.append(e["message_id"])
+
+    assert len(tenant1_msgs) == 2
+    assert len(tenant2_msgs) == 1
 
 
 # ----------------------------------------------------------------- API Key Tests

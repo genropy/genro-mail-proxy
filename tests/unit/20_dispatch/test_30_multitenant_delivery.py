@@ -275,9 +275,9 @@ async def test_process_client_cycle_routes_to_tenants(tmp_path):
         assert ("POST", URL("https://api.tenant1.com/sync")) in m.requests
         assert ("POST", URL("https://api.tenant2.com/sync")) in m.requests
 
-        # Verify messages are marked as reported
-        messages = await core.db.list_messages()
-        assert all(msg["reported_ts"] is not None for msg in messages)
+        # Verify events are marked as reported
+        unreported = await core.db.fetch_unreported_events(limit=10)
+        assert len(unreported) == 0  # All events should be reported
 
 
 @pytest.mark.asyncio
@@ -432,11 +432,12 @@ async def test_process_client_cycle_partial_failure(tmp_path):
 
         await core._process_client_cycle()
 
-        # Success tenant message should be marked as reported
-        messages = await core.db.list_messages()
-        msg_success = next(m for m in messages if m["id"] == "msg-success")
-        msg_fail = next(m for m in messages if m["id"] == "msg-fail")
+        # Success tenant event should be marked as reported
+        success_events = await core.db.get_events_for_message("msg-success")
+        assert len(success_events) == 1
+        assert success_events[0]["reported_ts"] is not None
 
-        assert msg_success["reported_ts"] is not None
-        # Failed tenant message should NOT be marked (will retry next cycle)
-        assert msg_fail["reported_ts"] is None
+        # Failed tenant event should NOT be marked (will retry next cycle)
+        fail_events = await core.db.get_events_for_message("msg-fail")
+        assert len(fail_events) == 1
+        assert fail_events[0]["reported_ts"] is None

@@ -1,5 +1,5 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
-"""Tests for bounce detection integration with delivery reports."""
+"""Tests for bounce detection integration with event-based reporting."""
 
 import pytest
 
@@ -7,8 +7,8 @@ from mail_proxy.mailproxy_db import MailProxyDb
 
 
 @pytest.mark.asyncio
-async def test_fetch_reports_includes_bounce_fields(tmp_path):
-    """Test that fetch_reports includes bounce fields when present."""
+async def test_mark_bounced_creates_event(tmp_path):
+    """Test that mark_bounced creates a bounce event in message_events table."""
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
@@ -26,21 +26,35 @@ async def test_fetch_reports_includes_bounce_fields(tmp_path):
         "payload": {"from": "a@b.com", "to": ["c@d.com"], "subject": "Test", "body": "Hi"},
     }])
 
-    # Mark as sent
+    # Mark as sent first
     sent_ts = 1700000000
     await db.mark_sent("msg1", sent_ts)
 
-    # Fetch reports - no bounce yet
-    reports = await db.fetch_reports(limit=10)
-    assert len(reports) == 1
-    assert reports[0]["id"] == "msg1"
-    assert reports[0].get("bounce_type") is None
-    assert reports[0].get("bounce_ts") is None
+    # Mark as bounced
+    bounce_ts = 1700000100
+    await db.mark_bounced(
+        "msg1",
+        bounce_type="hard",
+        bounce_code="550",
+        bounce_reason="User unknown",
+        bounce_ts=bounce_ts,
+    )
+
+    # Verify bounce event was created
+    events = await db.get_events_for_message("msg1")
+    bounce_events = [e for e in events if e["event_type"] == "bounce"]
+    assert len(bounce_events) == 1
+
+    bounce_event = bounce_events[0]
+    assert bounce_event["event_ts"] == bounce_ts
+    assert bounce_event["description"] == "User unknown"
+    assert bounce_event["metadata"]["bounce_type"] == "hard"
+    assert bounce_event["metadata"]["bounce_code"] == "550"
 
 
 @pytest.mark.asyncio
-async def test_fetch_reports_includes_bounced_messages(tmp_path):
-    """Test that fetch_reports returns messages with bounce even if already reported."""
+async def test_bounce_event_in_unreported_events(tmp_path):
+    """Test that bounce events are returned by fetch_unreported_events."""
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
@@ -52,101 +66,34 @@ async def test_fetch_reports_includes_bounced_messages(tmp_path):
         "payload": {"from": "a@b.com", "to": ["c@d.com"], "subject": "Test", "body": "Hi"},
     }])
 
-    # Mark as sent and reported
+    # Mark as sent
     sent_ts = 1700000000
     await db.mark_sent("msg1", sent_ts)
-    await db.mark_reported(["msg1"], sent_ts + 10)
 
-    # Verify message is not in reports anymore (already reported)
-    reports = await db.fetch_reports(limit=10)
-    assert len(reports) == 0
+    # Mark sent event as reported
+    events = await db.fetch_unreported_events(limit=10)
+    sent_event_ids = [e["event_id"] for e in events if e["event_type"] == "sent"]
+    await db.mark_events_reported(sent_event_ids, sent_ts + 10)
 
-    # Now simulate a bounce detection - update message with bounce info
-    await db.adapter.execute(
-        """
-        UPDATE messages SET
-            bounce_type = :bounce_type,
-            bounce_code = :bounce_code,
-            bounce_reason = :bounce_reason,
-            bounce_ts = CURRENT_TIMESTAMP
-        WHERE id = :id
-        """,
-        {
-            "id": "msg1",
-            "bounce_type": "hard",
-            "bounce_code": "550",
-            "bounce_reason": "User unknown",
-        },
+    # Mark as bounced
+    await db.mark_bounced(
+        "msg1",
+        bounce_type="hard",
+        bounce_code="550",
+        bounce_reason="User unknown",
+        bounce_ts=1700000200,
     )
 
-    # Message should appear again because bounce_reported_ts is NULL
-    reports = await db.fetch_reports(limit=10)
-    assert len(reports) == 1
-    assert reports[0]["id"] == "msg1"
-    assert reports[0]["bounce_type"] == "hard"
-    assert reports[0]["bounce_code"] == "550"
-    assert reports[0]["bounce_reason"] == "User unknown"
-    assert reports[0]["bounce_ts"] is not None
-    assert reports[0]["bounce_reported_ts"] is None
+    # Bounce event should be in unreported events
+    unreported = await db.fetch_unreported_events(limit=10)
+    assert len(unreported) == 1
+    assert unreported[0]["event_type"] == "bounce"
+    assert unreported[0]["message_id"] == "msg1"
 
 
 @pytest.mark.asyncio
-async def test_mark_reported_with_bounce_ids(tmp_path):
-    """Test that mark_reported can separately track bounce reporting."""
-    db = MailProxyDb(str(tmp_path / "test.db"))
-    await db.init_db()
-
-    # Create account and messages
-    await db.add_account({"id": "acc1", "host": "smtp.example.com", "port": 587})
-    await db.insert_messages([
-        {
-            "id": "msg1",
-            "account_id": "acc1",
-            "payload": {"from": "a@b.com", "to": ["c@d.com"], "subject": "Test1", "body": "Hi"},
-        },
-        {
-            "id": "msg2",
-            "account_id": "acc1",
-            "payload": {"from": "a@b.com", "to": ["e@f.com"], "subject": "Test2", "body": "Hi"},
-        },
-    ])
-
-    # Mark both as sent
-    sent_ts = 1700000000
-    await db.mark_sent("msg1", sent_ts)
-    await db.mark_sent("msg2", sent_ts)
-
-    # Report msg1 as sent, msg2 has bounce
-    await db.adapter.execute(
-        """
-        UPDATE messages SET
-            bounce_type = 'hard',
-            bounce_code = '550',
-            bounce_reason = 'User unknown',
-            bounce_ts = CURRENT_TIMESTAMP
-        WHERE id = 'msg2'
-        """,
-        {},
-    )
-
-    # Mark reported - msg1 is new report, msg2 has bounce
-    reported_ts = sent_ts + 100
-    await db.mark_reported(["msg1"], reported_ts)  # new delivery reports
-    await db.mark_bounce_reported(["msg2"], reported_ts)  # bounce notifications
-
-    # Check that msg1 has reported_ts set
-    msg1 = await db.get_message("msg1")
-    assert msg1["reported_ts"] == reported_ts
-
-    # Check that msg2 has bounce_reported_ts set but NOT reported_ts
-    # (it wasn't in the main message_ids list)
-    msg2 = await db.get_message("msg2")
-    assert msg2["bounce_reported_ts"] == reported_ts
-
-
-@pytest.mark.asyncio
-async def test_bounce_not_in_reports_after_bounce_reported(tmp_path):
-    """Test that bounce messages disappear from reports after bounce_reported_ts is set."""
+async def test_mark_bounce_reported(tmp_path):
+    """Test that bounce events can be marked as reported."""
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
@@ -158,39 +105,75 @@ async def test_bounce_not_in_reports_after_bounce_reported(tmp_path):
         "payload": {"from": "a@b.com", "to": ["c@d.com"], "subject": "Test", "body": "Hi"},
     }])
 
-    # Mark as sent, reported, then bounced
+    # Mark as sent and reported
     sent_ts = 1700000000
     await db.mark_sent("msg1", sent_ts)
-    await db.mark_reported(["msg1"], sent_ts + 10)
+
+    events = await db.fetch_unreported_events(limit=10)
+    sent_event_ids = [e["event_id"] for e in events if e["event_type"] == "sent"]
+    await db.mark_events_reported(sent_event_ids, sent_ts + 10)
 
     # Add bounce
-    await db.adapter.execute(
-        """
-        UPDATE messages SET
-            bounce_type = 'soft',
-            bounce_code = '421',
-            bounce_reason = 'Try again later',
-            bounce_ts = CURRENT_TIMESTAMP
-        WHERE id = 'msg1'
-        """,
-        {},
+    await db.mark_bounced(
+        "msg1",
+        bounce_type="soft",
+        bounce_code="421",
+        bounce_reason="Try again later",
+        bounce_ts=1700000200,
     )
 
-    # Should be in reports (bounce not yet reported)
-    reports = await db.fetch_reports(limit=10)
-    assert len(reports) == 1
+    # Should have one unreported event (the bounce)
+    unreported = await db.fetch_unreported_events(limit=10)
+    assert len(unreported) == 1
+    bounce_event_id = unreported[0]["event_id"]
 
     # Mark bounce as reported
-    await db.mark_bounce_reported(["msg1"], sent_ts + 20)
+    reported_ts = 1700000300
+    await db.mark_events_reported([bounce_event_id], reported_ts)
 
-    # Should NOT be in reports anymore
-    reports = await db.fetch_reports(limit=10)
-    assert len(reports) == 0
+    # No more unreported events
+    unreported = await db.fetch_unreported_events(limit=10)
+    assert len(unreported) == 0
 
 
 @pytest.mark.asyncio
-async def test_fetch_reports_both_new_and_bounce(tmp_path):
-    """Test fetch_reports returns both new messages and bounce updates."""
+async def test_multiple_events_for_same_message(tmp_path):
+    """Test that a message can have multiple events (sent + bounce)."""
+    db = MailProxyDb(str(tmp_path / "test.db"))
+    await db.init_db()
+
+    # Setup
+    await db.add_account({"id": "acc1", "host": "smtp.example.com", "port": 587})
+    await db.insert_messages([{
+        "id": "msg1",
+        "account_id": "acc1",
+        "payload": {"from": "a@b.com", "to": ["c@d.com"], "subject": "Test", "body": "Hi"},
+    }])
+
+    # Mark as sent
+    sent_ts = 1700000000
+    await db.mark_sent("msg1", sent_ts)
+
+    # Mark as bounced
+    await db.mark_bounced(
+        "msg1",
+        bounce_type="hard",
+        bounce_code="550",
+        bounce_reason="User unknown",
+        bounce_ts=1700000200,
+    )
+
+    # Should have 2 events for the message
+    events = await db.get_events_for_message("msg1")
+    assert len(events) == 2
+
+    event_types = {e["event_type"] for e in events}
+    assert event_types == {"sent", "bounce"}
+
+
+@pytest.mark.asyncio
+async def test_fetch_unreported_includes_both_new_and_bounce(tmp_path):
+    """Test fetch_unreported_events returns both new messages and bounce updates."""
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
@@ -216,27 +199,29 @@ async def test_fetch_reports_both_new_and_bounce(tmp_path):
 
     # msg-bounced: sent, reported, then bounced
     await db.mark_sent("msg-bounced", sent_ts)
-    await db.mark_reported(["msg-bounced"], sent_ts + 10)
-    await db.adapter.execute(
-        """
-        UPDATE messages SET
-            bounce_type = 'hard',
-            bounce_code = '550',
-            bounce_reason = 'User unknown',
-            bounce_ts = CURRENT_TIMESTAMP
-        WHERE id = 'msg-bounced'
-        """,
-        {},
+
+    # Report only the sent event for msg-bounced
+    events = await db.fetch_unreported_events(limit=10)
+    bounced_sent_event = [e for e in events if e["message_id"] == "msg-bounced"][0]
+    await db.mark_events_reported([bounced_sent_event["event_id"]], sent_ts + 10)
+
+    # Add bounce to msg-bounced
+    await db.mark_bounced(
+        "msg-bounced",
+        bounce_type="hard",
+        bounce_code="550",
+        bounce_reason="User unknown",
+        bounce_ts=1700000200,
     )
 
-    # Both should be in reports
-    reports = await db.fetch_reports(limit=10)
-    assert len(reports) == 2
+    # Both should be in unreported events
+    unreported = await db.fetch_unreported_events(limit=10)
+    assert len(unreported) == 2
 
-    ids = {r["id"] for r in reports}
-    assert ids == {"msg-new", "msg-bounced"}
+    message_ids = {e["message_id"] for e in unreported}
+    assert message_ids == {"msg-new", "msg-bounced"}
 
-    # Find the bounced one and verify fields
-    bounced = next(r for r in reports if r["id"] == "msg-bounced")
-    assert bounced["bounce_type"] == "hard"
-    assert bounced["bounce_code"] == "550"
+    # Verify event types
+    event_by_msg = {e["message_id"]: e for e in unreported}
+    assert event_by_msg["msg-new"]["event_type"] == "sent"
+    assert event_by_msg["msg-bounced"]["event_type"] == "bounce"

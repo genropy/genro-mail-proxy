@@ -138,10 +138,10 @@ class MessageEventTable(Table):
         """Get all events for a specific message, ordered chronologically."""
         rows = await self.db.adapter.fetch_all(
             """
-            SELECT id, message_id, event_type, event_ts, description, metadata, reported_ts
+            SELECT id as event_id, message_id, event_type, event_ts, description, metadata, reported_ts
             FROM message_events
             WHERE message_id = :message_id
-            ORDER BY event_ts ASC, id ASC
+            ORDER BY event_ts ASC, event_id ASC
             """,
             {"message_id": message_id},
         )
@@ -172,42 +172,6 @@ class MessageEventTable(Table):
         )
         return int(row["cnt"]) if row else 0
 
-    async def delete_for_reported_messages_before(self, threshold_ts: int) -> int:
-        """Delete events for messages that will be removed by retention.
-
-        This should be called BEFORE deleting the messages themselves.
-        """
-        return await self.execute(
-            """
-            DELETE FROM message_events
-            WHERE message_id IN (
-                SELECT id FROM messages
-                WHERE reported_ts IS NOT NULL
-                  AND reported_ts < :threshold_ts
-                  AND (sent_ts IS NOT NULL OR error_ts IS NOT NULL)
-            )
-            """,
-            {"threshold_ts": threshold_ts},
-        )
-
-    async def delete_for_reported_messages_before_tenant(
-        self, threshold_ts: int, tenant_id: str
-    ) -> int:
-        """Delete events for messages that will be removed by tenant retention."""
-        return await self.execute(
-            """
-            DELETE FROM message_events
-            WHERE message_id IN (
-                SELECT m.id FROM messages m
-                JOIN accounts a ON m.account_id = a.id
-                WHERE a.tenant_id = :tenant_id
-                  AND m.reported_ts IS NOT NULL
-                  AND m.reported_ts < :threshold_ts
-                  AND (m.sent_ts IS NOT NULL OR m.error_ts IS NOT NULL)
-            )
-            """,
-            {"threshold_ts": threshold_ts, "tenant_id": tenant_id},
-        )
 
 
 __all__ = ["MessageEventTable"]

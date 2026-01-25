@@ -197,11 +197,14 @@ async def test_full_roundtrip_single_tenant(tmp_path, smtp_server, smtp_handler)
     assert "customer@example.com" in msg["to"]
     assert "Welcome to ACME" in msg["data"]
 
-    # Verify: Message marked as sent but not reported yet
+    # Verify: Message marked as processed (smtp_ts set), event not yet reported
     messages = await core.db.list_messages()
     assert len(messages) == 1
-    assert messages[0]["sent_ts"] is not None
-    assert messages[0]["reported_ts"] is None
+    assert messages[0]["smtp_ts"] is not None
+    # Event should exist but not be reported yet
+    events = await core.db.get_events_for_message("acme-msg-001")
+    assert len(events) == 1
+    assert events[0]["reported_ts"] is None
 
     # 5. Process client cycle - delivery report should be sent to tenant
     with aioresponses() as m:
@@ -230,10 +233,10 @@ async def test_full_roundtrip_single_tenant(tmp_path, smtp_server, smtp_handler)
         assert report["id"] == "acme-msg-001"
         assert report["sent_ts"] is not None
 
-    # 6. Verify: Message is now marked as reported
-    messages = await core.db.list_messages()
-    assert len(messages) == 1
-    assert messages[0]["reported_ts"] is not None
+    # 6. Verify: Event is now marked as reported
+    events = await core.db.get_events_for_message("acme-msg-001")
+    assert len(events) == 1
+    assert events[0]["reported_ts"] is not None
 
 
 @pytest.mark.asyncio
@@ -326,9 +329,9 @@ async def test_full_roundtrip_multi_tenant(tmp_path, smtp_server, smtp_handler):
         assert beta_req.kwargs["auth"] is not None
         assert beta_req.kwargs["auth"].login == "beta"
 
-    # All messages should be marked as reported
-    messages = await core.db.list_messages()
-    assert all(msg["reported_ts"] is not None for msg in messages)
+    # All events should be marked as reported
+    unreported = await core.db.fetch_unreported_events(limit=10)
+    assert len(unreported) == 0
 
 
 @pytest.mark.asyncio
@@ -388,12 +391,16 @@ async def test_roundtrip_with_smtp_error(tmp_path, smtp_server, smtp_handler):
     smtp_handler.reject_next = True
     await core._process_smtp_cycle()
 
-    # Message should be marked with error
+    # Message should be marked as processed (permanent error)
     messages = await core.db.list_messages()
     assert len(messages) == 1
-    assert messages[0]["error_ts"] is not None
-    assert messages[0]["error"] is not None
-    assert "550" in messages[0]["error"] or "User not found" in messages[0]["error"]
+    assert messages[0]["smtp_ts"] is not None
+
+    # Error event should be recorded
+    events = await core.db.get_events_for_message("error-msg-001")
+    error_events = [e for e in events if e["event_type"] == "error"]
+    assert len(error_events) == 1
+    assert "550" in error_events[0]["description"] or "User not found" in error_events[0]["description"]
 
     # Process client cycle - error report should be sent
     with aioresponses() as m:
@@ -457,10 +464,10 @@ async def test_roundtrip_tenant_sync_failure_retry(tmp_path, smtp_server, smtp_h
 
         await core._process_client_cycle()
 
-    # Message should NOT be marked as reported (will retry)
-    messages = await core.db.list_messages()
-    assert messages[0]["sent_ts"] is not None
-    assert messages[0]["reported_ts"] is None  # Not reported due to error
+    # Event should NOT be marked as reported (will retry)
+    events = await core.db.get_events_for_message("flaky-msg-001")
+    assert len(events) == 1
+    assert events[0]["reported_ts"] is None  # Not reported due to error
 
     # Second client cycle - tenant recovers
     with aioresponses() as m:
@@ -468,9 +475,9 @@ async def test_roundtrip_tenant_sync_failure_retry(tmp_path, smtp_server, smtp_h
 
         await core._process_client_cycle()
 
-    # Now message should be marked as reported
-    messages = await core.db.list_messages()
-    assert messages[0]["reported_ts"] is not None
+    # Now event should be marked as reported
+    events = await core.db.get_events_for_message("flaky-msg-001")
+    assert events[0]["reported_ts"] is not None
 
 
 @pytest.mark.asyncio
@@ -578,6 +585,6 @@ async def test_roundtrip_batch_messages(tmp_path, smtp_server, smtp_handler):
         # All 5 messages should be in the delivery report
         assert len(payload["delivery_report"]) == 5
 
-    # All should be marked as reported
-    messages = await core.db.list_messages()
-    assert all(msg["reported_ts"] is not None for msg in messages)
+    # All events should be marked as reported
+    unreported = await core.db.fetch_unreported_events(limit=10)
+    assert len(unreported) == 0

@@ -215,19 +215,25 @@ async def test_add_messages_and_dispatch(tmp_path):
     # Message sent and logged
     assert len(core.pool.smtp.sent) == 1
     assert core.metrics.sent_accounts == ["acc"]
-    # Message stored with sent_ts
+    # Message stored with smtp_ts (processed)
     messages = await core.db.list_messages()
-    assert messages[0]["sent_ts"] is not None
+    assert messages[0]["smtp_ts"] is not None
 
-    # Delivery report cycle marks message as reported
+    # Delivery report cycle marks events as reported
     await core._process_client_cycle()
     assert core.rate_limiter.logged == ["acc"]
-    reported = await core.db.list_messages()
-    assert reported[0]["reported_ts"] is not None
 
-    # Retention removes the message after threshold
+    # Events should be marked as reported
+    unreported = await core.db.fetch_unreported_events(limit=10)
+    assert len(unreported) == 0
+
+    # Retention removes the message after threshold (using event-based cleanup)
+    # Mark events as reported with old timestamp
     past_ts = core._utc_now_epoch() - (core._report_retention_seconds + 10)
-    await core.db.mark_reported(["msg1"], past_ts)
+    events = await core.db.get_events_for_message("msg1")
+    event_ids = [e["event_id"] for e in events]
+    await core.db.mark_events_reported(event_ids, past_ts)
+
     await core._apply_retention()
     assert await core.db.list_messages() == []
 
@@ -366,7 +372,8 @@ async def test_send_failure_sets_error(tmp_path):
     messages = await core.db.list_messages()
 
     # RuntimeError("boom") is classified as temporary, so message should be deferred
-    assert messages[0]["error_ts"] is None, "Temporary errors should not set error_ts"
+    # smtp_ts should be NULL (message back in pending state for retry)
+    assert messages[0]["smtp_ts"] is None, "Temporary errors should reset smtp_ts to NULL"
     assert messages[0]["deferred_ts"] is not None, "Temporary errors should defer message"
 
     # Check that retry_count was incremented in payload
@@ -407,18 +414,23 @@ async def test_temporary_error_retry_exhaustion(tmp_path):
         messages = await core.db.list_messages()
 
         if attempt < 3:
-            # Should be deferred for retries
+            # Should be deferred for retries - smtp_ts is NULL (back in pending state)
             assert processed, f"Attempt {attempt}: should have processed a message"
-            assert messages[0]["error_ts"] is None, f"Attempt {attempt}: should not have error_ts"
+            assert messages[0]["smtp_ts"] is None, f"Attempt {attempt}: should not have smtp_ts (pending for retry)"
             assert messages[0]["deferred_ts"] is not None, f"Attempt {attempt}: should have deferred_ts, got {messages[0]}"
             # Verify retry count
             msg_payload = messages[0]["message"]
             assert msg_payload.get("retry_count", 0) == attempt + 1, f"Attempt {attempt}: expected retry_count {attempt+1}, got {msg_payload.get('retry_count', 0)}"
         else:
-            # After max retries, should be marked as error
+            # After max retries, should be marked as error (smtp_ts is set)
             assert processed, "Final attempt should have processed the message"
-            assert messages[0]["error_ts"] is not None, "Should have error_ts after max retries"
-            assert "Max retries" in messages[0]["error"], f"Error should mention max retries, got: {messages[0]['error']}"
+            assert messages[0]["smtp_ts"] is not None, "Should have smtp_ts after max retries (permanently failed)"
+
+            # Verify error event was created
+            events = await core.db.get_events_for_message("msg-retry-exhausted")
+            error_events = [e for e in events if e["event_type"] == "error"]
+            assert len(error_events) == 1, "Should have error event after max retries"
+            assert "Max retries" in error_events[0]["description"], f"Error should mention max retries, got: {error_events[0]['description']}"
             break
 
 
@@ -451,9 +463,15 @@ async def test_permanent_error_no_retry(tmp_path):
     messages = await core.db.list_messages()
 
     # 5xx errors should be marked as permanent errors immediately
-    assert messages[0]["error_ts"] is not None
+    # smtp_ts is set (message processed) and deferred_ts is NULL (not retrying)
+    assert messages[0]["smtp_ts"] is not None
     assert messages[0]["deferred_ts"] is None
-    assert "550" in messages[0]["error"]
+
+    # Verify error event was created with SMTP code
+    events = await core.db.get_events_for_message("msg-permanent")
+    error_events = [e for e in events if e["event_type"] == "error"]
+    assert len(error_events) == 1
+    assert "550" in error_events[0]["description"]
     assert core.metrics.error_accounts == ["acc"]
 
 
@@ -606,9 +624,11 @@ async def test_cleanup_messages_command(tmp_path):
     await core.handle_command("addMessages", payload)
     await core._process_smtp_cycle()
 
-    # Mark as reported (artificially old)
+    # Mark events as reported (artificially old)
     old_ts = core._utc_now_epoch() - 10000
-    await core.db.mark_reported(["msg-cleanup"], old_ts)
+    events = await core.db.get_events_for_message("msg-cleanup")
+    event_ids = [e["event_id"] for e in events]
+    await core.db.mark_events_reported(event_ids, old_ts)
 
     # Verify message exists
     messages = await core.db.list_messages()

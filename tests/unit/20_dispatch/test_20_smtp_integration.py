@@ -185,9 +185,9 @@ async def test_send_email_via_real_smtp(tmp_path, smtp_server, smtp_handler):
     assert "Test Subject" in msg["data"]
     assert "Hello, this is a test email." in msg["data"]
 
-    # Verify message is marked as sent
+    # Verify message is marked as processed (smtp_ts set)
     messages = await core.db.list_messages()
-    assert messages[0]["sent_ts"] is not None
+    assert messages[0]["smtp_ts"] is not None
     assert core.metrics.sent_count == 1
 
 
@@ -267,10 +267,16 @@ async def test_smtp_rejection_marks_error(tmp_path, smtp_server, smtp_handler):
 
     await core._process_smtp_cycle()
 
-    # Message should be marked with error (550 is permanent)
+    # Message should be marked as processed (permanent error)
     messages = await core.db.list_messages()
-    assert messages[0]["error_ts"] is not None
-    assert "550" in messages[0]["error"] or "User unknown" in messages[0]["error"]
+    assert messages[0]["smtp_ts"] is not None  # Processed
+    assert messages[0]["deferred_ts"] is None  # Not retrying
+
+    # Verify error event was recorded
+    events = await core.db.get_events_for_message("msg-reject")
+    error_events = [e for e in events if e["event_type"] == "error"]
+    assert len(error_events) == 1
+    assert "550" in error_events[0]["description"] or "User unknown" in error_events[0]["description"]
     assert core.metrics.error_count == 1
 
 
@@ -298,9 +304,9 @@ async def test_smtp_temporary_error_defers(tmp_path, smtp_server, smtp_handler):
 
     await core._process_smtp_cycle()
 
-    # Message should be deferred, not errored
+    # Message should be deferred, not permanently failed
     messages = await core.db.list_messages()
-    assert messages[0]["error_ts"] is None  # Not permanent error
+    assert messages[0]["smtp_ts"] is None  # Not processed (back in pending state)
     assert messages[0]["deferred_ts"] is not None  # Deferred for retry
 
 
@@ -328,9 +334,9 @@ async def test_send_multiple_messages_batch(tmp_path, smtp_server, smtp_handler)
     assert len(smtp_handler.messages) == 5
     assert core.metrics.sent_count == 5
 
-    # All messages should be marked as sent
+    # All messages should be marked as processed (sent)
     db_messages = await core.db.list_messages()
-    assert all(m["sent_ts"] is not None for m in db_messages)
+    assert all(m["smtp_ts"] is not None for m in db_messages)
 
 
 @pytest.mark.asyncio

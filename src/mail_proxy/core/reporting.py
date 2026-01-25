@@ -3,6 +3,9 @@
 
 This module provides the ReporterMixin class containing all delivery report
 loop logic and client synchronization functionality.
+
+Uses event-based reporting via the message_events table. Each event
+(sent, error, deferred, bounce, pec_*) is recorded and reported to clients.
 """
 
 from __future__ import annotations
@@ -28,6 +31,8 @@ class ReporterMixin:
     - self.metrics: Prometheus metrics
     - self.logger: Logger instance
     - Various configuration attributes (_client_sync_url, etc.)
+
+    Uses event-based reporting via the message_events table.
     """
 
     # Type hints for attributes provided by MailProxy
@@ -53,6 +58,8 @@ class ReporterMixin:
         more messages. When SMTP loop sends messages, it triggers this loop via
         _wake_client_event to reduce delivery report latency. Otherwise, uses a
         5-minute fallback timeout.
+
+        Uses event-based reporting via message_events table.
         """
         first_iteration = True
         fallback_interval = 300  # 5 minutes fallback if no immediate wake-up
@@ -79,173 +86,193 @@ class ReporterMixin:
             await self._wait_for_client_wakeup(interval)
 
     async def _process_client_cycle(self: MailProxy) -> int:
-        """Perform one delivery report cycle, routing to per-tenant endpoints.
+        """Process one delivery report cycle using message_events table.
+
+        Each event (sent, error, deferred, bounce, pec_*) is reported
+        individually to per-tenant endpoints.
 
         Returns:
-            Total number of messages queued by all clients (for intelligent polling).
+            Total number of messages queued by all clients.
         """
         if not self._active:
             return 0
 
-        # Check if run-now was triggered for a specific tenant
         target_tenant_id = self._run_now_tenant_id
-        self._run_now_tenant_id = None  # Reset for next cycle
-
-        # Track total queued messages from all clients
+        self._run_now_tenant_id = None
         total_queued = 0
 
-        reports = await self.db.fetch_reports(self._smtp_batch_size)
-        if not reports:
-            # Trigger sync for tenants with sync URL (even without reports)
-            # This allows the tenant server to send new messages to enqueue
-            if target_tenant_id:
-                # Sync only the specified tenant
-                tenant = await self.db.get_tenant(target_tenant_id)
-                if tenant and tenant.get("active") and get_tenant_sync_url(tenant):
+        # Fetch unreported events instead of messages with status fields
+        events = await self.db.fetch_unreported_events(self._smtp_batch_size)
+
+        if not events:
+            # Sync tenants even without events (allows them to send new messages)
+            total_queued = await self._sync_tenants_without_reports(target_tenant_id)
+            await self._apply_retention()
+            return total_queued
+
+        # Group events by tenant_id
+        events_by_tenant: dict[str | None, list[dict[str, Any]]] = defaultdict(list)
+        for event in events:
+            tenant_id = event.get("tenant_id")
+            events_by_tenant[tenant_id].append(event)
+
+        # Track acknowledged event IDs
+        acked_event_ids: list[int] = []
+
+        # Send events to each tenant's endpoint
+        for tenant_id, tenant_events in events_by_tenant.items():
+            # Convert events to delivery report payloads
+            payloads = self._events_to_payloads(tenant_events)
+
+            try:
+                if tenant_id:
+                    tenant = await self.db.get_tenant(tenant_id)
+                    if tenant and get_tenant_sync_url(tenant):
+                        acked, queued = await self._send_reports_to_tenant(tenant, payloads)
+                        total_queued += queued
+                        # Map acked message IDs back to event IDs
+                        acked_event_ids.extend(
+                            e["event_id"] for e in tenant_events
+                            if e.get("message_id") in acked
+                        )
+                    elif self._client_sync_url:
+                        acked, queued = await self._send_delivery_reports(payloads)
+                        total_queued += queued
+                        acked_event_ids.extend(
+                            e["event_id"] for e in tenant_events
+                            if e.get("message_id") in acked
+                        )
+                    else:
+                        self.logger.warning(
+                            "No sync URL for tenant %s, skipping %d events",
+                            tenant_id, len(tenant_events)
+                        )
+                        continue
+                else:
+                    if self._client_sync_url or self._report_delivery_callable:
+                        acked, queued = await self._send_delivery_reports(payloads)
+                        total_queued += queued
+                        acked_event_ids.extend(
+                            e["event_id"] for e in tenant_events
+                            if e.get("message_id") in acked
+                        )
+                    else:
+                        self.logger.warning(
+                            "No tenant and no global sync URL, skipping %d events",
+                            len(tenant_events)
+                        )
+                        continue
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                target = tenant_id or "global"
+                self.logger.warning(
+                    "Client sync failed for tenant %s: %s", target, exc
+                )
+
+        # Mark acknowledged events as reported
+        if acked_event_ids:
+            reported_ts = self._utc_now_epoch()
+            await self.db.mark_events_reported(acked_event_ids, reported_ts)
+
+        await self._apply_retention()
+        return total_queued
+
+    def _events_to_payloads(
+        self: MailProxy, events: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Convert event records to delivery report payloads.
+
+        The payload format matches what clients expect, maintaining backward
+        compatibility with the legacy field-based system.
+        """
+        payloads: list[dict[str, Any]] = []
+
+        for event in events:
+            event_type = event.get("event_type")
+            msg_id = event.get("message_id")
+            event_ts = event.get("event_ts")
+            description = event.get("description")
+            metadata = event.get("metadata") or {}
+
+            payload: dict[str, Any] = {"id": msg_id}
+
+            if event_type == "sent":
+                payload["sent_ts"] = event_ts
+            elif event_type == "error":
+                payload["error_ts"] = event_ts
+                payload["error"] = description
+            elif event_type == "deferred":
+                payload["deferred_ts"] = event_ts
+                payload["deferred_reason"] = description
+            elif event_type == "bounce":
+                payload["bounce_ts"] = event_ts
+                payload["bounce_type"] = metadata.get("bounce_type")
+                payload["bounce_code"] = metadata.get("bounce_code")
+                payload["bounce_reason"] = description
+            elif event_type.startswith("pec_"):
+                # PEC events: pec_acceptance, pec_delivery, pec_error
+                payload["pec_event"] = event_type
+                payload["pec_ts"] = event_ts
+                if description:
+                    payload["pec_details"] = description
+
+            payloads.append(payload)
+
+        return payloads
+
+    async def _sync_tenants_without_reports(
+        self: MailProxy, target_tenant_id: str | None
+    ) -> int:
+        """Sync tenants even when there are no reports to send.
+
+        This allows tenant servers to push new messages to enqueue.
+        """
+        total_queued = 0
+
+        if target_tenant_id:
+            tenant = await self.db.get_tenant(target_tenant_id)
+            if tenant and tenant.get("active") and get_tenant_sync_url(tenant):
+                try:
+                    _, queued = await self._send_reports_to_tenant(tenant, [])
+                    total_queued += queued
+                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    self.logger.warning(
+                        "Client sync for tenant %s not reachable: %s",
+                        target_tenant_id, exc,
+                    )
+        else:
+            tenants = await self.db.list_tenants()
+            for tenant in tenants:
+                if tenant.get("active") and get_tenant_sync_url(tenant):
                     try:
                         _, queued = await self._send_reports_to_tenant(tenant, [])
                         total_queued += queued
                     except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                         self.logger.warning(
                             "Client sync for tenant %s not reachable: %s",
-                            target_tenant_id,
-                            exc,
+                            tenant.get("id"), exc,
                         )
-            else:
-                # Sync all active tenants
-                tenants = await self.db.list_tenants()
-                for tenant in tenants:
-                    if tenant.get("active") and get_tenant_sync_url(tenant):
-                        try:
-                            _, queued = await self._send_reports_to_tenant(tenant, [])
-                            total_queued += queued
-                        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                            self.logger.warning(
-                                "Client sync for tenant %s not reachable: %s",
-                                tenant.get("id"),
-                                exc,
-                            )
-                # Also call global URL if configured (backward compatibility)
-                if self._client_sync_url and self._report_delivery_callable is None:
-                    try:
-                        _, queued = await self._send_delivery_reports([])
-                        total_queued += queued
-                    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                        self.logger.warning(
-                            "Client sync endpoint %s not reachable: %s",
-                            self._client_sync_url,
-                            exc,
-                        )
-            await self._apply_retention()
-            return total_queued
+            if self._client_sync_url and self._report_delivery_callable is None:
+                try:
+                    _, queued = await self._send_delivery_reports([])
+                    total_queued += queued
+                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    self.logger.warning(
+                        "Client sync endpoint %s not reachable: %s",
+                        self._client_sync_url, exc,
+                    )
 
-        # Group reports by tenant_id for per-tenant delivery
-        # Payload minimale: id, sent_ts, error_ts, error + bounce fields
-        reports_by_tenant: dict[str | None, list[dict[str, Any]]] = defaultdict(list)
-        # Track which messages have bounce info to report
-        bounce_message_ids: set[str] = set()
-        # Track which messages need first-time delivery report (reported_ts is NULL)
-        new_report_ids: set[str] = set()
-
-        for item in reports:
-            tenant_id = item.get("tenant_id")
-            msg_id = item.get("id")
-            payload: dict[str, Any] = {
-                "id": msg_id,
-                "sent_ts": item.get("sent_ts"),
-                "error_ts": item.get("error_ts"),
-                "error": item.get("error"),
-            }
-            # Add bounce fields if present
-            if item.get("bounce_ts"):
-                payload["bounce_type"] = item.get("bounce_type")
-                payload["bounce_code"] = item.get("bounce_code")
-                payload["bounce_reason"] = item.get("bounce_reason")
-                payload["bounce_ts"] = item.get("bounce_ts")
-                # Track this message needs bounce_reported_ts update
-                if item.get("bounce_reported_ts") is None:
-                    bounce_message_ids.add(msg_id)
-
-            # Track if this is a new report (not a bounce-only update)
-            # A message needs reported_ts set if it has sent/error but no reported_ts yet
-            if item.get("reported_ts") is None and (
-                item.get("sent_ts") is not None or item.get("error_ts") is not None
-            ):
-                new_report_ids.add(msg_id)
-
-            reports_by_tenant[tenant_id].append(payload)
-
-        # Track acknowledged message IDs (only mark as reported if client confirms)
-        acked_ids: list[str] = []
-        acked_bounce_ids: list[str] = []
-
-        # Send reports to each tenant's endpoint
-        for tenant_id, payloads in reports_by_tenant.items():
-            try:
-                if tenant_id:
-                    # Get tenant configuration and send to tenant-specific endpoint
-                    tenant = await self.db.get_tenant(tenant_id)
-                    if tenant and get_tenant_sync_url(tenant):
-                        acked, queued = await self._send_reports_to_tenant(tenant, payloads)
-                        acked_ids.extend(acked)
-                        total_queued += queued
-                    elif self._client_sync_url:
-                        # Fallback to global URL if tenant has no sync URL
-                        acked, queued = await self._send_delivery_reports(payloads)
-                        acked_ids.extend(acked)
-                        total_queued += queued
-                    else:
-                        self.logger.warning(
-                            "No sync URL for tenant %s and no global fallback, skipping %d reports",
-                            tenant_id, len(payloads)
-                        )
-                        continue
-                else:
-                    # No tenant - use global URL
-                    if self._client_sync_url or self._report_delivery_callable:
-                        acked, queued = await self._send_delivery_reports(payloads)
-                        acked_ids.extend(acked)
-                        total_queued += queued
-                    else:
-                        self.logger.warning(
-                            "No tenant and no global sync URL configured, skipping %d reports",
-                            len(payloads)
-                        )
-                        continue
-            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                target = tenant_id or "global"
-                self.logger.warning(
-                    "Client sync delivery failed for tenant %s: %s", target, exc
-                )
-                # Don't mark these as reported - they'll be retried next cycle
-
-        # Separate acked IDs into new reports vs bounce updates
-        # - new_report_ids: messages that need reported_ts set (first delivery report)
-        # - bounce_message_ids: messages that need bounce_reported_ts set
-        acked_new_ids = [mid for mid in acked_ids if mid in new_report_ids]
-        acked_bounce_ids = [mid for mid in acked_ids if mid in bounce_message_ids]
-
-        # Mark acknowledged messages as reported
-        if acked_new_ids or acked_bounce_ids:
-            reported_ts = self._utc_now_epoch()
-            if acked_new_ids:
-                await self.db.mark_reported(acked_new_ids, reported_ts)
-            if acked_bounce_ids:
-                await self.db.mark_bounce_reported(acked_bounce_ids, reported_ts)
-
-        await self._apply_retention()
         return total_queued
 
     async def _apply_retention(self: MailProxy) -> None:
-        """Remove reported messages older than the configured retention period.
+        """Remove messages with all events reported older than retention period.
 
-        Messages that have been successfully reported to upstream services
-        are deleted after the retention period expires to prevent database growth.
+        A message can be removed when all its events have been reported
+        and the most recent reported_ts is older than threshold.
         """
         if self._report_retention_seconds <= 0:
             return
         threshold = self._utc_now_epoch() - self._report_retention_seconds
-        removed = await self.db.remove_reported_before(threshold)
+        removed = await self.db.remove_fully_reported_before(threshold)
         if removed:
             await self._refresh_queue_gauge()
 

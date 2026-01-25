@@ -33,6 +33,7 @@ async def test_account_crud(tmp_path):
 
 @pytest.mark.asyncio
 async def test_messages_lifecycle(tmp_path):
+    """Test message lifecycle: insert, defer, send, error, and cleanup via events."""
     db = tmp_path / "messages.db"
     p = MailProxyDb(str(db))
     await p.init_db()
@@ -51,20 +52,40 @@ async def test_messages_lifecycle(tmp_path):
     ready = await p.fetch_ready_messages(limit=10, now_ts=now)
     assert len(ready) == 1
     assert ready[0]["id"] == "msg1"
+
+    # Test deferral
     await p.set_deferred("msg1", now + 60)
     assert await p.fetch_ready_messages(limit=10, now_ts=now) == []
     await p.clear_deferred("msg1")
     ready = await p.fetch_ready_messages(limit=10, now_ts=now)
     assert len(ready) == 1
+
+    # Test error - marks message as processed with smtp_ts
     await p.mark_error("msg1", now, "boom")
+    # Message is no longer ready (smtp_ts is set)
     assert await p.fetch_ready_messages(limit=10, now_ts=now + 120) == []
-    reports = await p.fetch_reports(10)
-    assert reports[0]["error"] == "boom"
+
+    # Verify error event was created
+    events = await p.fetch_unreported_events(limit=10)
+    error_events = [e for e in events if e["event_type"] == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["description"] == "boom"
+
+    # Test sent - updates smtp_ts
     await p.mark_sent("msg1", now + 1)
-    reports = await p.fetch_reports(10)
-    assert reports[0]["sent_ts"] == now + 1
-    await p.mark_reported(["msg1"], now + 2)
-    removed = await p.remove_reported_before(now + 10)
+
+    # Verify sent event was created
+    events = await p.fetch_unreported_events(limit=10)
+    sent_events = [e for e in events if e["event_type"] == "sent"]
+    assert len(sent_events) == 1
+    assert sent_events[0]["event_ts"] == now + 1
+
+    # Mark events as reported
+    event_ids = [e["event_id"] for e in events]
+    await p.mark_events_reported(event_ids, now + 2)
+
+    # Retention cleanup via events
+    removed = await p.remove_fully_reported_before(now + 10)
     assert removed == 1
     assert await p.list_messages() == []
 

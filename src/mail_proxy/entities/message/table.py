@@ -11,7 +11,7 @@ from ...sql import Integer, String, Table, Timestamp
 
 
 class MessagesTable(Table):
-    """Messages table: email queue with status tracking.
+    """Messages table: email queue with scheduling.
 
     Fields:
     - id: Message identifier
@@ -19,11 +19,10 @@ class MessagesTable(Table):
     - priority: 1=high, 2=normal, 3=low
     - payload: JSON-encoded message data
     - batch_code: Optional batch/campaign identifier for grouping messages
-    - deferred_ts: Timestamp when message can be retried
-    - sent_ts: Timestamp when message was sent
-    - error_ts: Timestamp when error occurred
-    - error: Error message
-    - reported_ts: Timestamp when delivery status was reported to client
+    - deferred_ts: Timestamp when message can be retried (for retry scheduling)
+    - smtp_ts: Timestamp when SMTP send was attempted (NULL = not yet attempted)
+
+    Delivery status and reporting are tracked in the message_events table.
     """
 
     name = "messages"
@@ -37,22 +36,8 @@ class MessagesTable(Table):
         c.column("batch_code", String)  # Optional batch/campaign identifier
         c.column("created_at", Timestamp, default="CURRENT_TIMESTAMP")
         c.column("updated_at", Timestamp, default="CURRENT_TIMESTAMP")
-        c.column("deferred_ts", Integer)
-        c.column("sent_ts", Integer)
-        c.column("error_ts", Integer)
-        c.column("error", String)
-        c.column("reported_ts", Integer)
-        # EE columns - Bounce Detection
-        c.column("bounce_type", String)  # 'hard', 'soft', NULL
-        c.column("bounce_code", String)  # e.g. '550', '421'
-        c.column("bounce_reason", String)
-        c.column("bounce_ts", Timestamp)
-        c.column("bounce_reported_ts", Integer)  # when client was notified of bounce
-        # EE columns - PEC Support
-        c.column("pec_rda_ts", Timestamp)  # ricevuta di accettazione
-        c.column("pec_rdc_ts", Timestamp)  # ricevuta di consegna
-        c.column("pec_error", String)
-        c.column("pec_error_ts", Timestamp)
+        c.column("deferred_ts", Integer)  # For retry scheduling
+        c.column("smtp_ts", Integer)  # When SMTP send was attempted (NULL = pending)
 
     async def insert_batch(self, entries: Sequence[dict[str, Any]]) -> list[str]:
         """Persist a batch of messages for delivery. Returns list of inserted IDs."""
@@ -78,11 +63,8 @@ class MessagesTable(Table):
                     payload = excluded.payload,
                     batch_code = excluded.batch_code,
                     deferred_ts = excluded.deferred_ts,
-                    error_ts = NULL,
-                    error = NULL,
-                    reported_ts = NULL,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE messages.sent_ts IS NULL
+                WHERE messages.smtp_ts IS NULL
                 """,
                 {
                     "id": msg_id,
@@ -115,8 +97,7 @@ class MessagesTable(Table):
         - Messages without batch_code are only skipped when suspended_batches = "*"
         """
         conditions = [
-            "m.sent_ts IS NULL",
-            "m.error_ts IS NULL",
+            "m.smtp_ts IS NULL",
             "(m.deferred_ts IS NULL OR m.deferred_ts <= :now_ts)",
         ]
         params: dict[str, Any] = {"now_ts": now_ts, "limit": limit}
@@ -164,12 +145,15 @@ class MessagesTable(Table):
         return [self._decode_payload(row) for row in rows]
 
     async def set_deferred(self, msg_id: str, deferred_ts: int) -> None:
-        """Update the deferred timestamp for a message."""
+        """Put message back in queue for retry at deferred_ts.
+
+        Resets smtp_ts to NULL so the message becomes "pending" again.
+        """
         await self.execute(
             """
             UPDATE messages
-            SET deferred_ts = :deferred_ts, updated_at = CURRENT_TIMESTAMP
-            WHERE id = :msg_id AND sent_ts IS NULL AND error_ts IS NULL
+            SET deferred_ts = :deferred_ts, smtp_ts = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE id = :msg_id
             """,
             {"deferred_ts": deferred_ts, "msg_id": msg_id},
         )
@@ -185,28 +169,26 @@ class MessagesTable(Table):
             {"msg_id": msg_id},
         )
 
-    async def mark_sent(self, msg_id: str, sent_ts: int) -> None:
-        """Mark a message as sent."""
+    async def mark_sent(self, msg_id: str, smtp_ts: int) -> None:
+        """Mark a message as processed (SMTP attempted successfully)."""
         await self.execute(
             """
             UPDATE messages
-            SET sent_ts = :sent_ts, error_ts = NULL, error = NULL, deferred_ts = NULL,
-                reported_ts = NULL, updated_at = CURRENT_TIMESTAMP
+            SET smtp_ts = :smtp_ts, deferred_ts = NULL, updated_at = CURRENT_TIMESTAMP
             WHERE id = :msg_id
             """,
-            {"sent_ts": sent_ts, "msg_id": msg_id},
+            {"smtp_ts": smtp_ts, "msg_id": msg_id},
         )
 
-    async def mark_error(self, msg_id: str, error_ts: int, error: str) -> None:
-        """Mark a message as failed."""
+    async def mark_error(self, msg_id: str, smtp_ts: int) -> None:
+        """Mark a message as processed (SMTP attempted with error)."""
         await self.execute(
             """
             UPDATE messages
-            SET error_ts = :error_ts, error = :error, sent_ts = NULL, deferred_ts = NULL,
-                reported_ts = NULL, updated_at = CURRENT_TIMESTAMP
+            SET smtp_ts = :smtp_ts, deferred_ts = NULL, updated_at = CURRENT_TIMESTAMP
             WHERE id = :msg_id
             """,
-            {"error_ts": error_ts, "error": error, "msg_id": msg_id},
+            {"smtp_ts": smtp_ts, "msg_id": msg_id},
         )
 
     async def update_payload(self, msg_id: str, payload: dict[str, Any]) -> None:
@@ -284,14 +266,41 @@ class MessagesTable(Table):
         )
         return {row["id"] for row in rows}
 
-    async def remove_reported_before_for_tenant(
+    async def remove_fully_reported_before(self, threshold_ts: int) -> int:
+        """Delete messages whose all events have been reported before threshold.
+
+        A message can be removed when:
+        - It has been processed (smtp_ts IS NOT NULL)
+        - All its events have been reported
+        - The most recent reported_ts is older than threshold
+
+        Returns:
+            Number of deleted messages.
+        """
+        return await self.execute(
+            """
+            DELETE FROM messages
+            WHERE smtp_ts IS NOT NULL
+              AND id IN (
+                  SELECT m.id FROM messages m
+                  WHERE m.smtp_ts IS NOT NULL
+                    AND NOT EXISTS (
+                        SELECT 1 FROM message_events e
+                        WHERE e.message_id = m.id AND e.reported_ts IS NULL
+                    )
+                    AND (
+                        SELECT MAX(e.reported_ts) FROM message_events e
+                        WHERE e.message_id = m.id
+                    ) < :threshold_ts
+              )
+            """,
+            {"threshold_ts": threshold_ts},
+        )
+
+    async def remove_fully_reported_before_for_tenant(
         self, threshold_ts: int, tenant_id: str
     ) -> int:
-        """Delete reported messages older than threshold_ts for a specific tenant.
-
-        Args:
-            threshold_ts: Unix timestamp threshold.
-            tenant_id: Only delete messages belonging to this tenant.
+        """Delete fully reported messages older than threshold for a tenant.
 
         Returns:
             Number of deleted messages.
@@ -303,129 +312,18 @@ class MessagesTable(Table):
                 SELECT m.id FROM messages m
                 JOIN accounts a ON m.account_id = a.id
                 WHERE a.tenant_id = :tenant_id
-                  AND m.reported_ts IS NOT NULL
-                  AND m.reported_ts < :threshold_ts
-                  AND (m.sent_ts IS NOT NULL OR m.error_ts IS NOT NULL)
+                  AND m.smtp_ts IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM message_events e
+                      WHERE e.message_id = m.id AND e.reported_ts IS NULL
+                  )
+                  AND (
+                      SELECT MAX(e.reported_ts) FROM message_events e
+                      WHERE e.message_id = m.id
+                  ) < :threshold_ts
             )
             """,
             {"threshold_ts": threshold_ts, "tenant_id": tenant_id},
-        )
-
-    async def fetch_reports(self, limit: int) -> list[dict[str, Any]]:
-        """Return messages that need to be reported back to the client.
-
-        Includes:
-        - Messages with sent_ts or error_ts that haven't been reported yet
-        - Messages with bounce_ts that haven't had their bounce reported yet
-          (these may have already been reported as 'sent', but now need a bounce update)
-        """
-        rows = await self.db.adapter.fetch_all(
-            """
-            SELECT m.id, m.account_id, m.priority, m.payload, m.sent_ts, m.error_ts,
-                   m.error, m.deferred_ts, a.tenant_id,
-                   m.bounce_type, m.bounce_code, m.bounce_reason, m.bounce_ts,
-                   m.bounce_reported_ts
-            FROM messages m
-            LEFT JOIN accounts a ON m.account_id = a.id
-            WHERE (
-                -- Case 1: Never reported (standard delivery report)
-                (m.reported_ts IS NULL AND (m.sent_ts IS NOT NULL OR m.error_ts IS NOT NULL))
-                OR
-                -- Case 2: Has bounce but bounce not yet reported to client
-                (m.bounce_ts IS NOT NULL AND m.bounce_reported_ts IS NULL)
-            )
-            ORDER BY m.updated_at ASC, m.id ASC
-            LIMIT :limit
-            """,
-            {"limit": limit},
-        )
-        return [self._decode_payload(row) for row in rows]
-
-    async def mark_reported(
-        self,
-        message_ids: Iterable[str],
-        reported_ts: int,
-    ) -> None:
-        """Set the reported timestamp for the provided messages."""
-        ids = [mid for mid in message_ids if mid]
-        if not ids:
-            return
-        params: dict[str, Any] = {"reported_ts": reported_ts}
-        params.update({f"id_{i}": mid for i, mid in enumerate(ids)})
-        placeholders = ", ".join(f":id_{i}" for i in range(len(ids)))
-        await self.execute(
-            f"""
-            UPDATE messages
-            SET reported_ts = :reported_ts, updated_at = CURRENT_TIMESTAMP
-            WHERE id IN ({placeholders})
-            """,
-            params,
-        )
-
-    async def mark_bounced(
-        self,
-        msg_id: str,
-        bounce_type: str,
-        bounce_code: str | None = None,
-        bounce_reason: str | None = None,
-    ) -> None:
-        """Mark a message as bounced.
-
-        Args:
-            msg_id: Message ID.
-            bounce_type: 'hard' or 'soft'.
-            bounce_code: SMTP error code (e.g. '550', '421').
-            bounce_reason: Human-readable reason.
-        """
-        await self.execute(
-            """
-            UPDATE messages
-            SET bounce_type = :bounce_type,
-                bounce_code = :bounce_code,
-                bounce_reason = :bounce_reason,
-                bounce_ts = CURRENT_TIMESTAMP,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = :msg_id
-            """,
-            {
-                "msg_id": msg_id,
-                "bounce_type": bounce_type,
-                "bounce_code": bounce_code,
-                "bounce_reason": bounce_reason,
-            },
-        )
-
-    async def mark_bounce_reported(
-        self,
-        message_ids: Iterable[str],
-        reported_ts: int,
-    ) -> None:
-        """Set the bounce_reported_ts for messages whose bounce was reported to client."""
-        ids = [mid for mid in message_ids if mid]
-        if not ids:
-            return
-        params: dict[str, Any] = {"bounce_reported_ts": reported_ts}
-        params.update({f"id_{i}": mid for i, mid in enumerate(ids)})
-        placeholders = ", ".join(f":id_{i}" for i in range(len(ids)))
-        await self.execute(
-            f"""
-            UPDATE messages
-            SET bounce_reported_ts = :bounce_reported_ts, updated_at = CURRENT_TIMESTAMP
-            WHERE id IN ({placeholders})
-            """,
-            params,
-        )
-
-    async def remove_reported_before(self, threshold_ts: int) -> int:
-        """Delete reported messages older than threshold_ts. Returns deleted count."""
-        return await self.execute(
-            """
-            DELETE FROM messages
-            WHERE reported_ts IS NOT NULL
-              AND reported_ts < :threshold_ts
-              AND (sent_ts IS NOT NULL OR error_ts IS NOT NULL)
-            """,
-            {"threshold_ts": threshold_ts},
         )
 
     async def list_all(
@@ -444,10 +342,8 @@ class MessagesTable(Table):
         if tenant_id:
             # Join with accounts to filter by tenant_id
             query = """
-                SELECT m.id, m.account_id, m.priority, m.payload, m.batch_code, m.deferred_ts,
-                       m.sent_ts, m.error_ts, m.error, m.reported_ts,
-                       m.bounce_type, m.bounce_code, m.bounce_reason, m.bounce_ts,
-                       m.created_at, m.updated_at
+                SELECT m.id, m.account_id, m.priority, m.payload, m.batch_code,
+                       m.deferred_ts, m.smtp_ts, m.created_at, m.updated_at
                 FROM messages m
                 LEFT JOIN accounts a ON m.account_id = a.id
             """
@@ -455,17 +351,16 @@ class MessagesTable(Table):
             params["tenant_id"] = tenant_id
         else:
             query = """
-                SELECT id, account_id, priority, payload, batch_code, deferred_ts, sent_ts, error_ts,
-                       error, reported_ts, bounce_type, bounce_code, bounce_reason, bounce_ts,
-                       created_at, updated_at
+                SELECT id, account_id, priority, payload, batch_code,
+                       deferred_ts, smtp_ts, created_at, updated_at
                 FROM messages
             """
 
         if active_only:
             if tenant_id:
-                where_clauses.append("m.sent_ts IS NULL AND m.error_ts IS NULL")
+                where_clauses.append("m.smtp_ts IS NULL")
             else:
-                where_clauses.append("sent_ts IS NULL AND error_ts IS NULL")
+                where_clauses.append("smtp_ts IS NULL")
 
         if where_clauses:
             query += " WHERE " + " AND ".join(where_clauses)
@@ -483,7 +378,7 @@ class MessagesTable(Table):
         row = await self.db.adapter.fetch_one(
             """
             SELECT COUNT(*) as cnt FROM messages
-            WHERE sent_ts IS NULL AND error_ts IS NULL
+            WHERE smtp_ts IS NULL
             """
         )
         return int(row["cnt"]) if row else 0
@@ -510,8 +405,7 @@ class MessagesTable(Table):
                 JOIN accounts a ON m.account_id = a.id
                 WHERE a.tenant_id = :tenant_id
                   AND m.batch_code = :batch_code
-                  AND m.sent_ts IS NULL
-                  AND m.error_ts IS NULL
+                  AND m.smtp_ts IS NULL
             """
             params["batch_code"] = batch_code
         else:
@@ -520,8 +414,7 @@ class MessagesTable(Table):
                 FROM messages m
                 JOIN accounts a ON m.account_id = a.id
                 WHERE a.tenant_id = :tenant_id
-                  AND m.sent_ts IS NULL
-                  AND m.error_ts IS NULL
+                  AND m.smtp_ts IS NULL
             """
 
         row = await self.db.adapter.fetch_one(query, params)

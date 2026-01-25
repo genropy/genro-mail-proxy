@@ -708,11 +708,11 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
         threshold = self._utc_now_epoch() - retention
 
         if tenant_id:
-            removed = await self.db.messages.remove_reported_before_for_tenant(
+            removed = await self.db.remove_fully_reported_before_for_tenant(
                 threshold, tenant_id
             )
         else:
-            removed = await self.db.remove_reported_before(threshold)
+            removed = await self.db.remove_fully_reported_before(threshold)
 
         if removed:
             await self._refresh_queue_gauge()
