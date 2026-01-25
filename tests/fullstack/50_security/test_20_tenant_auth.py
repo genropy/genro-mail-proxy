@@ -12,7 +12,6 @@ These tests verify the per-tenant authentication functionality:
 
 from __future__ import annotations
 
-import asyncio
 import time
 
 import httpx
@@ -43,24 +42,27 @@ class TestPerTenantApiKeys:
         """Tenant-specific token should access that tenant's resources.
 
         Flow:
-        1. Create tenant with specific API token
-        2. Use that token to access tenant's messages
-        3. Verify access is granted
+        1. Create tenant
+        2. Generate API key for tenant
+        3. Use that key to access tenant's messages
+        4. Verify access is granted
         """
         ts = int(time.time())
         tenant_id = f"auth-tenant-{ts}"
-        tenant_token = f"tenant-token-{ts}"
 
-        # Create tenant with specific token
+        # Create tenant
         tenant_data = {
             "id": tenant_id,
             "name": f"Auth Test Tenant {ts}",
-            "api_token": tenant_token,  # tenant-specific token
         }
         resp = await api_client.post("/tenant", json=tenant_data)
-        if resp.status_code == 422:
-            pytest.skip("Per-tenant API token not supported in tenant schema")
         assert resp.status_code in (200, 201)
+
+        # Generate API key for tenant
+        resp = await api_client.post(f"/tenant/{tenant_id}/api-key")
+        assert resp.status_code == 200, f"Failed to create API key: {resp.text}"
+        api_key_data = resp.json()
+        tenant_token = api_key_data["api_key"]
 
         # Create account for the tenant
         account_data = {
@@ -75,10 +77,9 @@ class TestPerTenantApiKeys:
 
         # Use tenant-specific token to access resources
         async with httpx.AsyncClient(base_url=MAILPROXY_URL) as client:
-            # Access with tenant token
             resp = await client.get(
                 f"/messages?tenant_id={tenant_id}",
-                headers={"Authorization": f"Bearer {tenant_token}"}
+                headers={"X-API-Token": tenant_token}
             )
             assert resp.status_code == 200, "Tenant token should access own resources"
 
@@ -94,31 +95,32 @@ class TestPerTenantApiKeys:
         """
         ts = int(time.time())
 
-        # Create tenant-1 with token
-        tenant1 = {
-            "id": f"auth-tenant1-{ts}",
+        # Create tenant-1
+        tenant1_id = f"auth-tenant1-{ts}"
+        resp = await api_client.post("/tenant", json={
+            "id": tenant1_id,
             "name": f"Auth Test Tenant 1 - {ts}",
-            "api_token": f"token-tenant1-{ts}",
-        }
-        resp = await api_client.post("/tenant", json=tenant1)
-        if resp.status_code == 422:
-            pytest.skip("Per-tenant API token not supported")
+        })
         assert resp.status_code in (200, 201)
 
-        # Create tenant-2 with different token
-        tenant2 = {
-            "id": f"auth-tenant2-{ts}",
+        # Generate API key for tenant-1
+        resp = await api_client.post(f"/tenant/{tenant1_id}/api-key")
+        assert resp.status_code == 200
+        tenant1_token = resp.json()["api_key"]
+
+        # Create tenant-2
+        tenant2_id = f"auth-tenant2-{ts}"
+        resp = await api_client.post("/tenant", json={
+            "id": tenant2_id,
             "name": f"Auth Test Tenant 2 - {ts}",
-            "api_token": f"token-tenant2-{ts}",
-        }
-        resp = await api_client.post("/tenant", json=tenant2)
+        })
         assert resp.status_code in (200, 201)
 
         # Try to access tenant-2 with tenant-1 token
         async with httpx.AsyncClient(base_url=MAILPROXY_URL) as client:
             resp = await client.get(
-                f"/messages?tenant_id={tenant2['id']}",
-                headers={"Authorization": f"Bearer {tenant1['api_token']}"}
+                f"/messages?tenant_id={tenant2_id}",
+                headers={"X-API-Token": tenant1_token}
             )
             # Should be denied
             assert resp.status_code in (401, 403), \
@@ -134,20 +136,21 @@ class TestPerTenantApiKeys:
         """
         ts = int(time.time())
 
-        # Create tenant with specific token
-        tenant = {
-            "id": f"auth-global-{ts}",
+        # Create tenant with API key
+        tenant_id = f"auth-global-{ts}"
+        resp = await api_client.post("/tenant", json={
+            "id": tenant_id,
             "name": f"Auth Global Test Tenant {ts}",
-            "api_token": f"tenant-specific-{ts}",
-        }
-        resp = await api_client.post("/tenant", json=tenant)
-        if resp.status_code == 422:
-            pytest.skip("Per-tenant API token not supported")
+        })
         assert resp.status_code in (200, 201)
+
+        # Generate tenant-specific key
+        resp = await api_client.post(f"/tenant/{tenant_id}/api-key")
+        assert resp.status_code == 200
 
         # Global token (from GMP_API_TOKEN env var) should still work
         # api_client fixture uses the global token
-        resp = await api_client.get(f"/messages?tenant_id={tenant['id']}")
+        resp = await api_client.get(f"/messages?tenant_id={tenant_id}")
         assert resp.status_code == 200, "Global token should access all tenant resources"
 
     async def test_invalid_token_rejected(
@@ -157,7 +160,7 @@ class TestPerTenantApiKeys:
         async with httpx.AsyncClient(base_url=MAILPROXY_URL) as client:
             resp = await client.get(
                 "/messages?tenant_id=test-tenant-1",
-                headers={"Authorization": "Bearer invalid-token-xyz"}
+                headers={"X-API-Token": "invalid-token-xyz"}
             )
             assert resp.status_code == 401, "Invalid token should be rejected"
 
@@ -175,58 +178,92 @@ class TestPerTenantApiKeys:
         """Tenant should be able to rotate (change) their API token.
 
         Flow:
-        1. Create tenant with token A
-        2. Update tenant to use token B
-        3. Verify token A no longer works
-        4. Verify token B works
+        1. Create tenant and generate key A
+        2. Generate new key B (invalidates A)
+        3. Verify key A no longer works
+        4. Verify key B works
         """
         ts = int(time.time())
+        tenant_id = f"auth-rotate-{ts}"
 
-        token_a = f"token-a-{ts}"
-        token_b = f"token-b-{ts}"
-
-        # Create tenant with token A
-        tenant = {
-            "id": f"auth-rotate-{ts}",
+        # Create tenant
+        resp = await api_client.post("/tenant", json={
+            "id": tenant_id,
             "name": f"Auth Rotate Test {ts}",
-            "api_token": token_a,
-        }
-        resp = await api_client.post("/tenant", json=tenant)
-        if resp.status_code == 422:
-            pytest.skip("Per-tenant API token not supported")
+        })
         assert resp.status_code in (200, 201)
 
-        # Verify token A works
+        # Generate key A
+        resp = await api_client.post(f"/tenant/{tenant_id}/api-key")
+        assert resp.status_code == 200
+        token_a = resp.json()["api_key"]
+
+        # Verify key A works
         async with httpx.AsyncClient(base_url=MAILPROXY_URL) as client:
             resp = await client.get(
-                f"/messages?tenant_id={tenant['id']}",
-                headers={"Authorization": f"Bearer {token_a}"}
+                f"/messages?tenant_id={tenant_id}",
+                headers={"X-API-Token": token_a}
             )
             assert resp.status_code == 200, "Token A should work initially"
 
-        # Rotate to token B (using global token for admin access)
-        resp = await api_client.put(
-            f"/tenant?tenant_id={tenant['id']}",
-            json={"api_token": token_b}
-        )
-        if resp.status_code == 404:
-            pytest.skip("Tenant update API not implemented")
+        # Generate key B (rotates, invalidates A)
+        resp = await api_client.post(f"/tenant/{tenant_id}/api-key")
         assert resp.status_code == 200
+        token_b = resp.json()["api_key"]
 
-        # Verify token A no longer works
+        # Verify key A no longer works
         async with httpx.AsyncClient(base_url=MAILPROXY_URL) as client:
             resp = await client.get(
-                f"/messages?tenant_id={tenant['id']}",
-                headers={"Authorization": f"Bearer {token_a}"}
+                f"/messages?tenant_id={tenant_id}",
+                headers={"X-API-Token": token_a}
             )
             assert resp.status_code in (401, 403), "Old token A should be rejected after rotation"
 
-            # Verify token B works
+            # Verify key B works
             resp = await client.get(
-                f"/messages?tenant_id={tenant['id']}",
-                headers={"Authorization": f"Bearer {token_b}"}
+                f"/messages?tenant_id={tenant_id}",
+                headers={"X-API-Token": token_b}
             )
             assert resp.status_code == 200, "New token B should work after rotation"
+
+    async def test_token_revocation(
+        self, api_client, setup_test_tenants
+    ):
+        """Revoking a token should invalidate it."""
+        ts = int(time.time())
+        tenant_id = f"auth-revoke-{ts}"
+
+        # Create tenant
+        resp = await api_client.post("/tenant", json={
+            "id": tenant_id,
+            "name": f"Auth Revoke Test {ts}",
+        })
+        assert resp.status_code in (200, 201)
+
+        # Generate API key
+        resp = await api_client.post(f"/tenant/{tenant_id}/api-key")
+        assert resp.status_code == 200
+        tenant_token = resp.json()["api_key"]
+
+        # Verify token works
+        async with httpx.AsyncClient(base_url=MAILPROXY_URL) as client:
+            resp = await client.get(
+                f"/messages?tenant_id={tenant_id}",
+                headers={"X-API-Token": tenant_token}
+            )
+            assert resp.status_code == 200, "Token should work before revocation"
+
+        # Revoke the token
+        resp = await api_client.delete(f"/tenant/{tenant_id}/api-key")
+        assert resp.status_code == 200, "Token revocation should succeed"
+
+        # Verify token no longer works
+        async with httpx.AsyncClient(base_url=MAILPROXY_URL) as client:
+            resp = await client.get(
+                f"/messages?tenant_id={tenant_id}",
+                headers={"X-API-Token": tenant_token}
+            )
+            assert resp.status_code == 401, "Revoked token should be rejected"
 
     async def test_tenant_token_scoped_operations(
         self, api_client, setup_test_tenants
@@ -240,21 +277,21 @@ class TestPerTenantApiKeys:
 
         ts = int(time.time())
         tenant_id = f"auth-scope-{ts}"
-        tenant_token = f"scope-token-{ts}"
 
-        # Create tenant with token
-        tenant = {
+        # Create tenant
+        resp = await api_client.post("/tenant", json={
             "id": tenant_id,
             "name": f"Auth Scope Test {ts}",
-            "api_token": tenant_token,
-        }
-        resp = await api_client.post("/tenant", json=tenant)
-        if resp.status_code == 422:
-            pytest.skip("Per-tenant API token not supported")
+        })
         assert resp.status_code in (200, 201)
 
+        # Generate API key
+        resp = await api_client.post(f"/tenant/{tenant_id}/api-key")
+        assert resp.status_code == 200
+        tenant_token = resp.json()["api_key"]
+
         async with httpx.AsyncClient(base_url=MAILPROXY_URL) as client:
-            headers = {"Authorization": f"Bearer {tenant_token}"}
+            headers = {"X-API-Token": tenant_token}
 
             # Should be able to create account in own tenant
             account = {

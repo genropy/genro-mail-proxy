@@ -111,20 +111,38 @@ async def require_token(
 ) -> None:
     """Validate the API token carried in the ``X-API-Token`` header.
 
-    For endpoints without tenant_id, verifies against global token only.
-    For endpoints with tenant_id, the endpoint calls verify_tenant_token()
-    to support per-tenant API keys.
+    Accepts either:
+    - The global API token (GMP_API_TOKEN)
+    - A valid tenant-specific API key
+
+    For endpoints with tenant_id, verify_tenant_token() performs additional
+    scope verification to ensure the token matches the requested tenant.
     """
     # Store token in request state for later tenant-aware verification
     request.state.api_token = api_token
 
-    # Verify against global token for all endpoints
     expected = getattr(request.app.state, "api_token", None)
-    if expected is None:
-        return  # No global token configured
+
+    # No token provided
     if not api_token:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing API token")
-    if not secrets.compare_digest(api_token, expected):
+        if expected is not None:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing API token")
+        return  # No global token configured, allow access
+
+    # Check global token first
+    if expected is not None and secrets.compare_digest(api_token, expected):
+        return  # Global token matches
+
+    # Check tenant token
+    if service and getattr(service, "db", None):
+        token_tenant = await service.db.tenants.get_tenant_by_token(api_token)
+        if token_tenant:
+            # Valid tenant token - store tenant info for later scope verification
+            request.state.token_tenant_id = token_tenant["id"]
+            return
+
+    # Token didn't match global or any tenant
+    if expected is not None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing API token")
 
 
@@ -359,6 +377,11 @@ class TenantInfo(BaseModel):
 class TenantsResponse(CommandStatus):
     """Response with list of tenants."""
     tenants: list[TenantInfo]
+
+
+class ApiKeyResponse(CommandStatus):
+    """Response with generated API key (shown once)."""
+    api_key: str
 
 
 class InstanceInfo(BaseModel):
@@ -657,23 +680,27 @@ def create_app(
         return CleanupMessagesResponse.model_validate(result)
 
     @api.post("/account", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
-    async def add_account(acc: AccountPayload):
+    async def add_account(request: Request, acc: AccountPayload):
         """Register or update an SMTP account configuration.
 
         Creates a new SMTP account or updates an existing one with the same ID.
         Account settings include host, port, credentials, TLS options, and rate limits.
 
         Args:
+            request: The HTTP request (for token verification).
             acc: SMTP account configuration including connection details and limits.
 
         Returns:
             BasicOkResponse: Confirmation with ``ok=True``.
 
         Raises:
+            HTTPException: 401 if token is not authorized for tenant.
             HTTPException: 500 if the service is not initialized.
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
+        # Verify tenant scope for tenant-specific tokens
+        await verify_tenant_token(acc.tenant_id, getattr(request.state, "api_token", None), getattr(request.app.state, "api_token", None))
         result = await service.handle_command("addAccount", acc.model_dump())
         return BasicOkResponse.model_validate(result)
 
@@ -898,6 +925,59 @@ def create_app(
         if not result.get("ok"):
             raise HTTPException(404, f"Tenant '{tenant_id}' not found")
         return BasicOkResponse.model_validate(result)
+
+    @api.post("/tenant/{tenant_id}/api-key", response_model=ApiKeyResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
+    async def create_tenant_api_key(request: Request, tenant_id: str):
+        """Generate a new API key for a tenant.
+
+        Creates a new API key for the specified tenant. The key is returned
+        only once and should be stored securely by the client. Subsequent
+        calls will generate a new key, invalidating the previous one.
+
+        Args:
+            tenant_id: Unique identifier of the tenant.
+
+        Returns:
+            ApiKeyResponse: Contains the generated API key (show once).
+
+        Raises:
+            HTTPException: 401 if API token is invalid.
+            HTTPException: 404 if the tenant is not found.
+            HTTPException: 500 if the service is not initialized.
+        """
+        if not service:
+            raise HTTPException(500, "Service not initialized")
+        await verify_tenant_token(tenant_id, getattr(request.state, "api_token", None), getattr(request.app.state, "api_token", None))
+        api_key = await service.db.tenants.create_api_key(tenant_id)
+        if not api_key:
+            raise HTTPException(404, f"Tenant '{tenant_id}' not found")
+        return ApiKeyResponse(ok=True, api_key=api_key)
+
+    @api.delete("/tenant/{tenant_id}/api-key", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
+    async def revoke_tenant_api_key(request: Request, tenant_id: str):
+        """Revoke the API key for a tenant.
+
+        Invalidates the current API key for the tenant. After revocation,
+        the tenant must use the global API token or generate a new key.
+
+        Args:
+            tenant_id: Unique identifier of the tenant.
+
+        Returns:
+            BasicOkResponse: Confirmation with ``ok=True``.
+
+        Raises:
+            HTTPException: 401 if API token is invalid.
+            HTTPException: 404 if the tenant is not found.
+            HTTPException: 500 if the service is not initialized.
+        """
+        if not service:
+            raise HTTPException(500, "Service not initialized")
+        await verify_tenant_token(tenant_id, getattr(request.state, "api_token", None), getattr(request.app.state, "api_token", None))
+        revoked = await service.db.tenants.revoke_api_key(tenant_id)
+        if not revoked:
+            raise HTTPException(404, f"Tenant '{tenant_id}' not found")
+        return BasicOkResponse(ok=True)
 
     # Instance configuration endpoints
     @api.get("/instance", response_model=InstanceInfo, response_model_exclude_none=True, dependencies=[auth_dependency])
