@@ -218,28 +218,6 @@ class TestRetentionCleanup:
         found = [m for m in messages if m.get("id") == msg_id]
         assert len(found) > 0, "Bounced unreported message should NOT be cleaned up"
 
-    async def test_retention_configurable_per_tenant(
-        self, api_client, setup_test_tenants
-    ):
-        """Retention period should be configurable per tenant.
-
-        Different tenants may have different retention requirements.
-        """
-        # Update tenant-1 retention config
-        tenant_update = {
-            "retention_days": 7,  # 7 days retention
-        }
-
-        resp = await api_client.put(
-            "/tenant?tenant_id=test-tenant-1",
-            json=tenant_update
-        )
-        # If retention_days config is not supported, skip
-        if resp.status_code in (404, 422):
-            pytest.skip("Tenant retention_days configuration not implemented")
-
-        # Verify config was updated
-        resp = await api_client.get("/tenant?tenant_id=test-tenant-1")
-        if resp.status_code == 200:
-            tenant = resp.json()
-            assert tenant.get("retention_days") == 7
+    # NOTE: test_retention_configurable_per_tenant was removed because
+    # retention is configured at instance level (report_retention_seconds),
+    # not per-tenant. See MailProxy.__init__ and entities/message/README.md.

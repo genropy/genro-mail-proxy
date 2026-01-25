@@ -54,7 +54,7 @@ class DummyRateLimiter:
     """Dummy rate limiter for testing."""
 
     async def check_and_plan(self, account):
-        return None
+        return (None, False)
 
     async def log_send(self, account_id: str):
         pass

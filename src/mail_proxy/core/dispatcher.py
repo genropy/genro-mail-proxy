@@ -301,13 +301,32 @@ class DispatcherMixin:
         use_tls = int(port) == 465 if use_tls is None else bool(use_tls)
         resolved_account_id = account_id or acc.get("id") or "default"
 
-        deferred_until = await self.rate_limiter.check_and_plan(acc)
+        deferred_until, should_reject = await self.rate_limiter.check_and_plan(acc)
         if deferred_until:
+            self.metrics.inc_rate_limited(resolved_account_id)
+
+            if should_reject:
+                # Rate limit exceeded with reject behavior - mark as error
+                self.logger.info(
+                    "Message %s rate-limited and rejected for account %s",
+                    msg_id,
+                    resolved_account_id,
+                )
+                error_ts = self._utc_now_epoch()
+                await self.db.mark_error(msg_id or "", error_ts, "rate_limit_exceeded")
+                return {
+                    "id": msg_id,
+                    "status": "error",
+                    "error": "rate_limit_exceeded",
+                    "error_code": 429,
+                    "timestamp": self._utc_now_iso(),
+                    "account": resolved_account_id,
+                }
+
             # Rate limit hit - defer message for later retry (internal scheduling).
             # This is flow control, not an error, so it won't be reported to client.
             await self.db.set_deferred(msg_id or "", deferred_until)
             self.metrics.inc_deferred(resolved_account_id)
-            self.metrics.inc_rate_limited(resolved_account_id)
             self.logger.debug(
                 "Message %s rate-limited for account %s, deferred until %s",
                 msg_id,

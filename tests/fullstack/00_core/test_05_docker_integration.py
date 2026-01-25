@@ -119,7 +119,7 @@ async def mail_proxy_core(tmp_path):
     # Mock rate limiter
     class DummyRateLimiter:
         async def check_and_plan(self, account):
-            return None
+            return (None, False)
         async def log_send(self, account_id: str):
             pass
 

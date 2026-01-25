@@ -73,10 +73,11 @@ class _DummyConnectionContext:
 class DummyRateLimiter:
     def __init__(self):
         self.plan_result: int | None = None
+        self.should_reject: bool = False
         self.logged: list[str] = []
 
     async def check_and_plan(self, account):
-        return self.plan_result
+        return (self.plan_result, self.should_reject)
 
     async def log_send(self, account_id: str):
         self.logged.append(account_id)

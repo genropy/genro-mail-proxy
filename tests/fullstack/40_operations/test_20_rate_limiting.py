@@ -193,13 +193,13 @@ class TestAccountRateLimiting:
 
         sent_msgs = [m for m in test_msgs if get_msg_status(m) == "sent"]
         error_msgs = [m for m in test_msgs if get_msg_status(m) == "error"]
+        deferred_msgs = [m for m in test_msgs if get_msg_status(m) == "deferred"]
 
         # In reject mode, excess should be marked as error, not deferred
         assert len(sent_msgs) <= 2, "Should have max 2 sent due to rate limit"
-        # Remaining should be error (rejected) or deferred depending on implementation
-        assert len(sent_msgs) + len(error_msgs) + len([
-            m for m in test_msgs if get_msg_status(m) == "deferred"
-        ]) == 4
+        assert len(error_msgs) >= 2, f"Expected at least 2 rejected (error) messages, got {len(error_msgs)}"
+        assert len(deferred_msgs) == 0, f"Reject mode should not defer, but found {len(deferred_msgs)} deferred"
+        assert len(sent_msgs) + len(error_msgs) == 4, "All messages should be sent or rejected"
 
     async def test_rate_limit_resets_after_window(
         self, api_client, setup_test_tenants
