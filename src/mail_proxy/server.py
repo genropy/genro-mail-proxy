@@ -8,7 +8,7 @@ service automatically.
 Usage:
     uvicorn mail_proxy.server:app --host 0.0.0.0 --port 8000
 
-Environment variables:
+Environment variables (permanent - always read):
     GMP_DB_PATH: Database connection string. Formats:
         - /path/to/db.sqlite (SQLite file)
         - postgresql://user:pass@host/db (PostgreSQL)
@@ -16,6 +16,7 @@ Environment variables:
 
     GMP_API_TOKEN: API authentication token.
 
+Environment variables (initialization - only used if instance table is empty):
     GMP_BOUNCE_ENABLED: Set to "1" or "true" to enable bounce detection.
     GMP_BOUNCE_IMAP_HOST: IMAP server hostname for bounce mailbox.
     GMP_BOUNCE_IMAP_PORT: IMAP server port (default: 143 for non-SSL, 993 for SSL).
@@ -23,6 +24,9 @@ Environment variables:
     GMP_BOUNCE_IMAP_PASSWORD: IMAP password for bounce mailbox.
     GMP_BOUNCE_IMAP_SSL: Set to "1" or "true" for SSL connection (default: false).
     GMP_BOUNCE_POLL_INTERVAL: Polling interval in seconds (default: 60).
+
+    These env vars are used ONLY at first startup to populate the instance
+    table in the database. After that, configuration is read from the DB.
 """
 
 from __future__ import annotations
@@ -87,9 +91,8 @@ def _get_config_from_postgres(dsn: str) -> dict[str, str]:
 # Default to current directory for local development; Docker sets GMP_DB_PATH=/data/mail_service.db
 _db_path = os.environ.get("GMP_DB_PATH", "./mail_service.db")
 _config = _get_config_from_db(_db_path)
-# API token from env takes precedence over database config
+# API token from env (permanent config, not in DB)
 _api_token = os.environ.get("GMP_API_TOKEN") or _config.get("api_token")
-_instance_name = _config.get("name", "mail-proxy")
 
 
 def _is_truthy(value: str | None) -> bool:
@@ -97,8 +100,12 @@ def _is_truthy(value: str | None) -> bool:
     return value is not None and value.lower() in ("1", "true", "yes", "on")
 
 
-def _get_bounce_config():
-    """Get BounceConfig from environment variables if enabled."""
+def _get_bounce_env_vars() -> dict | None:
+    """Get bounce configuration from environment variables.
+
+    Returns dict with bounce config if GMP_BOUNCE_ENABLED is set, None otherwise.
+    Used only for initial DB population.
+    """
     if not _is_truthy(os.environ.get("GMP_BOUNCE_ENABLED")):
         return None
 
@@ -107,16 +114,15 @@ def _get_bounce_config():
         _logger.warning("GMP_BOUNCE_ENABLED=1 but GMP_BOUNCE_IMAP_HOST not set")
         return None
 
-    from .bounce import BounceConfig
-
-    return BounceConfig(
-        host=host,
-        port=int(os.environ.get("GMP_BOUNCE_IMAP_PORT", "143")),
-        user=os.environ.get("GMP_BOUNCE_IMAP_USER", ""),
-        password=os.environ.get("GMP_BOUNCE_IMAP_PASSWORD", ""),
-        use_ssl=_is_truthy(os.environ.get("GMP_BOUNCE_IMAP_SSL")),
-        poll_interval=int(os.environ.get("GMP_BOUNCE_POLL_INTERVAL", "60")),
-    )
+    return {
+        "enabled": True,
+        "imap_host": host,
+        "imap_port": int(os.environ.get("GMP_BOUNCE_IMAP_PORT", "143")),
+        "imap_user": os.environ.get("GMP_BOUNCE_IMAP_USER", ""),
+        "imap_password": os.environ.get("GMP_BOUNCE_IMAP_PASSWORD", ""),
+        "imap_ssl": _is_truthy(os.environ.get("GMP_BOUNCE_IMAP_SSL")),
+        "poll_interval": int(os.environ.get("GMP_BOUNCE_POLL_INTERVAL", "60")),
+    }
 
 
 # Create the core service
@@ -125,11 +131,63 @@ _core = MailProxy(
     start_active=True,
 )
 
-# Configure bounce detection if enabled via environment
-_bounce_config = _get_bounce_config()
-if _bounce_config:
-    _logger.info(f"Configuring bounce detection: {_bounce_config.host}:{_bounce_config.port}")
-    _core.configure_bounce_receiver(_bounce_config)
+
+async def _initialize_instance_from_env() -> None:
+    """Initialize instance table from environment variables if not yet configured.
+
+    This is called once at startup. If the instance record doesn't exist or
+    bounce is not configured, it populates from GMP_BOUNCE_* env vars.
+    """
+    instance_table = _core.db.instance
+
+    # Ensure instance record exists
+    instance = await instance_table.ensure_instance()
+
+    # Check if bounce is already configured in DB
+    if instance.get("bounce_imap_host"):
+        _logger.debug("Bounce config already in DB, skipping env var initialization")
+        return
+
+    # Try to initialize from env vars
+    bounce_env = _get_bounce_env_vars()
+    if bounce_env:
+        _logger.info("Initializing bounce config from environment variables")
+        await instance_table.set_bounce_config(
+            enabled=bounce_env["enabled"],
+            imap_host=bounce_env["imap_host"],
+            imap_port=bounce_env["imap_port"],
+            imap_user=bounce_env["imap_user"],
+            imap_password=bounce_env["imap_password"],
+        )
+
+
+async def _configure_bounce_from_db() -> None:
+    """Configure BounceReceiver from database if enabled."""
+    instance_table = _core.db.instance
+    bounce_config = await instance_table.get_bounce_config()
+
+    if not bounce_config.get("enabled"):
+        _logger.debug("Bounce detection disabled")
+        return
+
+    host = bounce_config.get("imap_host")
+    if not host:
+        _logger.warning("Bounce enabled but imap_host not configured")
+        return
+
+    from .bounce import BounceConfig
+
+    config = BounceConfig(
+        host=host,
+        port=bounce_config.get("imap_port") or 993,
+        user=bounce_config.get("imap_user") or "",
+        password=bounce_config.get("imap_password") or "",
+        use_ssl=True,  # Default to SSL
+        poll_interval=60,  # Default poll interval
+    )
+
+    _logger.info(f"Configuring bounce detection: {config.host}:{config.port}")
+    _core.configure_bounce_receiver(config)
 
 
 @asynccontextmanager
@@ -142,6 +200,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     _logger.info("Starting mail-proxy service...")
     await _core.start()
+
+    # Initialize instance config from env vars if needed
+    await _initialize_instance_from_env()
+
+    # Configure bounce from DB (after potential env var initialization)
+    await _configure_bounce_from_db()
+
     _logger.info("Mail-proxy service started")
 
     try:

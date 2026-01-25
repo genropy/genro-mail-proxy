@@ -143,11 +143,14 @@ services:
 
   # ============================================
   # IMAP SERVER (for bounce detection testing)
+  # Only started with: docker compose --profile bounce up -d
   # ============================================
   dovecot:
     image: dovecot/dovecot:2.4.0
     platform: linux/arm64
     user: root
+    profiles:
+      - bounce
     ports:
       - "10143:31143"
     volumes:
@@ -212,13 +215,8 @@ services:
       - AWS_ACCESS_KEY_ID=minioadmin
       - AWS_SECRET_ACCESS_KEY=minioadmin
       - AWS_ENDPOINT_URL=http://minio:9000
-      # Bounce detection configuration
-      - GMP_BOUNCE_ENABLED=1
-      - GMP_BOUNCE_IMAP_HOST=dovecot
-      - GMP_BOUNCE_IMAP_PORT=31143
-      - GMP_BOUNCE_IMAP_USER=bounces@localhost
-      - GMP_BOUNCE_IMAP_PASSWORD=bouncepass
-      - GMP_BOUNCE_POLL_INTERVAL=2
+      # Note: Bounce detection is NOT enabled by default.
+      # Tests in 60_imap/ configure it via API when needed.
     ports:
       - "8000:8000"
     depends_on:
