@@ -19,7 +19,8 @@ genro-mail-proxy sits between your application and SMTP servers. Your applicatio
 - **Rate limiting**: Per-account limits (minute/hour/day) shared across instances
 - **Priority queuing**: Four levels (immediate, high, medium, low) with FIFO within each
 - **Delivery reports**: Results are posted back to your application via HTTP callback
-- **Multi-tenancy**: Multiple organizations can share one instance with separate accounts
+- **Bounce detection**: IMAP polling for bounces with DSN parsing and hard/soft classification *(BSL 1.1)*
+- **Multi-tenancy**: Multiple organizations can share one instance with separate accounts *(BSL 1.1)*
 - **Large file handling**: Auto-upload attachments to S3/GCS/Azure and replace with download links
 - **Connection pooling**: SMTP connections are pooled with acquire/release semantics
 
@@ -198,6 +199,17 @@ pytest
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE) for details.
+This project uses a **dual-license** model:
+
+| License | Features |
+|---------|----------|
+| **Apache 2.0** | Core functionality: message queue, retry, rate limiting, priority, delivery reports, attachments, SMTP pooling, REST API, CLI |
+| **BSL 1.1** | Multi-Tenancy, Bounce Detection |
+
+**Apache 2.0** ([LICENSE](LICENSE)): Free for any use.
+
+**BSL 1.1** ([LICENSE-BSL-1.1](LICENSE-BSL-1.1)): Free for testing, development, and non-production. Production use requires a commercial license from Softwell S.r.l. After 2030-01-25, these features convert to Apache 2.0.
+
+See [NOTICE](NOTICE) for full details.
 
 Copyright 2025 Softwell S.r.l. — Genropy Team
