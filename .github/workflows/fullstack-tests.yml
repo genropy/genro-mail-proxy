@@ -71,7 +71,7 @@ jobs:
 
       - name: Run fullstack tests
         run: |
-          pytest tests/test_fullstack_integration.py -v --tb=short
+          pytest tests/fullstack/ -v --tb=short
         env:
           MAILPROXY_URL: http://localhost:8000
           MAILPROXY_TOKEN: test-api-token
