@@ -46,6 +46,14 @@ class BounceReceiverMixin:
         if db is None:
             raise RuntimeError("BounceReceiverMixin requires db attribute")
 
+        if logger:
+            logger.info(
+                "Starting BounceReceiver: host=%s port=%d user=%s",
+                self._bounce_config.host,
+                self._bounce_config.port,
+                self._bounce_config.user,
+            )
+
         self._bounce_receiver = BounceReceiver(
             db=db,
             config=self._bounce_config,

@@ -304,6 +304,10 @@ class MessageRecord(BaseModel):
     error_ts: int | None = None
     error: str | None = None
     reported_ts: int | None = None
+    bounce_type: str | None = None
+    bounce_code: str | None = None
+    bounce_reason: str | None = None
+    bounce_ts: FlexibleDatetime = None
     created_at: FlexibleDatetime = None
     updated_at: FlexibleDatetime = None
     message: dict[str, Any]

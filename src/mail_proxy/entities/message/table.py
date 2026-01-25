@@ -446,6 +446,7 @@ class MessagesTable(Table):
             query = """
                 SELECT m.id, m.account_id, m.priority, m.payload, m.batch_code, m.deferred_ts,
                        m.sent_ts, m.error_ts, m.error, m.reported_ts,
+                       m.bounce_type, m.bounce_code, m.bounce_reason, m.bounce_ts,
                        m.created_at, m.updated_at
                 FROM messages m
                 LEFT JOIN accounts a ON m.account_id = a.id
@@ -455,7 +456,8 @@ class MessagesTable(Table):
         else:
             query = """
                 SELECT id, account_id, priority, payload, batch_code, deferred_ts, sent_ts, error_ts,
-                       error, reported_ts, created_at, updated_at
+                       error, reported_ts, bounce_type, bounce_code, bounce_reason, bounce_ts,
+                       created_at, updated_at
                 FROM messages
             """
 
