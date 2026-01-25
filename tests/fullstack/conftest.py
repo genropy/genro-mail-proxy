@@ -164,10 +164,11 @@ async def setup_bounce_tenant(api_client):
     resp = await api_client.post("/tenant", json=tenant_data)
     assert resp.status_code in (200, 201, 409), resp.text
 
+    # Use localhost since mailproxy runs locally (not in Docker)
     account_data = {
         "id": "bounce-account",
         "tenant_id": "bounce-tenant",
-        "host": "mailhog-tenant1",
+        "host": "localhost",
         "port": 1025,
         "use_tls": False,
     }
