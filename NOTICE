@@ -5,7 +5,39 @@ This product includes software developed at
 Softwell S.r.l. (https://www.softwell.it/).
 
 This project was originally developed as part of the Genropy framework
-and has been extracted and relicensed to Apache License, Version 2.0
-as part of the Genro Modules ecosystem.
+and has been extracted as part of the Genro Modules ecosystem.
 
-Licensed under the Apache License, Version 2.0.
+LICENSING
+=========
+
+This project uses a dual-license model:
+
+Apache License 2.0 (LICENSE)
+----------------------------
+The core functionality is licensed under Apache License, Version 2.0.
+This includes:
+- Message management (queuing, listing, deletion, cleanup)
+- Attachments (multi-source fetching, caching, large file offloading)
+- Priority & Scheduling (priority queuing, deferred delivery, batch grouping)
+- Rate Limiting (per-account sliding window rate limiting)
+- Retry & Resilience (exponential backoff, error classification)
+- SMTP Connections (connection pooling, multiple accounts)
+- Delivery & Reporting (delivery reports, client sync callbacks)
+- Database & Persistence (SQLite and PostgreSQL support)
+- Monitoring & Metrics (Prometheus metrics, health endpoints)
+- Concurrency & Performance (parallel dispatch, concurrent fetching)
+- REST API (FastAPI backend, token authentication)
+- CLI Tool (instance management, interactive mode)
+- Configuration (environment variables, INI config files)
+
+Business Source License 1.1 (LICENSE-BSL-1.1)
+---------------------------------------------
+The following features are licensed under BSL 1.1:
+- Multi-Tenancy (tenant isolation, per-tenant API tokens, batch suspension)
+- Bounce Detection (IMAP bounce polling, DSN parsing, hard/soft classification)
+
+BSL 1.1 allows free use for testing, development, and non-production
+environments. Production use requires a commercial license from Softwell S.r.l.
+After the Change Date (2030-01-25), these features will convert to Apache 2.0.
+
+For commercial licensing inquiries, contact: info@softwell.it

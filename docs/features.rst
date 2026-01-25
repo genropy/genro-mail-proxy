@@ -26,7 +26,7 @@ Feature Matrix
      - Apache 2.0
      - Message queuing, listing, deletion, cleanup
    * - :ref:`multi-tenancy`
-     - Apache 2.0
+     - BSL 1.1
      - Tenant isolation, per-tenant API tokens, batch suspension
    * - :ref:`attachments`
      - Apache 2.0
@@ -46,6 +46,9 @@ Feature Matrix
    * - :ref:`delivery-reporting`
      - Apache 2.0
      - Delivery reports, client sync callbacks
+   * - :ref:`bounce-detection`
+     - BSL 1.1
+     - IMAP bounce polling, DSN parsing, hard/soft classification
    * - :ref:`database-persistence`
      - Apache 2.0
      - SQLite and PostgreSQL support
@@ -100,7 +103,7 @@ Message Management
 Multi-Tenancy
 -------------
 
-**License**: Apache 2.0
+**License**: BSL 1.1
 
 .. list-table::
    :header-rows: 1
@@ -292,6 +295,40 @@ Delivery & Reporting
 
 ----
 
+.. _bounce-detection:
+
+Bounce Detection
+----------------
+
+**License**: BSL 1.1
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Feature
+     - Description
+   * - IMAP Bounce Polling
+     - Automated polling of IMAP mailbox for bounce messages.
+       Configurable interval, folder, and credentials per instance.
+   * - DSN Parsing (RFC 3464)
+     - Full parsing of Delivery Status Notification messages.
+       Extracts diagnostic codes, remote MTA info, and original recipient.
+   * - X-Genro-Mail-ID Header
+     - Custom header injected in outgoing emails for bounce correlation.
+       Links bounce notifications back to original message ID.
+   * - Hard/Soft Classification
+     - Automatic classification of bounces as permanent (hard) or temporary (soft).
+       Based on SMTP status codes (5xx = hard, 4xx = soft).
+   * - Bounce Fields in API
+     - Messages include ``bounce_type``, ``bounce_reason``, ``bounce_ts`` fields.
+       Bounce info included in delivery reports to client.
+   * - Instance Configuration
+     - Per-instance bounce receiver configuration via API.
+       Endpoints: ``GET/PUT /instance/bounce``, ``POST /instance/bounce/reload``.
+
+----
+
 .. _database-persistence:
 
 Database & Persistence
@@ -437,21 +474,3 @@ Configuration
      - Option to start with scheduler immediately active.
        Parameter: ``start_active=True`` or ``GMP_START_ACTIVE=1``.
 
-----
-
-Future Commercial Features
---------------------------
-
-The following features are planned for future releases and may require a
-commercial license after v1.0:
-
-* **High Availability Clustering** - Active-active multi-node deployment
-* **Advanced Analytics Dashboard** - Real-time delivery analytics and reporting
-* **Custom DKIM/SPF Management** - Per-tenant email authentication configuration
-* **SLA Monitoring** - Delivery time SLA tracking and alerting
-* **Enterprise SSO Integration** - SAML/OIDC authentication for API access
-
-.. note::
-
-   These features are not yet implemented. The list is subject to change
-   based on user feedback and business requirements.
