@@ -14,7 +14,6 @@ import pytest_asyncio
 httpx = pytest.importorskip("httpx")
 
 from tests.fullstack.helpers import (
-    CLIENT_TENANT1_URL,
     MAILHOG_TENANT1_API,
     clear_imap_mailbox,
     clear_mailhog,
@@ -22,6 +21,7 @@ from tests.fullstack.helpers import (
     get_imap_message_count,
     get_msg_status,
     inject_bounce_email_to_imap,
+    is_dovecot_available,
     trigger_dispatch,
     wait_for_messages,
 )
@@ -65,24 +65,36 @@ class TestBounceDetection:
                     break
 
     async def test_bounce_fields_in_message_list(self, api_client, setup_test_tenants):
-        """Message list should include bounce fields."""
+        """Message list can include bounce fields when bounce is detected.
+
+        Note: The API uses response_model_exclude_none=True, so bounce fields
+        only appear when they have values (i.e., after a bounce is detected).
+        This test verifies the API accepts messages and returns them correctly.
+        For bounce field presence, see test_10_bounce_live.py tests.
+        """
+        ts = int(time.time())
+        message = {
+            "id": f"bounce-fields-test-{ts}",
+            "account_id": "test-account-1",
+            "from": "sender@test.com",
+            "to": ["recipient@example.com"],
+            "subject": "Bounce Fields Test",
+            "body": "Testing bounce fields presence.",
+        }
+        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        assert resp.status_code == 200
+
         resp = await api_client.get("/messages?tenant_id=test-tenant-1")
         assert resp.status_code == 200
 
         data = resp.json()
-        # Check that bounce-related fields are available in the schema
-        # Even if no bounces exist yet, the API should support these fields
-        if data.get("messages"):
-            msg = data["messages"][0]
-            # These fields should be present (even if None)
-            bounce_fields = {"bounce_type", "bounce_code", "bounce_reason", "bounce_ts"}
-            msg_keys = set(msg.keys())
-            # Not all fields are required but schema should support bounce tracking
-            # This verifies the message structure includes bounce capability
-            # At minimum, check that message dict is accessible
-            assert isinstance(msg_keys, set)
-            # Note: bounce fields may not be present in all implementations
-            _ = bounce_fields  # Acknowledge we're checking these exist in schema
+        messages = data.get("messages", [])
+        assert len(messages) > 0, "Should have at least one message"
+
+        # Verify basic message structure (bounce fields excluded when None due to API config)
+        msg = messages[0]
+        required_fields = {"id", "priority", "message"}
+        assert required_fields.issubset(set(msg.keys())), f"Missing required fields: {required_fields - set(msg.keys())}"
 
     async def test_message_includes_bounce_tracking_fields(self, api_client, setup_test_tenants):
         """Messages should be trackable for bounce correlation via msg_id."""
@@ -198,46 +210,21 @@ class TestBounceEndToEnd:
     3. BounceReceiver polls and processes the bounce
     4. Original message is updated with bounce info
     5. Bounce is reported to client
+
+    Note: setup_bounce_tenant fixture is defined in conftest.py
     """
-
-    @pytest_asyncio.fixture
-    async def setup_bounce_tenant(self, api_client):
-        """Setup a tenant configured for bounce detection."""
-        # Create bounce-enabled tenant
-        tenant_data = {
-            "id": "bounce-tenant",
-            "name": "Bounce Test Tenant",
-            "client_base_url": CLIENT_TENANT1_URL,
-            "client_sync_path": "/proxy_sync",
-            "client_auth": {"method": "none"},
-            "active": True,
-        }
-        resp = await api_client.post("/tenant", json=tenant_data)
-        assert resp.status_code in (200, 201, 409), resp.text
-
-        # Create account for tenant
-        account_data = {
-            "id": "bounce-account",
-            "tenant_id": "bounce-tenant",
-            "host": "localhost",  # Docker network name
-            "port": 1025,
-            "use_tls": False,
-        }
-        resp = await api_client.post("/account", json=account_data)
-        assert resp.status_code in (200, 201, 409), resp.text
-
-        # Clear IMAP mailbox before test
-        await clear_imap_mailbox()
-
-        return {"tenant": tenant_data, "account": account_data}
 
     async def test_imap_server_accessible(self):
         """Verify Dovecot IMAP server is accessible."""
+        if not is_dovecot_available():
+            pytest.skip("Dovecot IMAP server not available")
         count = await get_imap_message_count()
         assert count >= 0, "IMAP server should be accessible"
 
     async def test_bounce_email_injection(self):
         """Can inject a bounce email into IMAP mailbox."""
+        if not is_dovecot_available():
+            pytest.skip("Dovecot IMAP server not available")
         await clear_imap_mailbox()
 
         # Create and inject a bounce email

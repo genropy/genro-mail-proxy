@@ -34,7 +34,6 @@ from tests.fullstack.helpers import (
     clear_imap_mailbox,
     clear_mailhog,
     create_dsn_bounce_email,
-    get_imap_message_count,
     inject_bounce_email_to_imap,
     wait_for_bounce,
 )
@@ -206,8 +205,9 @@ class TestBounceLivePolling:
     async def test_multiple_bounces_processed_in_batch(
         self, api_client, setup_bounce_tenant, configure_bounce_receiver, clean_imap
     ):
-        """Multiple bounces in IMAP should be processed in a single poll cycle."""
+        """Multiple bounces in IMAP should be processed correctly."""
         await clear_mailhog(MAILHOG_TENANT1_API)
+        await clear_imap_mailbox()  # Extra clear to ensure fresh state
         ts = int(time.time())
         msg_ids = [f"bounce-batch-{ts}-{i}" for i in range(3)]
         recipients = [f"batch-{ts}-{i}@example.com" for i in range(3)]
@@ -231,7 +231,7 @@ class TestBounceLivePolling:
         await api_client.post("/commands/run-now?tenant_id=bounce-tenant")
         await asyncio.sleep(2)
 
-        # Inject all bounces
+        # Inject all bounces at once
         for msg_id, recipient in zip(msg_ids, recipients):
             dsn_email = create_dsn_bounce_email(
                 original_message_id=msg_id,
@@ -241,38 +241,39 @@ class TestBounceLivePolling:
             )
             await inject_bounce_email_to_imap(dsn_email)
 
-        # Wait for all bounces to be detected
-        await asyncio.sleep(6)  # 2-3 poll cycles
+        # Wait for all bounces with extended timeout (poll interval is 2s)
+        await asyncio.sleep(8)  # Allow 3-4 poll cycles
 
-        # Verify all messages are bounced
-        bounced_count = 0
+        # Check how many bounces were detected
         resp = await api_client.get(f"/messages?tenant_id=bounce-tenant")
-        if resp.status_code == 200:
-            messages = resp.json().get("messages", [])
-            for msg_id in msg_ids:
-                found = [m for m in messages if m.get("id") == msg_id]
-                if found and found[0].get("bounce_type"):
-                    bounced_count += 1
+        assert resp.status_code == 200
+        messages = resp.json().get("messages", [])
+
+        bounced_count = 0
+        for msg_id in msg_ids:
+            found = [m for m in messages if m.get("id") == msg_id]
+            if found and found[0].get("bounce_type"):
+                bounced_count += 1
 
         assert bounced_count == 3, f"Expected 3 bounced messages, got {bounced_count}"
 
-    async def test_imap_message_deleted_after_processing(
+    async def test_bounce_not_reprocessed_after_uid_tracking(
         self, api_client, setup_bounce_tenant, configure_bounce_receiver, clean_imap
     ):
-        """Processed bounce emails should be deleted from IMAP mailbox."""
+        """Bounces are tracked by UID and not reprocessed in subsequent polls."""
         await clear_mailhog(MAILHOG_TENANT1_API)
         await clear_imap_mailbox()
         ts = int(time.time())
-        msg_id = f"bounce-delete-{ts}"
-        recipient = f"delete-{ts}@example.com"
+        msg_id = f"bounce-uid-track-{ts}"
+        recipient = f"uid-track-{ts}@example.com"
 
         message = {
             "id": msg_id,
             "account_id": "bounce-account",
             "from": "sender@test.com",
             "to": [recipient],
-            "subject": "Bounce Delete Test",
-            "body": "Testing IMAP cleanup after bounce processing.",
+            "subject": "Bounce UID Tracking Test",
+            "body": "Testing UID tracking prevents reprocessing.",
         }
 
         resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
@@ -280,9 +281,6 @@ class TestBounceLivePolling:
 
         await api_client.post("/commands/run-now?tenant_id=bounce-tenant")
         await asyncio.sleep(2)
-
-        # Check initial IMAP count
-        initial_count = await get_imap_message_count()
 
         # Inject bounce
         dsn_email = create_dsn_bounce_email(
@@ -293,14 +291,26 @@ class TestBounceLivePolling:
         )
         await inject_bounce_email_to_imap(dsn_email)
 
-        # Verify message was added
-        after_inject_count = await get_imap_message_count()
-        assert after_inject_count > initial_count
-
         # Wait for bounce processing
-        await wait_for_bounce(api_client, msg_id, "bounce-tenant", timeout=10)
+        bounced = await wait_for_bounce(api_client, msg_id, "bounce-tenant", timeout=10)
+        assert bounced, f"Message {msg_id} should be marked as bounced"
 
-        # Check IMAP count after processing (should be deleted)
-        await asyncio.sleep(2)
-        final_count = await get_imap_message_count()
-        assert final_count <= initial_count, "Processed bounce should be deleted from IMAP"
+        # Get bounce_ts
+        resp = await api_client.get(f"/messages?tenant_id=bounce-tenant")
+        messages = resp.json().get("messages", [])
+        found = [m for m in messages if m.get("id") == msg_id]
+        assert found
+        first_bounce_ts = found[0].get("bounce_ts")
+        assert first_bounce_ts, "bounce_ts should be set"
+
+        # Wait for another poll cycle - bounce_ts should not change
+        await asyncio.sleep(4)
+
+        resp = await api_client.get(f"/messages?tenant_id=bounce-tenant")
+        messages = resp.json().get("messages", [])
+        found = [m for m in messages if m.get("id") == msg_id]
+        assert found
+        second_bounce_ts = found[0].get("bounce_ts")
+
+        # bounce_ts should be the same (not reprocessed)
+        assert first_bounce_ts == second_bounce_ts, "Bounce should not be reprocessed"

@@ -122,14 +122,12 @@ class IMAPClient:
             response = await self._client.uid("FETCH", str(uid), "(RFC822)")
             if response.result == "OK":
                 # Parse raw message from response
-                # aioimaplib returns the RFC822 content as bytearray, not bytes
+                # aioimaplib returns RFC822 content as bytearray in response.lines
+                # Format: [b'N FETCH (UID X RFC822 {size}', bytearray(content), b')', b'status']
                 for item in response.lines:
-                    if isinstance(item, (bytes, bytearray)) and item:
-                        # Skip IMAP protocol lines (e.g., "1 FETCH (UID 42 RFC822 {1336}")
-                        if isinstance(item, bytes) and item.startswith(b"1 FETCH"):
-                            continue
-                        raw = bytes(item) if isinstance(item, bytearray) else item
-                        messages.append(IMAPMessage(uid=uid, raw=raw))
+                    if isinstance(item, bytearray) and item:
+                        # The actual email content is always a bytearray
+                        messages.append(IMAPMessage(uid=uid, raw=bytes(item)))
                         break
 
         return messages
