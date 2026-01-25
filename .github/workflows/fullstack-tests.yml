@@ -36,6 +36,15 @@ jobs:
           docker compose -f docker-compose.fulltest.yml up -d --build
         timeout-minutes: 5
 
+      - name: Start mail-proxy service
+        run: |
+          uvicorn mail_proxy.server:app --host 0.0.0.0 --port 8000 &
+          echo $! > /tmp/mailproxy.pid
+          echo "Mail-proxy started with PID $(cat /tmp/mailproxy.pid)"
+        env:
+          GMP_DB_PATH: postgresql://mailproxy:testpassword@localhost:5433/mailproxy
+          GMP_API_TOKEN: test-api-token
+
       - name: Wait for services to be ready
         run: |
           echo "Waiting for PostgreSQL..."
