@@ -239,6 +239,10 @@ class MailProxyDb(SqlDb):
         """Clear is_pec flag when recipient is not a PEC address."""
         await self.messages.clear_pec_flag(msg_id)
 
+    async def get_pec_messages_without_acceptance(self, cutoff_ts: int) -> list[dict[str, Any]]:
+        """Get PEC messages sent before cutoff without acceptance receipt."""
+        return await self.messages.get_pec_without_acceptance(cutoff_ts)
+
     async def get_message(self, msg_id: str) -> dict[str, Any] | None:
         return await self.messages.get(msg_id)
 

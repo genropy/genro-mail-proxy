@@ -217,6 +217,31 @@ class MessagesTable(Table):
             {"msg_id": msg_id},
         )
 
+    async def get_pec_without_acceptance(self, cutoff_ts: int) -> list[dict[str, Any]]:
+        """Get PEC messages sent before cutoff_ts without acceptance receipt.
+
+        Returns messages where:
+        - is_pec = 1 (marked as PEC)
+        - smtp_ts < cutoff_ts (sent before cutoff)
+        - No pec_acceptance event exists
+        """
+        rows = await self.db.adapter.fetch_all(
+            """
+            SELECT m.id, m.account_id, m.smtp_ts
+            FROM messages m
+            WHERE m.is_pec = 1
+              AND m.smtp_ts IS NOT NULL
+              AND m.smtp_ts < :cutoff_ts
+              AND NOT EXISTS (
+                  SELECT 1 FROM message_events e
+                  WHERE e.message_id = m.id
+                    AND e.event_type = 'pec_acceptance'
+              )
+            """,
+            {"cutoff_ts": cutoff_ts},
+        )
+        return [dict(row) for row in rows]
+
     async def update_payload(self, msg_id: str, payload: dict[str, Any]) -> None:
         """Update the payload field of a message."""
         await self.execute(
