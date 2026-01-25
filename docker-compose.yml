@@ -1,4 +1,50 @@
+# Production deployment for genro-mail-proxy
+#
+# Usage:
+#   # With PostgreSQL (recommended for production):
+#   docker compose up -d
+#
+#   # With SQLite (single instance only):
+#   docker compose --profile sqlite up -d mailproxy-sqlite
+#
+# Configuration via environment variables:
+#   GMP_API_TOKEN     - Required: API authentication token
+#   GMP_DB_PATH       - Database path (auto-configured per profile)
+#   POSTGRES_PASSWORD - PostgreSQL password (default: changeme)
+#
+# Volumes:
+#   pgdata    - PostgreSQL data (persistent)
+#   maildata  - SQLite database and attachments (persistent)
+
 services:
+  # ============================================
+  # MAIL PROXY (PostgreSQL mode - recommended)
+  # ============================================
+  mailproxy:
+    build: .
+    image: genro-mail-proxy:${VERSION:-latest}
+    environment:
+      GMP_API_TOKEN: ${GMP_API_TOKEN:?API token required}
+      GMP_DB_PATH: postgresql://mailproxy:${POSTGRES_PASSWORD:-changeme}@db:5432/mailproxy
+      TZ: ${TZ:-Europe/Rome}
+    ports:
+      - "${MAILPROXY_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - mailnet
+
+  # ============================================
+  # DATABASE (PostgreSQL)
+  # ============================================
   db:
     image: postgres:16-alpine
     environment:
@@ -9,21 +55,41 @@ services:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mailproxy"]
-      interval: 5s
+      interval: 10s
       timeout: 5s
       retries: 5
-
-  mailservice:
-    build: .
-    image: genro-mail-proxy:latest
-    environment:
-      - GMP_DB_PATH=postgresql://mailproxy:${POSTGRES_PASSWORD:-changeme}@db:5432/mailproxy
-    ports:
-      - "8000:8000"
-    depends_on:
-      db:
-        condition: service_healthy
     restart: unless-stopped
+    networks:
+      - mailnet
+
+  # ============================================
+  # MAIL PROXY (SQLite mode - single instance)
+  # ============================================
+  mailproxy-sqlite:
+    profiles:
+      - sqlite
+    build: .
+    image: genro-mail-proxy:${VERSION:-latest}
+    environment:
+      GMP_API_TOKEN: ${GMP_API_TOKEN:?API token required}
+      GMP_DB_PATH: /data/mail_service.db
+      TZ: ${TZ:-Europe/Rome}
+    ports:
+      - "${MAILPROXY_PORT:-8000}:8000"
+    volumes:
+      - maildata:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  mailnet:
+    driver: bridge
 
 volumes:
   pgdata:
+  maildata:
