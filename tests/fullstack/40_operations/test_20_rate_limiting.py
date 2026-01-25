@@ -56,7 +56,7 @@ class TestAccountRateLimiting:
         account_data = {
             "id": f"ratelimit-account-{ts}",
             "tenant_id": "test-tenant-1",
-            "host": "mailhog-tenant1",
+            "host": "localhost",
             "port": 1025,
             "use_tls": False,
             "rate_limit_per_minute": 3,
@@ -121,7 +121,7 @@ class TestAccountRateLimiting:
         account_data = {
             "id": f"ratelimit-hour-{ts}",
             "tenant_id": "test-tenant-1",
-            "host": "mailhog-tenant1",
+            "host": "localhost",
             "port": 1025,
             "use_tls": False,
             "rate_limit_per_hour": 100,
@@ -153,7 +153,7 @@ class TestAccountRateLimiting:
         account_data = {
             "id": f"ratelimit-reject-{ts}",
             "tenant_id": "test-tenant-1",
-            "host": "mailhog-tenant1",
+            "host": "localhost",
             "port": 1025,
             "use_tls": False,
             "rate_limit_per_minute": 2,
@@ -217,7 +217,7 @@ class TestAccountRateLimiting:
         account_data = {
             "id": f"ratelimit-reset-{ts}",
             "tenant_id": "test-tenant-1",
-            "host": "mailhog-tenant1",
+            "host": "localhost",
             "port": 1025,
             "use_tls": False,
             "rate_limit_per_minute": 2,
@@ -273,7 +273,7 @@ class TestAccountRateLimiting:
         account_a = {
             "id": f"ratelimit-a-{ts}",
             "tenant_id": "test-tenant-1",
-            "host": "mailhog-tenant1",
+            "host": "localhost",
             "port": 1025,
             "use_tls": False,
             "rate_limit_per_minute": 2,
@@ -281,7 +281,7 @@ class TestAccountRateLimiting:
         account_b = {
             "id": f"ratelimit-b-{ts}",
             "tenant_id": "test-tenant-1",
-            "host": "mailhog-tenant1",
+            "host": "localhost",
             "port": 1025,
             "use_tls": False,
             "rate_limit_per_minute": 5,

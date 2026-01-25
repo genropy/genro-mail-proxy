@@ -1,5 +1,26 @@
 # Full-stack integration testing infrastructure
-# Includes all services needed to test every feature of genro-mail-proxy
+#
+# This compose provides the EXTERNAL INFRASTRUCTURE for fullstack tests:
+# - Database (PostgreSQL)
+# - SMTP servers (MailHog for capturing emails)
+# - S3 storage (MinIO)
+# - IMAP server (Dovecot for bounce testing)
+# - Error-simulating SMTP servers
+# - Echo servers (simulate client webhooks)
+#
+# The mailproxy service itself runs LOCALLY (not in Docker).
+# This allows testing against current code without rebuilding containers.
+#
+# Usage:
+#   1. Start infrastructure: docker compose -f docker-compose.fulltest.yml up -d
+#   2. Start mailproxy locally:
+#      GMP_DB_PATH=postgresql://mailproxy:testpassword@localhost:5433/mailproxy \
+#      GMP_API_TOKEN=test-api-token \
+#      uvicorn mail_proxy.server:app --host 0.0.0.0 --port 8000
+#   3. Run tests: pytest tests/fullstack/
+#   4. For bounce tests: docker compose --profile bounce up -d
+#
+# Note: PostgreSQL uses port 5433 (not 5432) to avoid conflicts with local postgres
 
 services:
   # ============================================
@@ -14,7 +35,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "5433:5432"  # Use 5433 to avoid conflict with local postgres
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mailproxy"]
       interval: 5s
@@ -197,43 +218,6 @@ services:
       - ./test-attachments:/data:ro
     ports:
       - "8083:8080"
-    networks:
-      - testnet
-
-  # ============================================
-  # MAIL-PROXY SERVICE
-  # ============================================
-  mailproxy:
-    build:
-      context: ../..
-      dockerfile: tests/docker/Dockerfile.test
-    image: genro-mail-proxy:test
-    environment:
-      - GMP_DB_PATH=postgresql://mailproxy:testpassword@db:5432/mailproxy
-      - GMP_API_TOKEN=test-api-token
-      # S3 configuration for large files
-      - AWS_ACCESS_KEY_ID=minioadmin
-      - AWS_SECRET_ACCESS_KEY=minioadmin
-      - AWS_ENDPOINT_URL=http://minio:9000
-      # Note: Bounce detection is NOT enabled by default.
-      # Tests in 60_imap/ configure it via API when needed.
-    ports:
-      - "8000:8000"
-    depends_on:
-      db:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-      mailhog-tenant1:
-        condition: service_started
-      mailhog-tenant2:
-        condition: service_started
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
     networks:
       - testnet
 

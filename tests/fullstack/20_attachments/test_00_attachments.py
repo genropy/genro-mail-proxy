@@ -12,6 +12,7 @@ import time
 import pytest
 
 from tests.fullstack.helpers import (
+    ATTACHMENT_SERVER_URL,
     MAILHOG_TENANT1_API,
     clear_mailhog,
     get_msg_status,
@@ -96,7 +97,7 @@ class TestHttpAttachmentFetch:
             "body": "Testing HTTP URL attachment fetch.",
             "attachments": [{
                 "filename": "small.txt",
-                "storage_path": "http://attachment-server:8080/small.txt",
+                "storage_path": f"{ATTACHMENT_SERVER_URL}/small.txt",
                 "fetch_mode": "http_url",
             }],
         }
@@ -135,12 +136,12 @@ class TestHttpAttachmentFetch:
             "attachments": [
                 {
                     "filename": "small.txt",
-                    "storage_path": "http://attachment-server:8080/small.txt",
+                    "storage_path": f"{ATTACHMENT_SERVER_URL}/small.txt",
                     "fetch_mode": "http_url",
                 },
                 {
                     "filename": "document.html",
-                    "storage_path": "http://attachment-server:8080/document.html",
+                    "storage_path": f"{ATTACHMENT_SERVER_URL}/document.html",
                     "fetch_mode": "http_url",
                 },
             ],
@@ -169,7 +170,7 @@ class TestHttpAttachmentFetch:
             "body": "Testing HTTP fetch timeout.",
             "attachments": [{
                 "filename": "nonexistent.txt",
-                "storage_path": "http://attachment-server:8080/nonexistent-file-12345.txt",
+                "storage_path": f"{ATTACHMENT_SERVER_URL}/nonexistent-file-12345.txt",
                 "fetch_mode": "http_url",
             }],
         }

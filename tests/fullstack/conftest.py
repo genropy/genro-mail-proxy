@@ -72,10 +72,11 @@ async def setup_test_tenants(api_client):
     assert resp.status_code in (200, 201, 409), resp.text
 
     # Create account for tenant1
+    # Use localhost since mailproxy runs locally (not in Docker)
     account1_data = {
         "id": "test-account-1",
         "tenant_id": "test-tenant-1",
-        "host": "mailhog-tenant1",  # Docker network name
+        "host": "localhost",
         "port": 1025,
         "use_tls": False,
     }
@@ -95,11 +96,12 @@ async def setup_test_tenants(api_client):
     assert resp.status_code in (200, 201, 409), resp.text
 
     # Create account for tenant2
+    # Use localhost:1026 since mailproxy runs locally (not in Docker)
     account2_data = {
         "id": "test-account-2",
         "tenant_id": "test-tenant-2",
-        "host": "mailhog-tenant2",
-        "port": 1025,
+        "host": "localhost",
+        "port": 1026,
         "use_tls": False,
     }
     resp = await api_client.post("/account", json=account2_data)

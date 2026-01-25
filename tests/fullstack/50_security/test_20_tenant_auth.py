@@ -66,7 +66,7 @@ class TestPerTenantApiKeys:
         account_data = {
             "id": f"auth-account-{ts}",
             "tenant_id": tenant_id,
-            "host": "mailhog-tenant1",
+            "host": "localhost",
             "port": 1025,
             "use_tls": False,
         }
@@ -260,7 +260,7 @@ class TestPerTenantApiKeys:
             account = {
                 "id": f"scope-account-{ts}",
                 "tenant_id": tenant_id,
-                "host": "mailhog-tenant1",
+                "host": "localhost",
                 "port": 1025,
                 "use_tls": False,
             }
@@ -271,7 +271,7 @@ class TestPerTenantApiKeys:
             account_other = {
                 "id": f"scope-account-other-{ts}",
                 "tenant_id": "test-tenant-1",  # different tenant
-                "host": "mailhog-tenant1",
+                "host": "localhost",
                 "port": 1025,
                 "use_tls": False,
             }

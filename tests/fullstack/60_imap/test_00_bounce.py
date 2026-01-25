@@ -218,7 +218,7 @@ class TestBounceEndToEnd:
         account_data = {
             "id": "bounce-account",
             "tenant_id": "bounce-tenant",
-            "host": "mailhog-tenant1",  # Docker network name
+            "host": "localhost",  # Docker network name
             "port": 1025,
             "use_tls": False,
         }

@@ -14,6 +14,7 @@ import pytest_asyncio
 httpx = pytest.importorskip("httpx")
 
 from tests.fullstack.helpers import (
+    ATTACHMENT_SERVER_URL,
     CLIENT_TENANT1_URL,
     MAILHOG_TENANT1_API,
     MINIO_URL,
@@ -64,7 +65,7 @@ class TestLargeFileStorage:
         account_data = {
             "id": "account-largefile",
             "tenant_id": "test-tenant-largefile",
-            "host": "mailhog-tenant1",
+            "host": "localhost",
             "port": 1025,
             "use_tls": False,
         }
@@ -95,7 +96,7 @@ class TestLargeFileStorage:
         account_data = {
             "id": "account-reject-large",
             "tenant_id": "test-tenant-reject-large",
-            "host": "mailhog-tenant1",
+            "host": "localhost",
             "port": 1025,
             "use_tls": False,
         }
@@ -126,7 +127,7 @@ class TestLargeFileStorage:
         account_data = {
             "id": "account-warn-large",
             "tenant_id": "test-tenant-warn-large",
-            "host": "mailhog-tenant1",
+            "host": "localhost",
             "port": 1025,
             "use_tls": False,
         }
@@ -153,7 +154,7 @@ class TestLargeFileStorage:
             "attachments": [
                 {
                     "filename": "small.txt",
-                    "storage_path": "http://attachment-server:8080/small.txt",
+                    "storage_path": f"{ATTACHMENT_SERVER_URL}/small.txt",
                     "fetch_mode": "http_url",
                 }
             ],
@@ -207,7 +208,7 @@ class TestLargeFileStorage:
             "attachments": [
                 {
                     "filename": "large-file.bin",
-                    "storage_path": "http://attachment-server:8080/large-file.bin",
+                    "storage_path": f"{ATTACHMENT_SERVER_URL}/large-file.bin",
                     "fetch_mode": "http_url",
                 }
             ],
@@ -261,7 +262,7 @@ class TestLargeFileStorage:
             "attachments": [
                 {
                     "filename": "large-file.bin",
-                    "storage_path": "http://attachment-server:8080/large-file.bin",
+                    "storage_path": f"{ATTACHMENT_SERVER_URL}/large-file.bin",
                     "fetch_mode": "http_url",
                 }
             ],
@@ -306,7 +307,7 @@ class TestLargeFileStorage:
             "attachments": [
                 {
                     "filename": "large-file.bin",
-                    "storage_path": "http://attachment-server:8080/large-file.bin",
+                    "storage_path": f"{ATTACHMENT_SERVER_URL}/large-file.bin",
                     "fetch_mode": "http_url",
                 }
             ],
@@ -351,12 +352,12 @@ class TestLargeFileStorage:
             "attachments": [
                 {
                     "filename": "small.txt",
-                    "storage_path": "http://attachment-server:8080/small.txt",
+                    "storage_path": f"{ATTACHMENT_SERVER_URL}/small.txt",
                     "fetch_mode": "http_url",
                 },
                 {
                     "filename": "large-file.bin",
-                    "storage_path": "http://attachment-server:8080/large-file.bin",
+                    "storage_path": f"{ATTACHMENT_SERVER_URL}/large-file.bin",
                     "fetch_mode": "http_url",
                 },
             ],
@@ -421,7 +422,7 @@ class TestLargeFileStorage:
             "attachments": [
                 {
                     "filename": "large-file.bin",
-                    "storage_path": "http://attachment-server:8080/large-file.bin",
+                    "storage_path": f"{ATTACHMENT_SERVER_URL}/large-file.bin",
                     "fetch_mode": "http_url",
                 }
             ],

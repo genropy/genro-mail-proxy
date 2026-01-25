@@ -66,33 +66,39 @@ def get_compose_command() -> list[str]:
 
 @pytest.fixture(scope="module")
 def docker_services():
-    """Start docker-compose services for the test module."""
+    """Verify docker-compose services are running.
+
+    NOTE: This fixture does NOT start/stop containers.
+    The infrastructure must be started manually before running tests:
+        docker compose -f tests/docker/docker-compose.fulltest.yml up -d
+
+    This allows the infrastructure to stay up across multiple test runs.
+    """
     if not docker_compose_available():
         pytest.skip("Docker/docker-compose not available")
 
     import subprocess
-    import time
 
     compose_cmd = get_compose_command()
 
-    # Start services
-    subprocess.run(
-        [*compose_cmd, "-f", str(COMPOSE_FILE), "up", "-d"],
-        check=True,
+    # Check if services are running
+    result = subprocess.run(
+        [*compose_cmd, "-f", str(COMPOSE_FILE), "ps", "--format", "{{.Names}}"],
         capture_output=True,
+        text=True,
     )
 
-    # Wait for services to be ready
-    time.sleep(5)
+    running_containers = result.stdout.strip().split("\n") if result.stdout.strip() else []
+    if len(running_containers) < 5:  # At least db, mailhog, minio, etc.
+        pytest.skip(
+            f"Docker infrastructure not running. Start it with:\n"
+            f"  docker compose -f {COMPOSE_FILE} up -d"
+        )
 
     yield
 
-    # Stop services
-    subprocess.run(
-        [*compose_cmd, "-f", str(COMPOSE_FILE), "down", "-v"],
-        check=True,
-        capture_output=True,
-    )
+    # NOTE: We intentionally do NOT stop services here.
+    # The infrastructure should remain up for subsequent test runs.
 
 
 @pytest_asyncio.fixture
