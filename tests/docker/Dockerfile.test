@@ -12,7 +12,7 @@ WORKDIR /app
 COPY . /app/
 
 # Install the package from local source with all extras
-RUN pip install --no-cache-dir -e ".[postgresql,large-files]"
+RUN pip install --no-cache-dir -e ".[postgresql,large-files,bounce]"
 
 # SQLite database stored in /data by default (when not using PostgreSQL)
 VOLUME ["/data"]

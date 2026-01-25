@@ -84,8 +84,11 @@ large-files = [
     "fsspec>=2024.1.0",
     "s3fs>=2024.1.0",
 ]
+bounce = [
+    "aioimaplib>=1.0.0",
+]
 all = [
-    "genro-mail-proxy[dev,docs,postgresql,large-files]",
+    "genro-mail-proxy[dev,docs,postgresql,large-files,bounce]",
 ]
 
 [project.urls]
@@ -105,6 +108,10 @@ markers = [
     "network: marks tests as requiring network access (deselect with '-m \"not network\"')",
     "fullstack: marks tests as requiring full Docker infrastructure (PostgreSQL, MailHog, MinIO)",
     "db: marks tests as database integration tests using testcontainers",
+    "bounce_e2e: marks tests as bounce end-to-end tests requiring Dovecot IMAP",
+    "chaos: marks tests with non-deterministic/random behavior",
+    "retention: marks tests for message retention and cleanup features",
+    "rate_limit: marks tests for account-level rate limiting",
 ]
 
 [tool.black]

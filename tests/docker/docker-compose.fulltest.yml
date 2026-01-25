@@ -145,20 +145,20 @@ services:
   # IMAP SERVER (for bounce detection testing)
   # ============================================
   dovecot:
-    image: dovecot/dovecot:latest
+    image: dovecot/dovecot:2.4.0
+    platform: linux/arm64
+    user: root
     ports:
-      - "10143:143"   # IMAP (non-SSL for testing)
-      - "10993:993"   # IMAPS
+      - "10143:31143"
     volumes:
-      - ./dovecot/dovecot.conf:/etc/dovecot/local.conf:ro
-      - ./dovecot/users:/etc/dovecot/users:ro
-      - dovecot-mail:/var/mail
+      - ./dovecot/etc:/etc/dovecot:ro
+      - dovecot-mail:/srv/vmail
     healthcheck:
-      test: ["CMD", "doveadm", "log", "errors"]
+      test: ["CMD-SHELL", "doveadm auth test bounces@localhost bouncepass || exit 1"]
       interval: 5s
       timeout: 5s
-      retries: 5
-      start_period: 10s
+      retries: 10
+      start_period: 20s
     networks:
       - testnet
 
@@ -212,6 +212,13 @@ services:
       - AWS_ACCESS_KEY_ID=minioadmin
       - AWS_SECRET_ACCESS_KEY=minioadmin
       - AWS_ENDPOINT_URL=http://minio:9000
+      # Bounce detection configuration
+      - GMP_BOUNCE_ENABLED=1
+      - GMP_BOUNCE_IMAP_HOST=dovecot
+      - GMP_BOUNCE_IMAP_PORT=31143
+      - GMP_BOUNCE_IMAP_USER=bounces@localhost
+      - GMP_BOUNCE_IMAP_PASSWORD=bouncepass
+      - GMP_BOUNCE_POLL_INTERVAL=2
     ports:
       - "8000:8000"
     depends_on:

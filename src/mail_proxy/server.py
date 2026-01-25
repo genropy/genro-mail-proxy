@@ -13,6 +13,16 @@ Environment variables:
         - /path/to/db.sqlite (SQLite file)
         - postgresql://user:pass@host/db (PostgreSQL)
         Default: ./mail_service.db (local dev); Docker sets /data/mail_service.db
+
+    GMP_API_TOKEN: API authentication token.
+
+    GMP_BOUNCE_ENABLED: Set to "1" or "true" to enable bounce detection.
+    GMP_BOUNCE_IMAP_HOST: IMAP server hostname for bounce mailbox.
+    GMP_BOUNCE_IMAP_PORT: IMAP server port (default: 143 for non-SSL, 993 for SSL).
+    GMP_BOUNCE_IMAP_USER: IMAP username for bounce mailbox.
+    GMP_BOUNCE_IMAP_PASSWORD: IMAP password for bounce mailbox.
+    GMP_BOUNCE_IMAP_SSL: Set to "1" or "true" for SSL connection (default: false).
+    GMP_BOUNCE_POLL_INTERVAL: Polling interval in seconds (default: 60).
 """
 
 from __future__ import annotations
@@ -81,11 +91,45 @@ _config = _get_config_from_db(_db_path)
 _api_token = os.environ.get("GMP_API_TOKEN") or _config.get("api_token")
 _instance_name = _config.get("name", "mail-proxy")
 
+
+def _is_truthy(value: str | None) -> bool:
+    """Check if environment variable value is truthy."""
+    return value is not None and value.lower() in ("1", "true", "yes", "on")
+
+
+def _get_bounce_config():
+    """Get BounceConfig from environment variables if enabled."""
+    if not _is_truthy(os.environ.get("GMP_BOUNCE_ENABLED")):
+        return None
+
+    host = os.environ.get("GMP_BOUNCE_IMAP_HOST")
+    if not host:
+        _logger.warning("GMP_BOUNCE_ENABLED=1 but GMP_BOUNCE_IMAP_HOST not set")
+        return None
+
+    from .bounce import BounceConfig
+
+    return BounceConfig(
+        host=host,
+        port=int(os.environ.get("GMP_BOUNCE_IMAP_PORT", "143")),
+        user=os.environ.get("GMP_BOUNCE_IMAP_USER", ""),
+        password=os.environ.get("GMP_BOUNCE_IMAP_PASSWORD", ""),
+        use_ssl=_is_truthy(os.environ.get("GMP_BOUNCE_IMAP_SSL")),
+        poll_interval=int(os.environ.get("GMP_BOUNCE_POLL_INTERVAL", "60")),
+    )
+
+
 # Create the core service
 _core = MailProxy(
     db_path=_db_path,
     start_active=True,
 )
+
+# Configure bounce detection if enabled via environment
+_bounce_config = _get_bounce_config()
+if _bounce_config:
+    _logger.info(f"Configuring bounce detection: {_bounce_config.host}:{_bounce_config.port}")
+    _core.configure_bounce_receiver(_bounce_config)
 
 
 @asynccontextmanager

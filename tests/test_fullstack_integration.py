@@ -1,5 +1,30 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
-"""Full-stack integration tests for genro-mail-proxy.
+"""
+.. deprecated::
+    This monolithic test file has been deprecated and replaced by the
+    modular test package ``tests/fullstack/``.
+
+    **Use the new structure instead:**
+
+    .. code-block:: bash
+
+        # Run all fullstack tests
+        pytest tests/fullstack/ -v -m fullstack
+
+        # Run specific test categories
+        pytest tests/fullstack/ -m bounce_e2e -v
+        pytest tests/fullstack/ -m retention -v
+
+    **Migration:**
+
+    All 25 test classes have been extracted into individual modules:
+    - test_health.py, test_tenants.py, test_accounts.py, etc.
+
+    This file will be removed in a future release.
+
+----
+
+Full-stack integration tests for genro-mail-proxy (DEPRECATED).
 
 These tests validate ALL features of the mail proxy against a complete
 Docker infrastructure including PostgreSQL, MinIO (S3), and MailHog SMTP servers.

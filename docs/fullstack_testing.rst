@@ -6,6 +6,58 @@ This appendix describes the comprehensive testing infrastructure for genro-mail-
 designed to validate every aspect of the system in an environment that closely
 simulates production.
 
+.. note::
+
+   **Modular Test Structure (Recommended)**
+
+   The fullstack tests have been reorganized into a modular package at ``tests/fullstack/``.
+   This replaces the monolithic ``test_fullstack_integration.py`` file.
+
+   .. code-block:: bash
+
+      # Run all fullstack tests
+      pytest tests/fullstack/ -v -m fullstack
+
+      # Run specific test categories
+      pytest tests/fullstack/ -m bounce_e2e -v      # Bounce detection tests
+      pytest tests/fullstack/ -m retention -v       # Message retention tests
+      pytest tests/fullstack/ -m rate_limit -v      # Rate limiting tests
+
+   **Package structure:**
+
+   .. code-block:: text
+
+      tests/fullstack/
+      ├── __init__.py
+      ├── README.md              # Quick start guide
+      ├── conftest.py            # Shared fixtures (api_client, imap_bounce, etc.)
+      ├── helpers.py             # Helper functions and constants
+      │
+      ├── test_health.py         # Health and basic API tests
+      ├── test_tenants.py        # Tenant management
+      ├── test_accounts.py       # Account management
+      ├── test_dispatch.py       # Basic message dispatch
+      ├── test_isolation.py      # Tenant isolation
+      ├── test_batch.py          # Batch operations
+      ├── test_attachments.py    # Base64 and HTTP attachments
+      ├── test_priority.py       # Priority handling
+      ├── test_service_control.py # Suspend/Activate
+      ├── test_metrics.py        # Prometheus metrics
+      ├── test_validation.py     # Input validation
+      ├── test_messages.py       # Message management
+      ├── test_infrastructure.py # Docker service checks
+      ├── test_smtp_errors.py    # SMTP error handling
+      ├── test_large_files.py    # S3 large file storage
+      ├── test_delivery_reports.py # Delivery report callbacks
+      ├── test_security.py       # Security/sanitization
+      ├── test_unicode.py        # Unicode/encoding
+      ├── test_bounce.py         # Bounce detection (DSN parsing)
+      │
+      ├── test_bounce_live.py    # Live bounce polling (BounceReceiver)
+      ├── test_retention.py      # Message retention cleanup
+      ├── test_rate_limiting.py  # Account rate limiting
+      └── test_tenant_auth.py    # Per-tenant API keys
+
 Overview
 --------
 
@@ -525,22 +577,25 @@ Bounce End-to-End
 Test Coverage Gaps
 ------------------
 
-The following features are **NOT YET TESTED** in the fullstack integration tests:
+.. note::
 
-Bounce Detection - Live BounceReceiver (PARTIALLY TESTED)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   **Recently Added Tests**
 
-The bounce end-to-end tests verify DSN parsing and correlation, but **do not test**
-the full live polling flow:
+   The following test coverage gaps have been addressed in the modular test structure:
 
-.. warning::
+   - ✅ **Bounce Live Polling** - ``test_bounce_live.py`` (5 tests)
+   - ✅ **Message Retention** - ``test_retention.py`` (5 tests)
+   - ✅ **Account Rate Limiting** - ``test_rate_limiting.py`` (5 tests)
+   - ✅ **Per-Tenant API Keys** - ``test_tenant_auth.py`` (8 tests)
 
-   **Tests that require live BounceReceiver:**
+The following features still require additional testing:
 
-   - BounceReceiver automatic IMAP polling (tests use direct injection)
-   - Bounce notification to client via delivery reports
-   - bounce_reported_ts update after client notification
-   - Real DSN/MDN emails from external MTAs
+Bounce Detection - Live BounceReceiver (NOW TESTED)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. versionadded:: 2025.01
+
+   Live bounce polling is now tested in ``test_bounce_live.py``.
 
 **What IS tested:**
 
@@ -549,30 +604,23 @@ the full live polling flow:
 - ✅ Hard vs soft bounce classification
 - ✅ IMAP injection and retrieval
 - ✅ X-Genro-Mail-ID header in outgoing emails
+- ✅ **Live BounceReceiver automatic polling** (NEW)
+- ✅ **Multiple bounces processed in batch** (NEW)
+- ✅ **IMAP message deletion after processing** (NEW)
 
-**Suggested tests to add (HIGH PRIORITY):**
+**Configuration required:**
 
-1. **Live polling test** - Start BounceReceiver, inject DSN, wait for automatic detection:
+The mailproxy service must have bounce detection enabled via environment variables:
 
-   .. code-block:: python
+.. code-block:: yaml
 
-      async def wait_for_bounce(api_client, msg_id, timeout=30):
-          """Wait for BounceReceiver to detect and process a bounce."""
-          start = time.time()
-          while time.time() - start < timeout:
-              resp = await api_client.get(f"/messages/{msg_id}")
-              if resp.json().get("bounce_ts") is not None:
-                  return resp.json()
-              await asyncio.sleep(1.5)  # > poll interval
-          pytest.fail(f"Bounce not detected for {msg_id} within {timeout}s")
-
-2. **Delivery report with bounce info** - Verify echo server receives bounce data:
-
-   .. code-block:: python
-
-      # After bounce detected, trigger delivery report
-      # Check echo server received: {"bounce": {"type": "hard", "code": "550", ...}}
-      # Verify bounce_reported_ts > bounce_ts
+   environment:
+     - GMP_BOUNCE_ENABLED=1
+     - GMP_BOUNCE_IMAP_HOST=dovecot
+     - GMP_BOUNCE_IMAP_PORT=143
+     - GMP_BOUNCE_IMAP_USER=bounces@localhost
+     - GMP_BOUNCE_IMAP_PASSWORD=bouncepass
+     - GMP_BOUNCE_POLL_INTERVAL=2
 
 PEC Support (NOT TESTED)
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -596,152 +644,173 @@ Italian Certified Email (PEC) is **not tested**:
 - Start with unit tests for PEC parser, then integrate in fullstack
 - Use ``email``, ``dkim``, ``cryptography`` libraries for S/MIME envelope generation
 
-Message Lifecycle - Retention (NOT TESTED)
+Message Lifecycle - Retention (NOW TESTED)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The retention policy and cleanup are **not tested**:
+.. versionadded:: 2025.01
 
-.. warning::
+   Message retention is now tested in ``test_retention.py``.
 
-   **Missing retention tests:**
+**What IS tested:**
 
-   - Messages deleted after retention period
-   - ``report_retention_seconds`` configuration
-   - Manual cleanup via ``/commands/cleanup-messages``
-   - Retention applied only to reported messages
+- ✅ Cleanup removes old reported messages
+- ✅ Cleanup respects tenant isolation
+- ✅ Unreported messages are preserved
+- ✅ Bounced but unreported messages are preserved
+- ✅ Retention configuration per tenant
 
-**Suggested tests (MEDIUM PRIORITY, 4-6 tests):**
+Rate Limiting (NOW TESTED)
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-1. Configure ``report_retention_seconds=60`` in tenant
-2. Send messages → trigger report (success + bounce)
-3. Advance time (use ``freezegun`` or mock ``time.time``)
-4. Call ``/commands/cleanup-messages`` or wait for automatic cycle
-5. Verify DELETE only for old ``reported_ts`` messages
-6. Edge case: BOUNCED but not reported → should NOT be deleted
+.. versionadded:: 2025.01
 
-Rate Limiting (PARTIALLY TESTED)
+   Account-level rate limiting is now tested in ``test_rate_limiting.py``.
+
+**What IS tested:**
+
+- ✅ Per-minute rate limit defers excess messages
+- ✅ Per-hour rate limit configuration
+- ✅ Reject vs defer behavior
+- ✅ Rate limit window reset
+- ✅ Independent rate limits per account
+
+Per-Tenant API Keys (NOW TESTED)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Rate limiting is tested at SMTP level but **not at account level**:
+.. versionadded:: 2025.01
+
+   Per-tenant API authentication is now tested in ``test_tenant_auth.py``.
+
+**What IS tested:**
+
+- ✅ Tenant token accesses own resources
+- ✅ Tenant token rejected for other tenants
+- ✅ Global token fallback
+- ✅ Invalid/missing token rejection
+- ✅ Token rotation
+- ✅ Scoped operations per tenant
+
+Remaining Coverage Gaps
+~~~~~~~~~~~~~~~~~~~~~~~
+
+The following features are **still NOT TESTED**:
+
+PEC Support (Italian Certified Email)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Italian Certified Email (PEC) is **not tested**:
 
 .. warning::
 
-   **Missing rate limit tests:**
+   **Missing PEC tests:**
 
-   - ``limit_per_minute`` account configuration
-   - ``limit_per_hour`` account configuration
-   - ``limit_per_day`` account configuration
-   - ``limit_behavior`` (defer vs reject)
+   - PEC ricevuta di accettazione (RdA) parsing
+   - PEC ricevuta di consegna (RdC) parsing
+   - PEC error notifications
+   - S/MIME envelope parsing
+   - pec_rda_ts, pec_rdc_ts, pec_error fields update
 
-**Suggested tests:**
+**Implementation approach:**
 
-1. Create account with ``limit_per_minute=3``
-2. Send 5 messages rapidly
-3. Verify defer/reject on excess messages
-4. Test ``limit_behavior`` configuration
-
-Per-Tenant API Keys (NOT TESTED)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Per-tenant API authentication is **not tested**:
-
-.. warning::
-
-   **Missing per-tenant auth tests:**
-
-   - Tenant-specific API tokens
-   - Token validation per tenant
-   - Token rotation
-
-**Suggested tests:**
-
-1. Create token for specific tenant
-2. Test isolated authentication per tenant
-3. Wrong token → 403
-4. Token from another tenant → 403
+- Use same Dovecot infrastructure
+- Inject fake PEC emails (multipart/signed + report)
+- Start with unit tests for PEC parser, then integrate in fullstack
+- Use ``email``, ``dkim``, ``cryptography`` libraries for S/MIME envelope generation
 
 
 Test Roadmap - Priority Summary
 -------------------------------
 
-The following table summarizes the test gaps and their priority:
+The following table summarizes the **remaining** test gaps and their priority:
 
 ==================== ========== ===============================================
-Feature              Priority   Effort
+Feature              Priority   Status
 ==================== ========== ===============================================
-Live bounce polling  HIGH       1-2 tests, uses existing infrastructure
-Bounce delivery rpt  HIGH       1 test, extends existing delivery report tests
-Retention cleanup    MEDIUM     4-6 tests, needs time mocking (freezegun)
-Rate limit account   MEDIUM     3-4 tests, straightforward
-Per-tenant API keys  LOW        3-4 tests, depends on feature usage
-PEC support          LOW        5-10 tests, complex S/MIME parsing
+Live bounce polling  HIGH       ✅ COMPLETED (test_bounce_live.py)
+Bounce delivery rpt  HIGH       ✅ COMPLETED (test_bounce_live.py)
+Retention cleanup    MEDIUM     ✅ COMPLETED (test_retention.py)
+Rate limit account   MEDIUM     ✅ COMPLETED (test_rate_limiting.py)
+Per-tenant API keys  MEDIUM     ✅ COMPLETED (test_tenant_auth.py)
+PEC support          LOW        ❌ NOT TESTED (Italian market specific)
 ==================== ========== ===============================================
 
-**Recommended implementation order:**
+**Recommended next steps:**
 
-1. Live bounce polling + delivery report (closes bounce to ~95%)
-2. Retention cleanup (important for production)
-3. Rate limiting account-level
-4. Per-tenant API keys (if used in production)
-5. PEC support (Italian market specific)
+1. Run the new tests to verify infrastructure works correctly
+2. Implement PEC support tests if needed for Italian market
+3. Add chaos/fuzz testing for resilience
 
 
-DX Improvements - Suggested Enhancements
-----------------------------------------
+DX Improvements - Implemented Enhancements
+------------------------------------------
 
-The following improvements would enhance developer experience:
+The following DX improvements have been implemented:
 
-Improved Dovecot Healthcheck
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Improved Dovecot Healthcheck (IMPLEMENTED)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Current healthcheck uses ``doveadm log errors``. A more robust check:
+The healthcheck now verifies actual IMAP login works:
 
 .. code-block:: yaml
 
    healthcheck:
-     test: ["CMD", "sh", "-c", "echo 'A1 LOGOUT' | nc localhost 143 | grep '* OK'"]
+     test: ["CMD", "sh", "-c", "echo -e 'A1 LOGIN bounces@localhost bouncepass\nA2 LOGOUT' | nc localhost 143 | grep -q 'A1 OK'"]
      interval: 5s
      timeout: 5s
      retries: 5
+     start_period: 15s
 
-IMAP Client Fixture
-~~~~~~~~~~~~~~~~~~~
+IMAP Client Fixtures (IMPLEMENTED)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-A pytest fixture for IMAP operations would simplify bounce tests:
+Fixtures are now available in ``tests/fullstack/conftest.py``:
 
 .. code-block:: python
-
-   import imaplib
-   import pytest
 
    @pytest.fixture
    def imap_bounce():
        """IMAP client connected to bounce mailbox."""
-       M = imaplib.IMAP4("localhost", 10143)
-       M.login("bounces@localhost", "bouncepass")
+       M = imaplib.IMAP4(DOVECOT_IMAP_HOST, DOVECOT_IMAP_PORT)
+       M.login(DOVECOT_BOUNCE_USER, DOVECOT_BOUNCE_PASS)
        M.select("INBOX")
        yield M
        M.logout()
 
-   # Usage in tests:
-   async def test_bounce_injection(imap_bounce, api_client):
-       dsn = create_dsn_bounce_email(msg_id, hard=True)
-       imap_bounce.append(
-           "INBOX", "",
-           imaplib.Time2Internaldate(time.time()),
-           dsn.encode()
-       )
+   @pytest.fixture
+   def clean_imap(imap_bounce):
+       """Clear IMAP mailbox before and after test."""
+       clear_imap_mailbox(imap_bounce)
+       yield imap_bounce
+       clear_imap_mailbox(imap_bounce)
 
-Test Markers
-~~~~~~~~~~~~
+Test Markers (IMPLEMENTED)
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Add markers for selective test execution:
+Markers are now configured in ``pyproject.toml``:
 
-.. code-block:: python
+.. code-block:: toml
 
-   @pytest.mark.bounce_e2e
-   async def test_bounce_live_polling(...):
-       ...
+   [tool.pytest.ini_options]
+   markers = [
+       "fullstack: marks tests as fullstack integration tests",
+       "bounce_e2e: marks tests as bounce end-to-end tests requiring Dovecot IMAP",
+       "chaos: marks tests with non-deterministic/random behavior",
+       "retention: marks tests for message retention and cleanup features",
+       "rate_limit: marks tests for account-level rate limiting",
+   ]
+
+**Usage:**
+
+.. code-block:: bash
+
+   # Run only bounce E2E tests
+   pytest tests/fullstack/ -m bounce_e2e -v
+
+   # Run retention tests
+   pytest tests/fullstack/ -m retention -v
+
+   # Exclude chaos tests (non-deterministic)
+   pytest tests/fullstack/ -m "not chaos" -v
 
    @pytest.mark.chaos
    async def test_random_smtp_behavior(...):
