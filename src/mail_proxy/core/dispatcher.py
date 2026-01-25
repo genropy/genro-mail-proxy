@@ -322,6 +322,9 @@ class DispatcherMixin:
                 # Wrap send_message in timeout to prevent hanging (max 30s for large attachments)
                 await asyncio.wait_for(smtp.send_message(msg, sender=envelope_sender), timeout=30.0)
         except Exception as exc:
+            # Release the rate limiter slot since send failed
+            await self.rate_limiter.release_slot(resolved_account_id)
+
             # Classify the error and get retry count
             is_temporary, smtp_code = self._retry_strategy.classify_error(exc)
             retry_count = payload.get("retry_count", 0)

@@ -9,6 +9,10 @@ service restarts.
 The sliding window approach ensures fair distribution of sends over time
 rather than allowing burst behavior at window boundaries.
 
+To handle parallel dispatch correctly, the limiter tracks "in-flight" sends
+in memory. This ensures that concurrent sends are counted even before they
+complete and are logged to the database.
+
 Example:
     Using the rate limiter::
 
@@ -19,14 +23,22 @@ Example:
             await persistence.set_deferred(msg_id, deferred_until)
         else:
             # Safe to send now
-            await send_message(msg)
-            await rate_limiter.log_send(account_id)
+            try:
+                await send_message(msg)
+                await rate_limiter.log_send(account_id)
+            except Exception:
+                await rate_limiter.release_slot(account_id)
+                raise
 """
 
+import asyncio
+import logging
 import time
 from typing import Any
 
 from .mailproxy_db import MailProxyDb
+
+logger = logging.getLogger(__name__)
 
 
 class RateLimiter:
@@ -40,6 +52,8 @@ class RateLimiter:
     When any limit is exceeded, the limiter calculates the earliest timestamp
     at which the message can be safely sent without violating the limit.
 
+    Tracks in-flight sends in memory to handle parallel dispatch correctly.
+
     Attributes:
         db: The MailProxyDb instance used to query send history.
     """
@@ -52,13 +66,19 @@ class RateLimiter:
                 send log table for counting recent sends.
         """
         self.db = db
+        self._in_flight: dict[str, int] = {}
+        self._lock = asyncio.Lock()
 
     async def check_and_plan(self, account: dict[str, Any]) -> int | None:
         """Check rate limits and calculate deferral timestamp if exceeded.
 
         Evaluates the account's configured rate limits against recent send
-        history. If any limit is exceeded, returns a Unix timestamp indicating
-        when the message should be retried.
+        history plus in-flight sends. If any limit is exceeded, returns a
+        Unix timestamp indicating when the message should be retried.
+
+        If the check passes, reserves a slot by incrementing the in-flight
+        counter. The caller MUST call either log_send() on success or
+        release_slot() on failure to release the reservation.
 
         Limits are checked in order of granularity (minute, hour, day) and
         the first exceeded limit determines the deferral time.
@@ -88,27 +108,64 @@ class RateLimiter:
         per_hour = lim("limit_per_hour")
         per_day = lim("limit_per_day")
 
-        if per_min is not None:
-            c = await self.db.count_sends_since(account_id, now - 60)
-            if c >= per_min:
-                return (now // 60 + 1) * 60
-        if per_hour is not None:
-            c = await self.db.count_sends_since(account_id, now - 3600)
-            if c >= per_hour:
-                return (now // 3600 + 1) * 3600
-        if per_day is not None:
-            c = await self.db.count_sends_since(account_id, now - 86400)
-            if c >= per_day:
-                return (now // 86400 + 1) * 86400
+        # No limits configured - allow immediately
+        if per_min is None and per_hour is None and per_day is None:
+            return None
+
+        async with self._lock:
+            in_flight = self._in_flight.get(account_id, 0)
+            logger.warning(
+                "Rate check for %s: in_flight=%d, per_min=%s, per_hour=%s, per_day=%s",
+                account_id, in_flight, per_min, per_hour, per_day
+            )
+
+            if per_min is not None:
+                c = await self.db.count_sends_since(account_id, now - 60)
+                logger.warning("Rate check %s: db_count=%d + in_flight=%d vs limit=%d", account_id, c, in_flight, per_min)
+                if c + in_flight >= per_min:
+                    logger.warning("Rate limit HIT for %s: %d+%d >= %d, deferring", account_id, c, in_flight, per_min)
+                    return (now // 60 + 1) * 60
+            if per_hour is not None:
+                c = await self.db.count_sends_since(account_id, now - 3600)
+                if c + in_flight >= per_hour:
+                    logger.info("Rate limit (hour) hit for %s: %d+%d >= %d", account_id, c, in_flight, per_hour)
+                    return (now // 3600 + 1) * 3600
+            if per_day is not None:
+                c = await self.db.count_sends_since(account_id, now - 86400)
+                if c + in_flight >= per_day:
+                    logger.info("Rate limit (day) hit for %s: %d+%d >= %d", account_id, c, in_flight, per_day)
+                    return (now // 86400 + 1) * 86400
+
+            # Reserve a slot for this send
+            self._in_flight[account_id] = in_flight + 1
+            logger.warning("Rate check %s: ALLOWED, in_flight now %d", account_id, in_flight + 1)
+
         return None
 
     async def log_send(self, account_id: str) -> None:
         """Record a successful send for rate limiting purposes.
 
         Must be called after each successful message delivery to maintain
-        accurate rate limit tracking.
+        accurate rate limit tracking. Releases the in-flight slot reserved
+        by check_and_plan().
 
         Args:
             account_id: The SMTP account identifier that sent the message.
         """
+        async with self._lock:
+            if account_id in self._in_flight and self._in_flight[account_id] > 0:
+                self._in_flight[account_id] -= 1
         await self.db.log_send(account_id, int(time.time()))
+
+    async def release_slot(self, account_id: str) -> None:
+        """Release an in-flight slot without logging a send.
+
+        Call this when a send fails after check_and_plan() returned None.
+        This ensures the in-flight counter stays accurate.
+
+        Args:
+            account_id: The SMTP account identifier.
+        """
+        async with self._lock:
+            if account_id in self._in_flight and self._in_flight[account_id] > 0:
+                self._in_flight[account_id] -= 1

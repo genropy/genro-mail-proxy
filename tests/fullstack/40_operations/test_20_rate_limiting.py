@@ -43,11 +43,13 @@ class TestAccountRateLimiting:
         """Messages exceeding per-minute rate limit should be deferred.
 
         Flow:
-        1. Create account with rate_limit_per_minute=3
+        1. Create account with limit_per_minute=3
         2. Queue 5 messages
         3. Trigger dispatch
         4. Verify only 3 sent, 2 deferred
         """
+        # Wait for any pending dispatches to complete before starting
+        await asyncio.sleep(2)
         await clear_mailhog(MAILHOG_TENANT1_API)
 
         ts = int(time.time())
@@ -59,7 +61,7 @@ class TestAccountRateLimiting:
             "host": "localhost",
             "port": 1025,
             "use_tls": False,
-            "rate_limit_per_minute": 3,
+            "limit_per_minute": 3,
         }
         resp = await api_client.post("/account", json=account_data)
         if resp.status_code == 422:
@@ -124,7 +126,7 @@ class TestAccountRateLimiting:
             "host": "localhost",
             "port": 1025,
             "use_tls": False,
-            "rate_limit_per_hour": 100,
+            "limit_per_hour": 100,
         }
         resp = await api_client.post("/account", json=account_data)
         if resp.status_code == 422:
@@ -135,7 +137,7 @@ class TestAccountRateLimiting:
         resp = await api_client.get(f"/account?id={account_data['id']}")
         if resp.status_code == 200:
             account = resp.json()
-            assert account.get("rate_limit_per_hour") == 100
+            assert account.get("limit_per_hour") == 100
 
     async def test_rate_limit_reject_behavior(
         self, api_client, setup_test_tenants
@@ -156,8 +158,8 @@ class TestAccountRateLimiting:
             "host": "localhost",
             "port": 1025,
             "use_tls": False,
-            "rate_limit_per_minute": 2,
-            "rate_limit_mode": "reject",  # reject vs defer
+            "limit_per_minute": 2,
+            "limit_behavior": "reject",  # reject vs defer
         }
         resp = await api_client.post("/account", json=account_data)
         if resp.status_code == 422:
@@ -220,7 +222,7 @@ class TestAccountRateLimiting:
             "host": "localhost",
             "port": 1025,
             "use_tls": False,
-            "rate_limit_per_minute": 2,
+            "limit_per_minute": 2,
         }
         resp = await api_client.post("/account", json=account_data)
         if resp.status_code == 422:
@@ -265,6 +267,8 @@ class TestAccountRateLimiting:
 
         Account A hitting its limit should not affect Account B.
         """
+        # Wait for any pending dispatches from previous tests to complete
+        await asyncio.sleep(2)
         await clear_mailhog(MAILHOG_TENANT1_API)
 
         ts = int(time.time())
@@ -276,7 +280,7 @@ class TestAccountRateLimiting:
             "host": "localhost",
             "port": 1025,
             "use_tls": False,
-            "rate_limit_per_minute": 2,
+            "limit_per_minute": 2,
         }
         account_b = {
             "id": f"ratelimit-b-{ts}",
@@ -284,7 +288,7 @@ class TestAccountRateLimiting:
             "host": "localhost",
             "port": 1025,
             "use_tls": False,
-            "rate_limit_per_minute": 5,
+            "limit_per_minute": 5,
         }
 
         resp = await api_client.post("/account", json=account_a)
