@@ -11,6 +11,7 @@ from .account.table import AccountsTable
 from .instance.table import InstanceTable
 from .instance_config.table import InstanceConfigTable
 from .message.table import MessagesTable
+from .message_event.table import MessageEventTable
 from .send_log.table import SendLogTable
 from .tenant.table import TenantsTable
 
@@ -18,6 +19,7 @@ __all__ = [
     "AccountsTable",
     "InstanceConfigTable",
     "InstanceTable",
+    "MessageEventTable",
     "MessagesTable",
     "SendLogTable",
     "TenantsTable",

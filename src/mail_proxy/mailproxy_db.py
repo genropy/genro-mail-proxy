@@ -19,6 +19,7 @@ Example:
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterable, Sequence
 from typing import Any
 
@@ -26,6 +27,7 @@ from .entities import (
     AccountsTable,
     InstanceConfigTable,
     InstanceTable,
+    MessageEventTable,
     MessagesTable,
     SendLogTable,
     TenantsTable,
@@ -57,6 +59,7 @@ class MailProxyDb(SqlDb):
         self.add_table(TenantsTable)
         self.add_table(AccountsTable)
         self.add_table(MessagesTable)
+        self.add_table(MessageEventTable)
         self.add_table(SendLogTable)
         self.add_table(InstanceConfigTable)
         self.add_table(InstanceTable)
@@ -76,6 +79,10 @@ class MailProxyDb(SqlDb):
     @property
     def send_log(self) -> SendLogTable:
         return self.table("send_log")  # type: ignore[return-value]
+
+    @property
+    def message_events(self) -> MessageEventTable:
+        return self.table("message_events")  # type: ignore[return-value]
 
     @property
     def config(self) -> InstanceConfigTable:
@@ -159,17 +166,39 @@ class MailProxyDb(SqlDb):
             limit=limit, now_ts=now_ts, priority=priority, min_priority=min_priority
         )
 
-    async def set_deferred(self, msg_id: str, deferred_ts: int) -> None:
+    async def set_deferred(
+        self, msg_id: str, deferred_ts: int, reason: str | None = None
+    ) -> None:
         await self.messages.set_deferred(msg_id, deferred_ts)
+        # Record deferred event for reporting
+        await self.message_events.add_event(
+            message_id=msg_id,
+            event_type="deferred",
+            event_ts=deferred_ts,
+            description=reason,
+        )
 
     async def clear_deferred(self, msg_id: str) -> None:
         await self.messages.clear_deferred(msg_id)
 
     async def mark_sent(self, msg_id: str, sent_ts: int) -> None:
         await self.messages.mark_sent(msg_id, sent_ts)
+        # Record sent event for reporting
+        await self.message_events.add_event(
+            message_id=msg_id,
+            event_type="sent",
+            event_ts=sent_ts,
+        )
 
     async def mark_error(self, msg_id: str, error_ts: int, error: str) -> None:
         await self.messages.mark_error(msg_id, error_ts, error)
+        # Record error event for reporting
+        await self.message_events.add_event(
+            message_id=msg_id,
+            event_type="error",
+            event_ts=error_ts,
+            description=error,
+        )
 
     async def update_message_payload(self, msg_id: str, payload: dict[str, Any]) -> None:
         await self.messages.update_payload(msg_id, payload)
@@ -178,9 +207,17 @@ class MailProxyDb(SqlDb):
         return await self.messages.get(msg_id)
 
     async def delete_message(self, msg_id: str) -> bool:
+        # First delete events for the message
+        await self.message_events.delete_for_message(msg_id)
         return await self.messages.remove(msg_id)
 
     async def purge_messages_for_account(self, account_id: str) -> None:
+        # Get all message IDs for this account and delete their events
+        messages = await self.messages.select(
+            columns=["id"], where={"account_id": account_id}
+        )
+        for msg in messages:
+            await self.message_events.delete_for_message(msg["id"])
         await self.messages.purge_for_account(account_id)
 
     async def existing_message_ids(self, ids: Iterable[str]) -> set[str]:
@@ -202,9 +239,19 @@ class MailProxyDb(SqlDb):
         bounce_type: str,
         bounce_code: str | None = None,
         bounce_reason: str | None = None,
+        bounce_ts: int | None = None,
     ) -> None:
         """Mark a message as bounced."""
         await self.messages.mark_bounced(msg_id, bounce_type, bounce_code, bounce_reason)
+        # Record bounce event for reporting
+        event_ts = bounce_ts if bounce_ts is not None else int(time.time())
+        await self.message_events.add_event(
+            message_id=msg_id,
+            event_type="bounce",
+            event_ts=event_ts,
+            description=bounce_reason,
+            metadata={"bounce_type": bounce_type, "bounce_code": bounce_code},
+        )
 
     async def mark_bounce_reported(
         self,
@@ -215,7 +262,21 @@ class MailProxyDb(SqlDb):
         await self.messages.mark_bounce_reported(message_ids, reported_ts)
 
     async def remove_reported_before(self, threshold_ts: int) -> int:
+        # First delete events for messages that will be removed
+        await self.message_events.delete_for_reported_messages_before(threshold_ts)
         return await self.messages.remove_reported_before(threshold_ts)
+
+    async def remove_reported_before_for_tenant(
+        self, threshold_ts: int, tenant_id: str
+    ) -> int:
+        """Delete reported messages older than threshold for a specific tenant."""
+        # First delete events for messages that will be removed
+        await self.message_events.delete_for_reported_messages_before_tenant(
+            threshold_ts, tenant_id
+        )
+        return await self.messages.remove_reported_before_for_tenant(
+            threshold_ts, tenant_id
+        )
 
     async def list_messages(
         self, *, tenant_id: str | None = None, active_only: bool = False
@@ -239,6 +300,38 @@ class MailProxyDb(SqlDb):
 
     async def count_sends_since(self, account_id: str, since_ts: int) -> int:
         return await self.send_log.count_since(account_id, since_ts)
+
+    # -------------------------------------------------------------------------
+    # Message events
+    # -------------------------------------------------------------------------
+    async def add_event(
+        self,
+        message_id: str,
+        event_type: str,
+        event_ts: int,
+        description: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
+        """Record a message event (sent, error, deferred, bounce, pec_*)."""
+        return await self.message_events.add_event(
+            message_id, event_type, event_ts, description, metadata
+        )
+
+    async def fetch_unreported_events(self, limit: int) -> list[dict[str, Any]]:
+        """Fetch events not yet reported to clients."""
+        return await self.message_events.fetch_unreported(limit)
+
+    async def mark_events_reported(self, event_ids: list[int], reported_ts: int) -> None:
+        """Mark events as reported to client."""
+        await self.message_events.mark_reported(event_ids, reported_ts)
+
+    async def get_events_for_message(self, message_id: str) -> list[dict[str, Any]]:
+        """Get all events for a specific message."""
+        return await self.message_events.get_events_for_message(message_id)
+
+    async def delete_events_for_message(self, message_id: str) -> int:
+        """Delete all events for a message. Returns deleted count."""
+        return await self.message_events.delete_for_message(message_id)
 
     # -------------------------------------------------------------------------
     # Instance config
