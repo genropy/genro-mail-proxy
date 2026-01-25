@@ -23,7 +23,10 @@ from .helpers import (
     DOVECOT_BOUNCE_USER,
     DOVECOT_BOUNCE_PASS,
     DOVECOT_POLL_INTERVAL,
+    DOVECOT_PEC_USER,
+    DOVECOT_PEC_PASS,
     is_dovecot_available,
+    is_pec_imap_available,
 )
 
 # Mark all tests in this package as fullstack
@@ -215,6 +218,76 @@ async def configure_bounce_receiver(api_client):
     # Teardown: disable bounce
     await api_client.put("/instance", json={"bounce_enabled": False})
     await api_client.post("/instance/reload-bounce")
+
+
+# ============================================
+# PEC TENANT FIXTURE
+# ============================================
+
+@pytest_asyncio.fixture
+async def setup_pec_tenant(api_client):
+    """Setup a tenant with a PEC account for testing PEC receipt handling."""
+    tenant_data = {
+        "id": "pec-tenant",
+        "name": "PEC Test Tenant",
+        "client_base_url": CLIENT_TENANT1_URL,
+        "client_sync_path": "/proxy_sync",
+        "client_auth": {"method": "none"},
+        "active": True,
+    }
+    resp = await api_client.post("/tenant", json=tenant_data)
+    assert resp.status_code in (200, 201, 409), resp.text
+
+    # Create a PEC account with IMAP configuration for receipt polling
+    pec_account_data = {
+        "id": "pec-account",
+        "tenant_id": "pec-tenant",
+        "host": "localhost",
+        "port": 1025,
+        "use_tls": False,
+        "is_pec_account": True,
+        "imap_host": DOVECOT_IMAP_HOST,
+        "imap_port": DOVECOT_IMAP_PORT,
+        "imap_user": DOVECOT_PEC_USER,
+        "imap_password": DOVECOT_PEC_PASS,
+        "imap_ssl": False,
+    }
+    resp = await api_client.post("/account", json=pec_account_data)
+    assert resp.status_code in (200, 201, 409), resp.text
+
+    return {"tenant": tenant_data, "account": pec_account_data}
+
+
+@pytest.fixture
+def imap_pec():
+    """IMAP client connected to PEC mailbox for testing.
+
+    Yields an imaplib.IMAP4 connection to Dovecot configured for
+    PEC receipt injection and verification.
+    """
+    try:
+        M = imaplib.IMAP4(DOVECOT_IMAP_HOST, DOVECOT_IMAP_PORT)
+        M.login(DOVECOT_PEC_USER, DOVECOT_PEC_PASS)
+        M.select("INBOX")
+        yield M
+        M.logout()
+    except Exception:
+        pytest.skip("Dovecot PEC IMAP mailbox not available")
+
+
+@pytest.fixture
+def clean_pec_imap(imap_pec):
+    """Clear PEC IMAP mailbox before and after test."""
+    def _clear():
+        _, message_ids = imap_pec.search(None, "ALL")
+        if message_ids[0]:
+            for msg_id in message_ids[0].split():
+                imap_pec.store(msg_id, "+FLAGS", "\\Deleted")
+            imap_pec.expunge()
+
+    _clear()
+    yield imap_pec
+    _clear()
 
 
 # ============================================

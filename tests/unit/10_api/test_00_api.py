@@ -151,7 +151,7 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
             },
         ),
         ("deleteMessages", {"tenant_id": "test-tenant", "ids": ["msg-bulk"]}),
-        ("addAccount", {"id": "acc", "tenant_id": None, "host": "smtp.local", "port": 25, "user": None, "password": None, "ttl": 300, "limit_per_minute": None, "limit_per_hour": None, "limit_per_day": None, "limit_behavior": "defer", "use_tls": None, "batch_size": None}),
+        ("addAccount", {"id": "acc", "tenant_id": None, "host": "smtp.local", "port": 25, "user": None, "password": None, "ttl": 300, "limit_per_minute": None, "limit_per_hour": None, "limit_per_day": None, "limit_behavior": "defer", "use_tls": None, "batch_size": None, "is_pec_account": None, "imap_host": None, "imap_port": None, "imap_user": None, "imap_password": None, "imap_ssl": None}),
         ("listAccounts", {"tenant_id": "test-tenant"}),
         ("deleteAccount", {"id": "acc", "tenant_id": "test-tenant"}),
         ("listMessages", {"tenant_id": "test-tenant", "active_only": False}),

@@ -55,26 +55,43 @@ class AccountsTable(Table):
         c.column("imap_uidvalidity", Integer)
 
     async def add(self, acc: dict[str, Any]) -> None:
-        """Insert or update an SMTP account."""
+        """Insert or update an SMTP account.
+
+        Supports both regular SMTP accounts and PEC accounts with IMAP config.
+        """
         use_tls = acc.get("use_tls")
         use_tls_val = None if use_tls is None else (1 if use_tls else 0)
 
+        is_pec = acc.get("is_pec_account")
+        is_pec_val = 1 if is_pec else 0
+
+        data = {
+            "id": acc["id"],
+            "tenant_id": acc.get("tenant_id"),
+            "host": acc["host"],
+            "port": int(acc["port"]),
+            "user": acc.get("user"),
+            "password": acc.get("password"),
+            "ttl": int(acc.get("ttl", 300)),
+            "limit_per_minute": acc.get("limit_per_minute"),
+            "limit_per_hour": acc.get("limit_per_hour"),
+            "limit_per_day": acc.get("limit_per_day"),
+            "limit_behavior": acc.get("limit_behavior", "defer"),
+            "use_tls": use_tls_val,
+            "batch_size": acc.get("batch_size"),
+            "is_pec_account": is_pec_val,
+        }
+
+        # Add PEC/IMAP fields if present
+        if acc.get("imap_host"):
+            data["imap_host"] = acc["imap_host"]
+            data["imap_port"] = int(acc.get("imap_port") or 993)
+            data["imap_user"] = acc.get("imap_user") or acc.get("user")
+            data["imap_password"] = acc.get("imap_password") or acc.get("password")
+            data["imap_folder"] = acc.get("imap_folder", "INBOX")
+
         await self.upsert(
-            {
-                "id": acc["id"],
-                "tenant_id": acc.get("tenant_id"),
-                "host": acc["host"],
-                "port": int(acc["port"]),
-                "user": acc.get("user"),
-                "password": acc.get("password"),
-                "ttl": int(acc.get("ttl", 300)),
-                "limit_per_minute": acc.get("limit_per_minute"),
-                "limit_per_hour": acc.get("limit_per_hour"),
-                "limit_per_day": acc.get("limit_per_day"),
-                "limit_behavior": acc.get("limit_behavior", "defer"),
-                "use_tls": use_tls_val,
-                "batch_size": acc.get("batch_size"),
-            },
+            data,
             conflict_columns=["id"],
             update_extras=["updated_at = CURRENT_TIMESTAMP"],
         )
@@ -191,6 +208,8 @@ class AccountsTable(Table):
             "id", "tenant_id", "host", "port", "user", "ttl",
             "limit_per_minute", "limit_per_hour", "limit_per_day",
             "limit_behavior", "use_tls", "batch_size", "created_at", "updated_at",
+            # PEC/IMAP fields
+            "is_pec_account", "imap_host", "imap_port",
         ]
 
         if tenant_id:
@@ -198,7 +217,7 @@ class AccountsTable(Table):
         else:
             rows = await self.select(columns=columns, order_by="id")
 
-        return [self._decode_use_tls(acc) for acc in rows]
+        return [self._decode_account(acc) for acc in rows]
 
     async def remove(self, account_id: str) -> None:
         """Remove an SMTP account.
@@ -213,6 +232,15 @@ class AccountsTable(Table):
         if "use_tls" in account:
             val = account["use_tls"]
             account["use_tls"] = bool(val) if val is not None else None
+        return account
+
+    def _decode_account(self, account: dict[str, Any]) -> dict[str, Any]:
+        """Convert database integers to booleans for API response."""
+        self._decode_use_tls(account)
+        # Convert is_pec_account to bool
+        if "is_pec_account" in account:
+            val = account["is_pec_account"]
+            account["is_pec_account"] = bool(val) if val else False
         return account
 
 

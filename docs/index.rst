@@ -144,6 +144,7 @@ with separate databases.
    example_client
    integrations
    multi_tenancy
+   pec
    protocol
    api_reference
    faq

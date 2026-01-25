@@ -394,7 +394,7 @@ class MessagesTable(Table):
             # Join with accounts to filter by tenant_id
             query = """
                 SELECT m.id, m.account_id, m.priority, m.payload, m.batch_code,
-                       m.deferred_ts, m.smtp_ts, m.created_at, m.updated_at
+                       m.deferred_ts, m.smtp_ts, m.created_at, m.updated_at, m.is_pec
                 FROM messages m
                 LEFT JOIN accounts a ON m.account_id = a.id
             """
@@ -403,7 +403,7 @@ class MessagesTable(Table):
         else:
             query = """
                 SELECT id, account_id, priority, payload, batch_code,
-                       deferred_ts, smtp_ts, created_at, updated_at
+                       deferred_ts, smtp_ts, created_at, updated_at, is_pec
                 FROM messages
             """
 
@@ -472,7 +472,7 @@ class MessagesTable(Table):
         return int(row["cnt"]) if row else 0
 
     def _decode_payload(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Decode payload JSON in message dict."""
+        """Decode payload JSON in message dict and convert is_pec to bool."""
         payload = data.pop("payload", None)
         if payload is not None:
             try:
@@ -481,6 +481,9 @@ class MessagesTable(Table):
                 data["message"] = {"raw_payload": payload}
         else:
             data["message"] = None
+        # Convert is_pec to bool
+        if "is_pec" in data:
+            data["is_pec"] = bool(data["is_pec"]) if data["is_pec"] else False
         return data
 
 

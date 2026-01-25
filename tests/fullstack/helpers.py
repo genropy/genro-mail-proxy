@@ -284,3 +284,202 @@ async def wait_for_bounce(
             return found[0]
         await asyncio.sleep(2)  # Slightly more than poll interval
     return None
+
+
+# ============================================
+# PEC RECEIPT HELPERS
+# ============================================
+
+# PEC IMAP credentials (separate mailbox for PEC receipts)
+DOVECOT_PEC_USER = "pec@localhost"
+DOVECOT_PEC_PASS = "pecpass"
+
+
+def create_pec_receipt_email(
+    original_message_id: str,
+    receipt_type: str = "accettazione",
+    recipient: str | None = None,
+    error_reason: str | None = None,
+) -> bytes:
+    """Create a PEC receipt email (ricevuta).
+
+    Args:
+        original_message_id: X-Genro-Mail-ID of the original message
+        receipt_type: Type of receipt (accettazione, consegna, mancata_consegna, non_accettazione)
+        recipient: Email recipient (for consegna receipts)
+        error_reason: Error description (for mancata_consegna)
+
+    Returns:
+        Raw email bytes
+    """
+    # Map receipt type to subject prefix and X-Ricevuta header value
+    receipt_map = {
+        "accettazione": ("ACCETTAZIONE", "accettazione"),
+        "consegna": ("AVVENUTA CONSEGNA", "avvenuta-consegna"),
+        "mancata_consegna": ("MANCATA CONSEGNA", "mancata-consegna"),
+        "non_accettazione": ("NON ACCETTAZIONE", "non-accettazione"),
+        "presa_in_carico": ("PRESA IN CARICO", "presa-in-carico"),
+    }
+
+    subject_prefix, x_ricevuta = receipt_map.get(receipt_type, ("ACCETTAZIONE", "accettazione"))
+
+    # Build subject
+    subject = f"{subject_prefix}: Test message"
+    if recipient and receipt_type == "consegna":
+        subject = f"POSTA CERTIFICATA: AVVENUTA CONSEGNA per {recipient}"
+
+    # Create the receipt email
+    msg = MIMEText(_build_pec_receipt_body(receipt_type, recipient, error_reason), "plain", "utf-8")
+    msg["From"] = "posta-certificata@pec.provider.it"
+    msg["To"] = "sender@pec.example.com"
+    msg["Subject"] = subject
+    msg["Date"] = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S %z")
+    msg["Message-ID"] = f"<pec-receipt-{uuid.uuid4()}@pec.provider.it>"
+    msg["X-Ricevuta"] = x_ricevuta
+    msg["X-Genro-Mail-ID"] = original_message_id
+
+    if error_reason and receipt_type in ("mancata_consegna", "non_accettazione"):
+        msg["X-Errore"] = error_reason
+
+    return msg.as_bytes()
+
+
+def _build_pec_receipt_body(
+    receipt_type: str,
+    recipient: str | None,
+    error_reason: str | None,
+) -> str:
+    """Build the body text for a PEC receipt."""
+    if receipt_type == "accettazione":
+        return (
+            "Ricevuta di accettazione\n\n"
+            "Il messaggio e stato accettato dal sistema di posta certificata.\n"
+        )
+    elif receipt_type == "consegna":
+        return (
+            f"Ricevuta di avvenuta consegna\n\n"
+            f"Il messaggio e stato consegnato al destinatario {recipient or 'dest@pec.it'}.\n"
+        )
+    elif receipt_type == "mancata_consegna":
+        return (
+            f"Ricevuta di mancata consegna\n\n"
+            f"Errore: {error_reason or 'Destinatario sconosciuto'}\n"
+            f"Il messaggio non e stato consegnato.\n"
+        )
+    elif receipt_type == "non_accettazione":
+        return (
+            f"Ricevuta di non accettazione\n\n"
+            f"Errore: {error_reason or 'Messaggio non valido'}\n"
+            f"Il messaggio non e stato accettato.\n"
+        )
+    else:
+        return "Ricevuta PEC.\n"
+
+
+async def inject_pec_receipt_to_imap(
+    receipt_email: bytes,
+    host: str = DOVECOT_IMAP_HOST,
+    port: int = DOVECOT_IMAP_PORT,
+    user: str = DOVECOT_PEC_USER,
+    password: str = DOVECOT_PEC_PASS,
+) -> bool:
+    """Inject a PEC receipt email into the IMAP mailbox.
+
+    Uses IMAP APPEND command to add the email to the INBOX.
+    Returns True if successful.
+    """
+    try:
+        imap = imaplib.IMAP4(host, port)
+        imap.login(user, password)
+        imap.select("INBOX")
+
+        date_time = imaplib.Time2Internaldate(time.time())
+        result, _ = imap.append(
+            "INBOX",
+            "",  # No flags
+            date_time,
+            receipt_email,
+        )
+
+        imap.logout()
+        return result == "OK"
+    except Exception as e:
+        print(f"Failed to inject PEC receipt: {e}")
+        return False
+
+
+async def clear_pec_imap_mailbox(
+    host: str = DOVECOT_IMAP_HOST,
+    port: int = DOVECOT_IMAP_PORT,
+    user: str = DOVECOT_PEC_USER,
+    password: str = DOVECOT_PEC_PASS,
+) -> None:
+    """Clear all messages from the PEC IMAP mailbox."""
+    try:
+        imap = imaplib.IMAP4(host, port)
+        imap.login(user, password)
+        imap.select("INBOX")
+
+        # Search for all messages
+        _, message_ids = imap.search(None, "ALL")
+        if message_ids[0]:
+            for msg_id in message_ids[0].split():
+                imap.store(msg_id, "+FLAGS", "\\Deleted")
+            imap.expunge()
+
+        imap.logout()
+    except Exception:
+        pass  # Ignore errors during cleanup
+
+
+async def get_pec_imap_message_count(
+    host: str = DOVECOT_IMAP_HOST,
+    port: int = DOVECOT_IMAP_PORT,
+    user: str = DOVECOT_PEC_USER,
+    password: str = DOVECOT_PEC_PASS,
+) -> int:
+    """Get the number of messages in the PEC IMAP mailbox."""
+    try:
+        imap = imaplib.IMAP4(host, port)
+        imap.login(user, password)
+        result, data = imap.select("INBOX")
+        count = int(data[0]) if result == "OK" and data[0] else 0
+        imap.logout()
+        return count
+    except Exception:
+        return -1
+
+
+def is_pec_imap_available() -> bool:
+    """Check if PEC IMAP mailbox is available."""
+    try:
+        imap = imaplib.IMAP4(DOVECOT_IMAP_HOST, DOVECOT_IMAP_PORT)
+        imap.login(DOVECOT_PEC_USER, DOVECOT_PEC_PASS)
+        imap.logout()
+        return True
+    except Exception:
+        return False
+
+
+async def wait_for_pec_event(
+    api_client,
+    msg_id: str,
+    event_type: str,
+    tenant_id: str = "test-tenant-1",
+    timeout: float = 30.0,
+) -> dict[str, Any] | None:
+    """Wait for a PEC event to be recorded for a message.
+
+    Polls the API until the specified event type is found or timeout.
+    Returns the event dict if found, None otherwise.
+    """
+    start = time.time()
+    while time.time() - start < timeout:
+        resp = await api_client.get(f"/messages/{msg_id}/events?tenant_id={tenant_id}")
+        if resp.status_code == 200:
+            events = resp.json().get("events", [])
+            for event in events:
+                if event.get("event_type") == event_type:
+                    return event
+        await asyncio.sleep(2)
+    return None

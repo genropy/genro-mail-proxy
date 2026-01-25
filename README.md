@@ -21,7 +21,8 @@ genro-mail-proxy sits between your application and SMTP servers. Your applicatio
 - **Delivery reports**: Results are posted back to your application via HTTP callback
 - **Bounce detection**: IMAP polling for bounces with DSN parsing and hard/soft classification *(BSL 1.1)*
 - **Multi-tenancy**: Multiple organizations can share one instance with separate accounts *(BSL 1.1)*
-- **Large file handling**: Auto-upload attachments to S3/GCS/Azure and replace with download links
+- **PEC support**: Italian certified email (Posta Elettronica Certificata) with receipt tracking *(BSL 1.1)*
+- **Large file handling**: Auto-upload attachments to S3/GCS/Azure and replace with download links *(BSL 1.1)*
 - **Connection pooling**: SMTP connections are pooled with acquire/release semantics
 
 ```text
@@ -201,10 +202,10 @@ pytest
 
 This project uses a **dual-license** model:
 
-| License | Features |
-|---------|----------|
+| License        | Features                                                                                                                       |
+|----------------|--------------------------------------------------------------------------------------------------------------------------------|
 | **Apache 2.0** | Core functionality: message queue, retry, rate limiting, priority, delivery reports, attachments, SMTP pooling, REST API, CLI |
-| **BSL 1.1** | Multi-Tenancy, Bounce Detection |
+| **BSL 1.1**    | Multi-Tenancy, Bounce Detection, PEC Support, Large Files                                                                      |
 
 **Apache 2.0** ([LICENSE](LICENSE)): Free for any use.
 

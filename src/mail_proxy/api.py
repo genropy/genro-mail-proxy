@@ -166,6 +166,12 @@ class AccountPayload(BaseModel):
         limit_behavior: Behavior when rate limit hit ("defer" or "reject").
         use_tls: Use STARTTLS (port 587) or implicit TLS (port 465).
         batch_size: Max messages per dispatch cycle.
+        is_pec_account: True if this is a PEC (Posta Elettronica Certificata) account.
+        imap_host: IMAP server hostname for PEC receipt polling.
+        imap_port: IMAP server port (default: 993).
+        imap_user: IMAP username (defaults to SMTP user).
+        imap_password: IMAP password (defaults to SMTP password).
+        imap_ssl: Use SSL for IMAP connection (default: True).
     """
     id: str
     tenant_id: str | None = None
@@ -180,6 +186,13 @@ class AccountPayload(BaseModel):
     limit_behavior: str | None = "defer"
     use_tls: bool | None = None
     batch_size: int | None = None
+    # PEC-specific fields
+    is_pec_account: bool | None = None
+    imap_host: str | None = None
+    imap_port: int | None = None
+    imap_user: str | None = None
+    imap_password: str | None = None
+    imap_ssl: bool | None = None
 
 
 class CommandStatus(BaseModel):
@@ -269,6 +282,10 @@ class AccountInfo(BaseModel):
     batch_size: int | None = None
     created_at: FlexibleDatetime = None
     updated_at: FlexibleDatetime = None
+    # PEC/IMAP fields
+    is_pec_account: bool | None = None
+    imap_host: str | None = None
+    imap_port: int | None = None
 
 
 class AccountsResponse(CommandStatus):
@@ -311,6 +328,8 @@ class MessageRecord(BaseModel):
     created_at: FlexibleDatetime = None
     updated_at: FlexibleDatetime = None
     message: dict[str, Any]
+    # PEC flag
+    is_pec: bool | None = None
 
 
 class MessagesResponse(CommandStatus):
