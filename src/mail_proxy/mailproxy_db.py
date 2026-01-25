@@ -137,8 +137,16 @@ class MailProxyDb(SqlDb):
     async def add_account(self, acc: dict[str, Any]) -> None:
         await self.accounts.add(acc)
 
+    async def add_pec_account(self, acc: dict[str, Any]) -> None:
+        """Add a PEC account with IMAP configuration."""
+        await self.accounts.add_pec_account(acc)
+
     async def list_accounts(self, tenant_id: str | None = None) -> list[dict[str, Any]]:
         return await self.accounts.list_all(tenant_id)
+
+    async def list_pec_accounts(self) -> list[dict[str, Any]]:
+        """Return all PEC accounts."""
+        return await self.accounts.list_pec_accounts()
 
     async def delete_account(self, account_id: str) -> None:
         await self.messages.purge_for_account(account_id)
@@ -148,11 +156,35 @@ class MailProxyDb(SqlDb):
     async def get_account(self, account_id: str) -> dict[str, Any]:
         return await self.accounts.get(account_id)
 
+    async def update_imap_sync_state(
+        self,
+        account_id: str,
+        last_uid: int,
+        uidvalidity: int | None = None,
+    ) -> None:
+        """Update IMAP sync state after processing PEC receipts."""
+        await self.accounts.update_imap_sync_state(account_id, last_uid, uidvalidity)
+
+    async def get_pec_account_ids(self) -> set[str]:
+        """Return set of account IDs that are PEC accounts."""
+        pec_accounts = await self.accounts.list_pec_accounts()
+        return {acc["id"] for acc in pec_accounts}
+
     # -------------------------------------------------------------------------
     # Messages
     # -------------------------------------------------------------------------
-    async def insert_messages(self, entries: Sequence[dict[str, Any]]) -> list[str]:
-        return await self.messages.insert_batch(entries)
+    async def insert_messages(
+        self, entries: Sequence[dict[str, Any]], auto_pec: bool = True
+    ) -> list[str]:
+        """Insert messages into the queue.
+
+        Args:
+            entries: List of message entries to insert.
+            auto_pec: If True, automatically set is_pec=1 for messages
+                sent via PEC accounts.
+        """
+        pec_account_ids = await self.get_pec_account_ids() if auto_pec else None
+        return await self.messages.insert_batch(entries, pec_account_ids)
 
     async def fetch_ready_messages(
         self,
@@ -202,6 +234,10 @@ class MailProxyDb(SqlDb):
 
     async def update_message_payload(self, msg_id: str, payload: dict[str, Any]) -> None:
         await self.messages.update_payload(msg_id, payload)
+
+    async def clear_pec_flag(self, msg_id: str) -> None:
+        """Clear is_pec flag when recipient is not a PEC address."""
+        await self.messages.clear_pec_flag(msg_id)
 
     async def get_message(self, msg_id: str) -> dict[str, Any] | None:
         return await self.messages.get(msg_id)

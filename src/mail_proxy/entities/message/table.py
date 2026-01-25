@@ -21,6 +21,7 @@ class MessagesTable(Table):
     - batch_code: Optional batch/campaign identifier for grouping messages
     - deferred_ts: Timestamp when message can be retried (for retry scheduling)
     - smtp_ts: Timestamp when SMTP send was attempted (NULL = not yet attempted)
+    - is_pec: PEC flag (1=awaiting PEC receipts, 0=normal email)
 
     Delivery status and reporting are tracked in the message_events table.
     """
@@ -38,12 +39,22 @@ class MessagesTable(Table):
         c.column("updated_at", Timestamp, default="CURRENT_TIMESTAMP")
         c.column("deferred_ts", Integer)  # For retry scheduling
         c.column("smtp_ts", Integer)  # When SMTP send was attempted (NULL = pending)
+        c.column("is_pec", Integer, default=0)  # PEC flag (1=awaiting receipts)
 
-    async def insert_batch(self, entries: Sequence[dict[str, Any]]) -> list[str]:
-        """Persist a batch of messages for delivery. Returns list of inserted IDs."""
+    async def insert_batch(
+        self, entries: Sequence[dict[str, Any]], pec_account_ids: set[str] | None = None
+    ) -> list[str]:
+        """Persist a batch of messages for delivery. Returns list of inserted IDs.
+
+        Args:
+            entries: List of message entries to insert.
+            pec_account_ids: Set of account IDs that are PEC accounts.
+                Messages sent via these accounts will have is_pec=1.
+        """
         if not entries:
             return []
 
+        pec_accounts = pec_account_ids or set()
         inserted: list[str] = []
         for entry in entries:
             msg_id = entry["id"]
@@ -52,17 +63,20 @@ class MessagesTable(Table):
             priority = int(entry.get("priority", 2))
             deferred_ts = entry.get("deferred_ts")
             batch_code = entry.get("batch_code")
+            # Auto-set is_pec=1 if account is a PEC account
+            is_pec = 1 if account_id in pec_accounts else 0
 
             rowcount = await self.execute(
                 """
-                INSERT INTO messages (id, account_id, priority, payload, batch_code, deferred_ts)
-                VALUES (:id, :account_id, :priority, :payload, :batch_code, :deferred_ts)
+                INSERT INTO messages (id, account_id, priority, payload, batch_code, deferred_ts, is_pec)
+                VALUES (:id, :account_id, :priority, :payload, :batch_code, :deferred_ts, :is_pec)
                 ON CONFLICT(id) DO UPDATE SET
                     account_id = excluded.account_id,
                     priority = excluded.priority,
                     payload = excluded.payload,
                     batch_code = excluded.batch_code,
                     deferred_ts = excluded.deferred_ts,
+                    is_pec = excluded.is_pec,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE messages.smtp_ts IS NULL
                 """,
@@ -73,6 +87,7 @@ class MessagesTable(Table):
                     "payload": payload,
                     "batch_code": batch_code,
                     "deferred_ts": deferred_ts,
+                    "is_pec": is_pec,
                 },
             )
 
@@ -132,7 +147,7 @@ class MessagesTable(Table):
         conditions.append(suspension_filter)
 
         query = f"""
-            SELECT m.id, m.account_id, m.priority, m.payload, m.batch_code, m.deferred_ts
+            SELECT m.id, m.account_id, m.priority, m.payload, m.batch_code, m.deferred_ts, m.is_pec
             FROM messages m
             LEFT JOIN accounts a ON m.account_id = a.id
             LEFT JOIN tenants t ON a.tenant_id = t.id
@@ -189,6 +204,17 @@ class MessagesTable(Table):
             WHERE id = :msg_id
             """,
             {"smtp_ts": smtp_ts, "msg_id": msg_id},
+        )
+
+    async def clear_pec_flag(self, msg_id: str) -> None:
+        """Clear the is_pec flag when recipient is not a PEC address."""
+        await self.execute(
+            """
+            UPDATE messages
+            SET is_pec = 0, updated_at = CURRENT_TIMESTAMP
+            WHERE id = :msg_id
+            """,
+            {"msg_id": msg_id},
         )
 
     async def update_payload(self, msg_id: str, payload: dict[str, Any]) -> None:

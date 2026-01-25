@@ -79,6 +79,105 @@ class AccountsTable(Table):
             update_extras=["updated_at = CURRENT_TIMESTAMP"],
         )
 
+    async def add_pec_account(self, acc: dict[str, Any]) -> None:
+        """Insert or update a PEC account with IMAP configuration.
+
+        PEC accounts have is_pec_account=1 and require IMAP settings
+        for reading delivery receipts (ricevute di accettazione/consegna).
+
+        Required fields:
+        - id, host, port: SMTP server config (same as regular accounts)
+        - imap_host: IMAP server for reading receipts
+
+        Optional IMAP fields:
+        - imap_port: IMAP port (default 993)
+        - imap_user: IMAP username (defaults to SMTP user)
+        - imap_password: IMAP password (defaults to SMTP password)
+        - imap_folder: Folder to monitor (default "INBOX")
+        """
+        use_tls = acc.get("use_tls")
+        use_tls_val = None if use_tls is None else (1 if use_tls else 0)
+
+        await self.upsert(
+            {
+                "id": acc["id"],
+                "tenant_id": acc.get("tenant_id"),
+                "host": acc["host"],
+                "port": int(acc["port"]),
+                "user": acc.get("user"),
+                "password": acc.get("password"),
+                "ttl": int(acc.get("ttl", 300)),
+                "limit_per_minute": acc.get("limit_per_minute"),
+                "limit_per_hour": acc.get("limit_per_hour"),
+                "limit_per_day": acc.get("limit_per_day"),
+                "limit_behavior": acc.get("limit_behavior", "defer"),
+                "use_tls": use_tls_val,
+                "batch_size": acc.get("batch_size"),
+                # PEC-specific fields
+                "is_pec_account": 1,
+                "imap_host": acc["imap_host"],
+                "imap_port": int(acc.get("imap_port", 993)),
+                "imap_user": acc.get("imap_user") or acc.get("user"),
+                "imap_password": acc.get("imap_password") or acc.get("password"),
+                "imap_folder": acc.get("imap_folder", "INBOX"),
+            },
+            conflict_columns=["id"],
+            update_extras=["updated_at = CURRENT_TIMESTAMP"],
+        )
+
+    async def list_pec_accounts(self) -> list[dict[str, Any]]:
+        """Return all PEC accounts (is_pec_account=1)."""
+        rows = await self.db.adapter.fetch_all(
+            """
+            SELECT id, tenant_id, host, port, user, ttl,
+                   limit_per_minute, limit_per_hour, limit_per_day,
+                   limit_behavior, use_tls, batch_size,
+                   imap_host, imap_port, imap_user, imap_password, imap_folder,
+                   imap_last_uid, imap_last_sync, imap_uidvalidity,
+                   created_at, updated_at
+            FROM accounts
+            WHERE is_pec_account = 1
+            ORDER BY id
+            """,
+            {},
+        )
+        return [self._decode_use_tls(dict(row)) for row in rows]
+
+    async def update_imap_sync_state(
+        self,
+        account_id: str,
+        last_uid: int,
+        uidvalidity: int | None = None,
+    ) -> None:
+        """Update IMAP sync state after processing receipts."""
+        params: dict[str, Any] = {
+            "account_id": account_id,
+            "last_uid": last_uid,
+        }
+        if uidvalidity is not None:
+            await self.execute(
+                """
+                UPDATE accounts
+                SET imap_last_uid = :last_uid,
+                    imap_uidvalidity = :uidvalidity,
+                    imap_last_sync = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = :account_id
+                """,
+                {**params, "uidvalidity": uidvalidity},
+            )
+        else:
+            await self.execute(
+                """
+                UPDATE accounts
+                SET imap_last_uid = :last_uid,
+                    imap_last_sync = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = :account_id
+                """,
+                params,
+            )
+
     async def get(self, account_id: str) -> dict[str, Any]:
         """Fetch a single SMTP account or raise if not found."""
         account = await self.select_one(where={"id": account_id})
