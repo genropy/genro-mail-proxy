@@ -192,7 +192,7 @@ class TestConcurrentAccess:
         all_msgs = await messages.list_all()
         for msg in all_msgs:
             if msg["id"].startswith("msg-status-"):
-                assert msg["sent_ts"] == now
+                assert msg["smtp_ts"] == now
 
 
 class TestPostgreSQLSpecificBehavior:
@@ -310,7 +310,7 @@ class TestUpsertBehavior:
         # Original should be preserved
         retrieved = await messages.list_all()
         msg = next(m for m in retrieved if m["id"] == "msg-to-preserve")
-        assert msg["sent_ts"] == sent_ts
+        assert msg["smtp_ts"] == sent_ts
         assert msg["message"]["subject"] == "Original"
 
 
