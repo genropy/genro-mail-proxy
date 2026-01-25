@@ -36,16 +36,7 @@ jobs:
           docker compose -f docker-compose.fulltest.yml up -d --build
         timeout-minutes: 5
 
-      - name: Start mail-proxy service
-        run: |
-          uvicorn mail_proxy.server:app --host 0.0.0.0 --port 8000 &
-          echo $! > /tmp/mailproxy.pid
-          echo "Mail-proxy started with PID $(cat /tmp/mailproxy.pid)"
-        env:
-          GMP_DB_PATH: postgresql://mailproxy:testpassword@localhost:5433/mailproxy
-          GMP_API_TOKEN: test-api-token
-
-      - name: Wait for services to be ready
+      - name: Wait for PostgreSQL and MinIO
         run: |
           echo "Waiting for PostgreSQL..."
           for i in {1..30}; do
@@ -57,19 +48,40 @@ jobs:
             sleep 2
           done
 
-          echo "Waiting for mail-proxy..."
+          echo "Waiting for MinIO bucket setup..."
+          sleep 10
+
+      - name: Start mail-proxy service
+        run: |
+          # Start mailproxy with logging to file
+          GMP_DB_PATH=postgresql://mailproxy:testpassword@localhost:5433/mailproxy \
+          GMP_API_TOKEN=test-api-token \
+          uvicorn mail_proxy.server:app --host 0.0.0.0 --port 8000 > /tmp/mailproxy.log 2>&1 &
+          echo $! > /tmp/mailproxy.pid
+          echo "Mail-proxy started with PID $(cat /tmp/mailproxy.pid)"
+
+          # Wait for mail-proxy to be ready
+          echo "Waiting for mail-proxy to be ready..."
           for i in {1..60}; do
             if curl -s http://localhost:8000/health | grep -q "ok"; then
-              echo "Mail-proxy is ready"
+              echo "Mail-proxy is ready!"
               break
+            fi
+            if [ $i -eq 60 ]; then
+              echo "Mail-proxy failed to start. Logs:"
+              cat /tmp/mailproxy.log
+              exit 1
             fi
             echo "Attempt $i/60..."
             sleep 2
           done
 
-          echo "Waiting for MinIO bucket setup..."
-          sleep 10
+          # Show startup logs
+          echo "=== Mail-proxy startup logs ==="
+          cat /tmp/mailproxy.log
 
+      - name: Verify all services
+        run: |
           echo "Checking all services..."
           curl -sf http://localhost:8000/health || echo "WARNING: mail-proxy not responding"
           curl -sf http://localhost:8025/api/v2/messages || echo "WARNING: mailhog-tenant1 not responding"
@@ -90,6 +102,12 @@ jobs:
           ECHO_SERVER_TENANT1: http://localhost:8081
           ECHO_SERVER_TENANT2: http://localhost:8082
           ATTACHMENT_SERVER_URL: http://localhost:8083
+
+      - name: Show mail-proxy logs on failure
+        if: failure()
+        run: |
+          echo "=== Mail-proxy logs ==="
+          cat /tmp/mailproxy.log || echo "No mailproxy log file"
 
       - name: Show docker logs on failure
         if: failure()
