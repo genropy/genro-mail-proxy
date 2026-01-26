@@ -59,52 +59,195 @@ The following diagram illustrates the complete message lifecycle:
 4. **Proxy acknowledges**: The tenant returns a summary response; the proxy marks
    the reports as delivered (``reported_ts``) and eventually cleans them up.
 
-Per-Tenant API Authentication
------------------------------
+API Authentication Model
+------------------------
 
-Each tenant can have its own dedicated API token for accessing the proxy API.
-This provides an additional layer of security and isolation.
+genro-mail-proxy implements a **two-tier authentication model**:
 
-**How it works:**
+1. **Global Admin Token** (``GMP_API_TOKEN``): Full access to all endpoints and all tenants
+2. **Tenant-Specific Token**: Limited access to the tenant's own resources only
 
-1. When a request arrives with an ``X-API-Token`` header, the proxy first
-   checks if the token belongs to any tenant (by looking up its hash).
+This separation ensures that:
 
-2. If the token is found in the tenants table:
-   - The request is authenticated as that tenant
-   - If the request includes a ``tenant_id`` parameter, it must match the
-     token's tenant (prevents cross-tenant access)
+- Administrators can manage all tenants and system configuration
+- Each tenant can only access their own data (messages, accounts, reports)
+- A compromised tenant token cannot affect other tenants or system configuration
 
-3. If the token is not found in tenants:
-   - Falls back to the global API token (``GMP_API_TOKEN``)
-   - Allows access to any tenant's data (admin access)
+Token Types and Permissions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Creating a tenant API token:**
+.. list-table::
+   :header-rows: 1
+   :widths: 30 35 35
 
-Currently, tenant tokens must be created programmatically:
+   * - Endpoint Category
+     - Global Admin Token
+     - Tenant Token
+   * - **Admin-Only Endpoints**
+     - ✅ Full access
+     - ❌ Rejected (HTTP 403)
+   * - **Tenant-Scoped Endpoints**
+     - ✅ Access to any tenant
+     - ✅ Access to own tenant only
 
-.. code-block:: python
+**Admin-Only Endpoints** (require global token):
 
-   # Using the TenantsTable directly
-   raw_token = await db.tenants.create_api_key(
-       tenant_id="acme",
-       expires_at=1735689600  # Optional Unix timestamp
-   )
-   # raw_token is shown once - store it securely!
+- ``POST /tenant`` - Create new tenants
+- ``DELETE /tenant/{id}`` - Delete tenants
+- ``GET /tenants`` - List all tenants
+- ``POST /tenant/{id}/api-key`` - Generate tenant API key
+- ``DELETE /tenant/{id}/api-key`` - Revoke tenant API key
+- ``GET /instance``, ``PUT /instance`` - Instance configuration
+- ``POST /instance/reload-bounce`` - Reload bounce configuration
+- ``GET /command-log``, ``GET /command-log/export`` - Audit trail
 
-**Token properties:**
+**Tenant-Scoped Endpoints** (allow tenant or admin tokens):
 
-- Tokens are stored as SHA-256 hashes (the raw token is never stored)
+- ``GET /tenant/{id}``, ``PUT /tenant/{id}`` - View/update own tenant
+- ``GET /messages``, ``POST /commands/add-messages`` - Manage messages
+- ``GET /accounts``, ``POST /account``, ``DELETE /account/{id}`` - Manage SMTP accounts
+- ``POST /commands/suspend``, ``POST /commands/activate`` - Suspend/activate sending
+- ``POST /commands/delete-messages``, ``POST /commands/cleanup-messages`` - Message cleanup
+
+Authentication Flow
+~~~~~~~~~~~~~~~~~~~
+
+When a request arrives with an ``X-API-Token`` header:
+
+1. **Check global token first**: If it matches ``GMP_API_TOKEN``, grant admin access
+2. **Check tenant tokens**: Look up the token hash in the tenants table
+3. **Verify scope**: For tenant tokens, verify the request's ``tenant_id`` matches the token owner
+4. **Reject if neither**: Return HTTP 401 Unauthorized
+
+.. code-block:: text
+
+   Request with X-API-Token header
+            │
+            ▼
+   ┌─────────────────────┐
+   │ Is token = global?  │──Yes──► Admin access (all endpoints)
+   └─────────────────────┘
+            │ No
+            ▼
+   ┌─────────────────────┐
+   │ Is token in tenants │──Yes──► Tenant access
+   │     table?          │         (own resources only)
+   └─────────────────────┘
+            │ No
+            ▼
+      HTTP 401 Unauthorized
+
+For tenant-scoped endpoints, an additional scope check ensures tenant tokens
+can only access their own data:
+
+.. code-block:: text
+
+   Tenant-scoped request (e.g., GET /messages?tenant_id=acme)
+            │
+            ▼
+   ┌─────────────────────┐
+   │ Is admin token?     │──Yes──► Allow access to any tenant
+   └─────────────────────┘
+            │ No (tenant token)
+            ▼
+   ┌─────────────────────┐
+   │ Does tenant_id      │──Yes──► Allow access
+   │ match token owner?  │
+   └─────────────────────┘
+            │ No
+            ▼
+      HTTP 401 "Token not authorized for this tenant"
+
+Automatic API Key Generation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When creating a new tenant via ``POST /tenant``, an API key is **automatically
+generated** and returned in the response:
+
+.. code-block:: bash
+
+   curl -X POST http://localhost:8000/tenant \
+     -H "Content-Type: application/json" \
+     -H "X-API-Token: $ADMIN_TOKEN" \
+     -d '{"id": "acme", "name": "ACME Corp"}'
+
+Response for **new tenant**:
+
+.. code-block:: json
+
+   {
+     "ok": true,
+     "api_key": "k3Xp9qR7mNvL2sWtYhBjCfDgEaUiOp..."
+   }
+
+.. warning::
+
+   The ``api_key`` is shown **only once** at creation time. Store it securely!
+   It cannot be retrieved later. If lost, use ``POST /tenant/{id}/api-key``
+   to generate a new key (which invalidates the old one).
+
+Response for **existing tenant** (update):
+
+.. code-block:: json
+
+   {
+     "ok": true
+   }
+
+Note: When updating an existing tenant, the API key is not changed or returned.
+
+Managing Tenant API Keys
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Generate a new API key** (invalidates the previous one):
+
+.. code-block:: bash
+
+   curl -X POST http://localhost:8000/tenant/acme/api-key \
+     -H "X-API-Token: $ADMIN_TOKEN"
+
+Response:
+
+.. code-block:: json
+
+   {
+     "ok": true,
+     "api_key": "newKeyHere..."
+   }
+
+**Revoke an API key** (tenant must use admin token or get a new key):
+
+.. code-block:: bash
+
+   curl -X DELETE http://localhost:8000/tenant/acme/api-key \
+     -H "X-API-Token: $ADMIN_TOKEN"
+
+Response:
+
+.. code-block:: json
+
+   {
+     "ok": true
+   }
+
+Token Properties
+~~~~~~~~~~~~~~~~
+
+- Tokens are stored as **SHA-256 hashes** (the raw token is never stored)
 - Optional expiration via ``api_key_expires_at`` (Unix timestamp)
-- One token per tenant (creating a new one replaces the old)
-- Revoke with ``revoke_api_key(tenant_id)``
+- **One token per tenant** (creating a new one replaces the old)
+- Tokens are 43 characters long (URL-safe base64)
 
-**Security benefits:**
+Security Best Practices
+~~~~~~~~~~~~~~~~~~~~~~~
 
-- Tenant tokens can only access their own data
-- Compromised tenant token doesn't affect other tenants
-- Global token remains available for admin/cross-tenant operations
-- Token expiration for time-limited access
+1. **Keep admin token secret**: Only system administrators should have access
+2. **Use tenant tokens for applications**: Each tenant application should use
+   its own tenant token, not the admin token
+3. **Rotate keys periodically**: Use ``POST /tenant/{id}/api-key`` to generate
+   new keys
+4. **Use HTTPS**: Always use TLS in production to protect tokens in transit
+5. **Set expiration**: For temporary access, use the ``expires_at`` parameter
 
 Tenant Configuration
 --------------------
@@ -203,8 +346,10 @@ Or simply omit the ``client_auth`` field entirely.
 Tenant Management API
 ---------------------
 
-``POST /tenant``
+``POST /tenant`` *(Admin only)*
    Create or update a tenant configuration.
+
+   **Authentication**: Requires global admin token.
 
    Request body:
 
@@ -223,10 +368,27 @@ Tenant Management API
         "active": true
       }
 
-   Response: ``{"ok": true}``
+   Response for **new tenant** (API key auto-generated):
 
-``GET /tenants``
+   .. code-block:: json
+
+      {
+        "ok": true,
+        "api_key": "k3Xp9qR7mNvL2sWtYhBjCfDg..."
+      }
+
+   Response for **existing tenant** (update, no API key change):
+
+   .. code-block:: json
+
+      {
+        "ok": true
+      }
+
+``GET /tenants`` *(Admin only)*
    List all configured tenants.
+
+   **Authentication**: Requires global admin token.
 
    Query parameters:
 
@@ -250,18 +412,45 @@ Tenant Management API
         ]
       }
 
-``GET /tenant/{tenant_id}``
+``GET /tenant/{tenant_id}`` *(Tenant-scoped)*
    Get a specific tenant configuration.
+
+   **Authentication**: Admin token or matching tenant token.
 
    Response: Single tenant object or ``404`` if not found.
 
-``PUT /tenant/{tenant_id}``
+``PUT /tenant/{tenant_id}`` *(Tenant-scoped)*
    Update an existing tenant. All fields are optional in the request body.
+
+   **Authentication**: Admin token or matching tenant token.
 
    Response: ``{"ok": true}``
 
-``DELETE /tenant/{tenant_id}``
+``DELETE /tenant/{tenant_id}`` *(Admin only)*
    Remove a tenant configuration.
+
+   **Authentication**: Requires global admin token.
+
+   Response: ``{"ok": true}``
+
+``POST /tenant/{tenant_id}/api-key`` *(Admin only)*
+   Generate a new API key for a tenant. Invalidates any existing key.
+
+   **Authentication**: Requires global admin token.
+
+   Response:
+
+   .. code-block:: json
+
+      {
+        "ok": true,
+        "api_key": "newGeneratedKey..."
+      }
+
+``DELETE /tenant/{tenant_id}/api-key`` *(Admin only)*
+   Revoke the tenant's API key.
+
+   **Authentication**: Requires global admin token.
 
    Response: ``{"ok": true}``
 
@@ -404,13 +593,14 @@ Configuration Example
 
 Complete tenant setup example:
 
-1. **Create tenant:**
+1. **Create tenant** (using admin token):
 
    .. code-block:: bash
 
+      # Use the global admin token (GMP_API_TOKEN)
       curl -X POST http://localhost:8000/tenant \
         -H "Content-Type: application/json" \
-        -H "X-API-Token: your-api-token" \
+        -H "X-API-Token: $ADMIN_TOKEN" \
         -d '{
           "id": "acme",
           "name": "ACME Corp",
@@ -423,13 +613,23 @@ Complete tenant setup example:
           }
         }'
 
-2. **Create SMTP account for tenant:**
+   Response (save the api_key!):
+
+   .. code-block:: json
+
+      {
+        "ok": true,
+        "api_key": "ACME_TENANT_TOKEN_save_this_securely"
+      }
+
+2. **Create SMTP account for tenant** (can use tenant token now):
 
    .. code-block:: bash
 
+      # Use either admin token or the tenant's own token
       curl -X POST http://localhost:8000/account \
         -H "Content-Type: application/json" \
-        -H "X-API-Token: your-api-token" \
+        -H "X-API-Token: $ACME_TENANT_TOKEN" \
         -d '{
           "id": "smtp-acme",
           "tenant_id": "acme",
@@ -440,16 +640,17 @@ Complete tenant setup example:
           "use_tls": true
         }'
 
-3. **Submit messages:**
+3. **Submit messages** (using tenant token):
 
    .. code-block:: bash
 
       curl -X POST http://localhost:8000/commands/add-messages \
         -H "Content-Type: application/json" \
-        -H "X-API-Token: your-api-token" \
+        -H "X-API-Token: $ACME_TENANT_TOKEN" \
         -d '{
           "messages": [{
             "id": "acme-msg-001",
+            "tenant_id": "acme",
             "account_id": "smtp-acme",
             "from": "noreply@acme.com",
             "to": ["customer@example.com"],
@@ -459,6 +660,13 @@ Complete tenant setup example:
         }'
 
 4. **Proxy delivers message and sends report to** ``https://api.acme.com/proxy_sync``
+
+.. note::
+
+   In production, each tenant application should use its own tenant token
+   (received at creation time) rather than the global admin token. This
+   ensures proper isolation - a tenant cannot access or modify other
+   tenants' data.
 
 Batch Suspension
 ----------------
