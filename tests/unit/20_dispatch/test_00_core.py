@@ -432,7 +432,7 @@ async def test_temporary_error_retry_exhaustion(tmp_path):
         # If not the first attempt, clear deferred_ts to make message ready for processing
         if attempt > 0:
             # Get the message and clear deferred_ts so the message is immediately ready
-            msg = await core.db.get_message("msg-retry-exhausted")
+            msg = await core.db.get_message("msg-retry-exhausted", "test-tenant")
             if msg:
                 await core.db.clear_deferred(msg["pk"])
 

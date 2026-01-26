@@ -314,24 +314,17 @@ class MessagesTable(Table):
             {"payload": json.dumps(payload), "pk": pk},
         )
 
-    async def get(self, msg_id: str, tenant_id: str | None = None) -> dict[str, Any] | None:
+    async def get(self, msg_id: str, tenant_id: str) -> dict[str, Any] | None:
         """Get a single message by ID. Returns None if not found.
 
         Args:
             msg_id: Client-provided message ID.
-            tenant_id: Optional tenant ID for multi-tenant lookup.
-                If not provided, returns first match (use with caution).
+            tenant_id: Tenant ID for multi-tenant lookup.
         """
-        if tenant_id:
-            row = await self.db.adapter.fetch_one(
-                "SELECT * FROM messages WHERE tenant_id = :tenant_id AND id = :id",
-                {"tenant_id": tenant_id, "id": msg_id},
-            )
-        else:
-            row = await self.db.adapter.fetch_one(
-                "SELECT * FROM messages WHERE id = :id",
-                {"id": msg_id},
-            )
+        row = await self.db.adapter.fetch_one(
+            "SELECT * FROM messages WHERE tenant_id = :tenant_id AND id = :id",
+            {"tenant_id": tenant_id, "id": msg_id},
+        )
         if row is None:
             return None
         return self._decode_payload(row)
@@ -350,18 +343,13 @@ class MessagesTable(Table):
             return None
         return self._decode_payload(row)
 
-    async def remove(self, msg_id: str, tenant_id: str | None = None) -> bool:
-        """Remove a message regardless of its state. Returns True if deleted.
+    async def remove_by_pk(self, pk: str) -> bool:
+        """Remove a message by internal primary key. Returns True if deleted.
 
         Args:
-            msg_id: Client-provided message ID.
-            tenant_id: Optional tenant ID for multi-tenant deletion.
-                If not provided, deletes first match (use with caution).
+            pk: Internal primary key (UUID string).
         """
-        if tenant_id:
-            rowcount = await self.delete(where={"tenant_id": tenant_id, "id": msg_id})
-        else:
-            rowcount = await self.delete(where={"id": msg_id})
+        rowcount = await self.delete(where={"pk": pk})
         return rowcount > 0
 
     async def purge_for_account(self, account_id: str) -> None:
@@ -509,23 +497,27 @@ class MessagesTable(Table):
         """
 
         if tenant_id:
-            # Join with accounts to filter by tenant_id and with error events
+            # Join with accounts and tenants to filter by tenant_id and get tenant_name
             query = f"""
                 SELECT m.pk, m.id, m.tenant_id, m.account_id, m.priority, m.payload, m.batch_code,
                        m.deferred_ts, m.smtp_ts, m.created_at, m.updated_at, m.is_pec,
+                       t.name as tenant_name,
                        err.error_ts, err.error
                 FROM messages m
-                LEFT JOIN accounts a ON m.account_id = a.id
+                LEFT JOIN accounts a ON m.account_id = a.id AND m.tenant_id = a.tenant_id
+                LEFT JOIN tenants t ON m.tenant_id = t.id
                 LEFT JOIN ({error_subquery}) err ON m.pk = err.message_pk
             """
-            where_clauses.append("a.tenant_id = :tenant_id")
+            where_clauses.append("m.tenant_id = :tenant_id")
             params["tenant_id"] = tenant_id
         else:
             query = f"""
                 SELECT m.pk, m.id, m.tenant_id, m.account_id, m.priority, m.payload, m.batch_code,
                        m.deferred_ts, m.smtp_ts, m.created_at, m.updated_at, m.is_pec,
+                       t.name as tenant_name,
                        err.error_ts, err.error
                 FROM messages m
+                LEFT JOIN tenants t ON m.tenant_id = t.id
                 LEFT JOIN ({error_subquery}) err ON m.pk = err.message_pk
             """
 

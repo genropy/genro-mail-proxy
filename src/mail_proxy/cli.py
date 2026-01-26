@@ -32,6 +32,8 @@ Example:
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import json
 import sys
 from datetime import datetime
@@ -1670,6 +1672,7 @@ def _add_accounts_commands(group: click.Group, instance_name: str, tenant_id: st
 
         table = Table(title=f"SMTP Accounts (tenant: {tenant_id})")
         table.add_column("ID", style="cyan")
+        table.add_column("Tenant ID", style="magenta")
         table.add_column("Host")
         table.add_column("Port", justify="right")
         table.add_column("User")
@@ -1679,6 +1682,7 @@ def _add_accounts_commands(group: click.Group, instance_name: str, tenant_id: st
             tls = "[green]✓[/green]" if acc.get("use_tls") else "[dim]-[/dim]"
             table.add_row(
                 acc["id"],
+                acc.get("tenant_id") or "-",
                 acc["host"],
                 str(acc["port"]),
                 acc.get("user") or "-",
@@ -1907,19 +1911,15 @@ def _add_messages_commands(group: click.Group, instance_name: str, tenant_id: st
         account: str | None = None,
         status: str = "all",
         limit: int = 50,
-        as_json: bool = False
+        as_json: bool = False,
+        as_csv: bool = False,
     ) -> None:
         """Internal function to list messages."""
         persistence = _get_persistence_for_instance(instance_name)
 
         async def _list():
             await persistence.init_db()
-            messages = await persistence.list_messages()
-
-            # Filter by tenant
-            tenant_accounts = await persistence.list_accounts(tenant_id=tenant_id)
-            account_ids = {a["id"] for a in tenant_accounts}
-            messages = [m for m in messages if m.get("account_id") in account_ids]
+            messages = await persistence.list_messages(tenant_id=tenant_id)
 
             # Filter by account if specified
             if account:
@@ -1941,13 +1941,19 @@ def _add_messages_commands(group: click.Group, instance_name: str, tenant_id: st
             print_json(msg_list)
             return
 
+        if as_csv:
+            _output_messages_csv(msg_list)
+            return
+
         if not msg_list:
             console.print("[dim]No messages found.[/dim]")
             return
 
         table = Table(title=f"Messages (tenant: {tenant_id}, showing up to {limit})")
-        table.add_column("ID", style="cyan", max_width=20)
-        table.add_column("Account")
+        table.add_column("PK", style="dim")
+        table.add_column("ID", style="cyan")
+        table.add_column("Tenant ID", style="magenta")
+        table.add_column("Account ID")
         table.add_column("Status")
         table.add_column("Subject", max_width=30)
         table.add_column("Created")
@@ -1965,7 +1971,9 @@ def _add_messages_commands(group: click.Group, instance_name: str, tenant_id: st
             subject = msg.get("message", {}).get("subject", "-")[:30]
 
             table.add_row(
-                msg["id"][:20] + "..." if len(msg["id"]) > 20 else msg["id"],
+                msg.get("pk") or "-",
+                msg["id"],
+                msg.get("tenant_id") or "-",
                 msg.get("account_id") or "-",
                 msg_status,
                 subject,
@@ -1973,6 +1981,58 @@ def _add_messages_commands(group: click.Group, instance_name: str, tenant_id: st
             )
 
         console.print(table)
+
+    def _output_messages_csv(msg_list: list[dict[str, Any]]) -> None:
+        """Output messages as CSV to stdout."""
+        if not msg_list:
+            return
+
+        output = io.StringIO()
+        fieldnames = [
+            "pk", "id", "tenant_id", "tenant_name", "account_id",
+            "status", "priority", "batch_code",
+            "from", "to", "subject",
+            "created_at", "deferred_ts", "smtp_ts", "error_ts", "error",
+        ]
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for msg in msg_list:
+            # Determine status
+            if msg.get("error_ts"):
+                status = "error"
+            elif msg.get("smtp_ts"):
+                status = "sent"
+            elif msg.get("deferred_ts"):
+                status = "deferred"
+            else:
+                status = "pending"
+
+            message_data = msg.get("message", {})
+            to_field = message_data.get("to", [])
+            if isinstance(to_field, list):
+                to_field = ", ".join(to_field)
+
+            writer.writerow({
+                "pk": msg.get("pk") or "",
+                "id": msg.get("id") or "",
+                "tenant_id": msg.get("tenant_id") or "",
+                "tenant_name": msg.get("tenant_name") or "",
+                "account_id": msg.get("account_id") or "",
+                "status": status,
+                "priority": msg.get("priority", ""),
+                "batch_code": msg.get("batch_code") or "",
+                "from": message_data.get("from") or "",
+                "to": to_field,
+                "subject": message_data.get("subject") or "",
+                "created_at": msg.get("created_at") or "",
+                "deferred_ts": msg.get("deferred_ts") or "",
+                "smtp_ts": msg.get("smtp_ts") or "",
+                "error_ts": msg.get("error_ts") or "",
+                "error": msg.get("error") or "",
+            })
+
+        print(output.getvalue(), end="")
 
     @group.group("messages", invoke_without_command=True)
     @click.pass_context
@@ -1987,9 +2047,10 @@ def _add_messages_commands(group: click.Group, instance_name: str, tenant_id: st
                   help="Filter by status.")
     @click.option("--limit", "-l", type=int, default=50, help="Max messages to show.")
     @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
-    def messages_list(account: str | None, status: str, limit: int, as_json: bool) -> None:
+    @click.option("--csv", "as_csv", is_flag=True, help="Output as CSV.")
+    def messages_list(account: str | None, status: str, limit: int, as_json: bool, as_csv: bool) -> None:
         """List messages for this tenant."""
-        _do_messages_list(account, status, limit, as_json)
+        _do_messages_list(account, status, limit, as_json, as_csv)
 
     @messages.command("show")
     @click.argument("message_id")
@@ -2001,7 +2062,9 @@ def _add_messages_commands(group: click.Group, instance_name: str, tenant_id: st
 
         async def _show():
             await persistence.init_db()
-            messages = await persistence.list_messages(include_history=history)
+            messages = await persistence.list_messages(
+                tenant_id=tenant_id, include_history=history
+            )
             for m in messages:
                 if m["id"] == message_id:
                     return m
@@ -2018,7 +2081,11 @@ def _add_messages_commands(group: click.Group, instance_name: str, tenant_id: st
             return
 
         console.print(f"\n[bold cyan]Message: {message_id}[/bold cyan]\n")
-        console.print(f"  Account:     {msg.get('account_id') or '-'}")
+        console.print(f"  PK:          {msg.get('pk') or '-'}")
+        console.print(f"  ID:          {msg.get('id') or '-'}")
+        console.print(f"  Tenant ID:   {msg.get('tenant_id') or '-'}")
+        console.print(f"  Tenant Name: {msg.get('tenant_name') or '-'}")
+        console.print(f"  Account ID:  {msg.get('account_id') or '-'}")
         console.print(f"  Priority:    {msg.get('priority', 2)}")
         console.print(f"  Created:     {msg.get('created_at') or '-'}")
         console.print(f"  Deferred:    {msg.get('deferred_ts') or '-'}")
@@ -2058,7 +2125,7 @@ def _add_messages_commands(group: click.Group, instance_name: str, tenant_id: st
             await persistence.init_db()
             deleted = 0
             for mid in message_ids:
-                if await persistence.delete_message(mid):
+                if await persistence.delete_message(mid, tenant_id=tenant_id):
                     deleted += 1
             return deleted
 

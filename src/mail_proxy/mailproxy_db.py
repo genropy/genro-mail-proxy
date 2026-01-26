@@ -291,21 +291,36 @@ class MailProxyDb(SqlDb):
         """Get PEC messages sent before cutoff without acceptance receipt."""
         return await self.messages.get_pec_without_acceptance(cutoff_ts)
 
-    async def get_message(self, msg_id: str, tenant_id: str | None = None) -> dict[str, Any] | None:
-        return await self.messages.get(msg_id, tenant_id)
-
-    async def delete_message(self, msg_id: str, tenant_id: str | None = None) -> bool:
-        """Delete a message and all its events.
+    async def get_message(self, msg_id: str, tenant_id: str) -> dict[str, Any] | None:
+        """Get a message by ID within a tenant.
 
         Args:
             msg_id: Client-provided message ID.
-            tenant_id: Optional tenant ID for multi-tenant deletion.
+            tenant_id: Tenant ID (required for multi-tenant isolation).
         """
-        # Get the message to find its pk
+        return await self.messages.get(msg_id, tenant_id)
+
+    async def delete_message(self, msg_id: str, tenant_id: str) -> bool:
+        """Delete a message and all its events (frontier method).
+
+        Args:
+            msg_id: Client-provided message ID.
+            tenant_id: Tenant ID (required for multi-tenant isolation).
+        """
+        # Resolve (tenant_id, id) → pk, then delete by pk
         msg = await self.messages.get(msg_id, tenant_id)
-        if msg:
-            await self.message_events.delete_for_message(msg["pk"])
-        return await self.messages.remove(msg_id, tenant_id)
+        if not msg:
+            return False
+        return await self.delete_message_by_pk(msg["pk"])
+
+    async def delete_message_by_pk(self, pk: str) -> bool:
+        """Delete a message and all its events by internal primary key.
+
+        Args:
+            pk: Internal primary key (UUID string).
+        """
+        await self.message_events.delete_for_message(pk)
+        return await self.messages.remove_by_pk(pk)
 
     async def purge_messages_for_account(self, account_id: str) -> None:
         """Delete all messages and their events for an account."""

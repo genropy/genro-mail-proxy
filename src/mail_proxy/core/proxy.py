@@ -702,7 +702,7 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
             if mid not in authorized_ids:
                 unauthorized.append(mid)
                 continue
-            if await self.db.delete_message(mid):
+            if await self.db.delete_message(mid, tenant_id):
                 removed += 1
             else:
                 missing.append(mid)

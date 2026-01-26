@@ -157,7 +157,11 @@ class EventReporterMixin:
     def _events_to_payloads(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert event records to delivery report payloads.
 
-        The payload format matches what clients expect from the old system.
+        Each payload includes:
+        - tenant_id: Tenant identifier
+        - id: Client-facing message ID
+        - pk: Internal primary key (UUID)
+        - Event-specific fields (sent_ts, error_ts, etc.)
         """
         payloads: list[dict[str, Any]] = []
 
@@ -168,7 +172,11 @@ class EventReporterMixin:
             description = event.get("description")
             metadata = event.get("metadata") or {}
 
-            payload: dict[str, Any] = {"id": msg_id}
+            payload: dict[str, Any] = {
+                "tenant_id": event.get("tenant_id"),
+                "id": msg_id,
+                "pk": event.get("message_pk"),
+            }
 
             if event_type == "sent":
                 payload["sent_ts"] = event_ts

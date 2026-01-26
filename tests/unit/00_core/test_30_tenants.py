@@ -326,7 +326,7 @@ async def test_events_for_tenant_account(tmp_path):
     assert events[0]["message_id"] == "msg1"
 
     # Get message and verify tenant association via account
-    msg = await db.get_message("msg1")
+    msg = await db.get_message("msg1", "acme")
     assert msg["account_id"] == "acme-main"
 
     # Verify tenant can be retrieved from account
@@ -373,12 +373,14 @@ async def test_events_multiple_tenants(tmp_path):
     tenant1_msgs = []
     tenant2_msgs = []
     for e in events:
-        msg = await db.get_message(e["message_id"])
-        tenant = await db.get_tenant_for_account(msg["account_id"])
-        if tenant and tenant["id"] == "tenant1":
+        # Try tenant1 first, then tenant2
+        msg = await db.get_message(e["message_id"], "tenant1")
+        if msg:
             tenant1_msgs.append(e["message_id"])
-        elif tenant and tenant["id"] == "tenant2":
-            tenant2_msgs.append(e["message_id"])
+        else:
+            msg = await db.get_message(e["message_id"], "tenant2")
+            if msg:
+                tenant2_msgs.append(e["message_id"])
 
     assert len(tenant1_msgs) == 2
     assert len(tenant2_msgs) == 1

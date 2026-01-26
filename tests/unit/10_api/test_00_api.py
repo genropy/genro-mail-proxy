@@ -652,11 +652,11 @@ def test_messages_filtered_by_tenant_id():
             super().__init__()
             self.messages_by_tenant = {
                 "tenant-a": [
-                    {"id": "msg-a1", "account_id": "acc-a1", "priority": 2, "message": {}},
-                    {"id": "msg-a2", "account_id": "acc-a1", "priority": 2, "message": {}},
+                    {"pk": "pk-a1", "id": "msg-a1", "tenant_id": "tenant-a", "account_id": "acc-a1", "priority": 2, "message": {}},
+                    {"pk": "pk-a2", "id": "msg-a2", "tenant_id": "tenant-a", "account_id": "acc-a1", "priority": 2, "message": {}},
                 ],
                 "tenant-b": [
-                    {"id": "msg-b1", "account_id": "acc-b1", "priority": 2, "message": {}},
+                    {"pk": "pk-b1", "id": "msg-b1", "tenant_id": "tenant-b", "account_id": "acc-b1", "priority": 2, "message": {}},
                 ],
             }
 
@@ -729,9 +729,9 @@ def test_cross_tenant_isolation_messages():
                 tenant_id = payload.get("tenant_id")
                 # Simulate proper isolation - only return messages for requested tenant
                 if tenant_id == "tenant-a":
-                    return {"ok": True, "messages": [{"id": "msg-a", "account_id": "acc-a", "priority": 2, "message": {}}]}
+                    return {"ok": True, "messages": [{"pk": "pk-a", "id": "msg-a", "tenant_id": "tenant-a", "account_id": "acc-a", "priority": 2, "message": {}}]}
                 elif tenant_id == "tenant-b":
-                    return {"ok": True, "messages": [{"id": "msg-b", "account_id": "acc-b", "priority": 2, "message": {}}]}
+                    return {"ok": True, "messages": [{"pk": "pk-b", "id": "msg-b", "tenant_id": "tenant-b", "account_id": "acc-b", "priority": 2, "message": {}}]}
                 return {"ok": True, "messages": []}
             return await super().handle_command(cmd, payload)
 

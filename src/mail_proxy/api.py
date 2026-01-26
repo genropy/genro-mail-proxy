@@ -269,7 +269,7 @@ class MessagePayload(BaseModel):
 class AccountInfo(BaseModel):
     """Stored SMTP account as returned by ``listAccounts``."""
     id: str
-    tenant_id: str | None = None
+    tenant_id: str
     host: str
     port: int
     user: str | None = None
@@ -322,9 +322,12 @@ class MessageEvent(BaseModel):
 
 class MessageRecord(BaseModel):
     """Full representation of a message tracked by the dispatcher."""
+    pk: str
     id: str
+    tenant_id: str
+    tenant_name: str | None = None
+    account_id: str
     priority: int
-    account_id: str | None = None
     batch_code: str | None = None
     deferred_ts: int | None = None
     sent_ts: int | None = Field(default=None, validation_alias="smtp_ts")
