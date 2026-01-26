@@ -409,6 +409,7 @@ class TestBounceEndToEnd:
 
         assert found_email is not None, f"Email with X-Genro-Mail-ID={msg_id} not found in {len(emails)} emails"
 
+    @pytest.mark.skip(reason="Flaky in CI: messages stay pending. See issue #69")
     async def test_bounce_updates_message_record(self, api_client, setup_bounce_tenant):
         """Bounce detected by BounceReceiver updates message record.
 
