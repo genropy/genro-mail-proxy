@@ -103,6 +103,15 @@ class MailProxyDb(SqlDb):
 
         await self.tenants.add_column_if_missing("large_file_config")
 
+        # PEC/IMAP columns for accounts table (v0.6.0+)
+        for col in ["is_pec_account", "imap_host", "imap_port", "imap_user",
+                    "imap_password", "imap_folder", "imap_last_uid",
+                    "imap_last_sync", "imap_uidvalidity"]:
+            await self.accounts.add_column_if_missing(col)
+
+        # PEC flag for messages table (v0.6.0+)
+        await self.messages.add_column_if_missing("is_pec")
+
     # -------------------------------------------------------------------------
     # Tenants
     # -------------------------------------------------------------------------
