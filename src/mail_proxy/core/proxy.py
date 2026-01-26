@@ -485,7 +485,7 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
                         return {"ok": False, "error": "account not found or not owned by tenant"}
                 except ValueError:
                     return {"ok": False, "error": "account not found or not owned by tenant"}
-                await self.db.delete_account(account_id)
+                await self.db.delete_account(tenant_id, account_id)
                 await self._refresh_queue_gauge()
                 return {"ok": True}
             case "deleteMessages":

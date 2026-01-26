@@ -12,8 +12,7 @@ class AccountsTable(Table):
     """Accounts table: SMTP server configurations.
 
     Fields:
-    - id: Account identifier
-    - tenant_id: Parent tenant (FK)
+    - tenant_id, id: Composite primary key (multi-tenant isolation)
     - host, port: SMTP server
     - user, password: Authentication
     - ttl: Connection TTL in seconds
@@ -21,14 +20,23 @@ class AccountsTable(Table):
     - limit_behavior: "defer" or "reject"
     - use_tls: TLS mode (NULL=auto, 0=off, 1=on)
     - batch_size: Messages per connection
+
+    Multi-tenant isolation is enforced via PRIMARY KEY (tenant_id, id).
     """
 
     name = "accounts"
 
+    def create_table_sql(self) -> str:
+        """Generate CREATE TABLE with composite PRIMARY KEY (tenant_id, id)."""
+        sql = super().create_table_sql()
+        # Add composite PRIMARY KEY before final closing parenthesis
+        last_paren = sql.rfind(")")
+        return sql[:last_paren] + ',\n    PRIMARY KEY ("tenant_id", "id")\n)'
+
     def configure(self) -> None:
         c = self.columns
-        c.column("id", String, primary_key=True)
-        c.column("tenant_id", String).relation("tenants", sql=True)
+        c.column("id", String, nullable=False)  # Part of composite PRIMARY KEY
+        c.column("tenant_id", String, nullable=False).relation("tenants", sql=True)
         c.column("host", String, nullable=False)
         c.column("port", Integer, nullable=False)
         c.column("user", String)
@@ -67,7 +75,7 @@ class AccountsTable(Table):
 
         data = {
             "id": acc["id"],
-            "tenant_id": acc.get("tenant_id"),
+            "tenant_id": acc["tenant_id"],  # Required for multi-tenant isolation
             "host": acc["host"],
             "port": int(acc["port"]),
             "user": acc.get("user"),
@@ -92,7 +100,7 @@ class AccountsTable(Table):
 
         await self.upsert(
             data,
-            conflict_columns=["id"],
+            conflict_columns=["tenant_id", "id"],
             update_extras=["updated_at = CURRENT_TIMESTAMP"],
         )
 
@@ -118,7 +126,7 @@ class AccountsTable(Table):
         await self.upsert(
             {
                 "id": acc["id"],
-                "tenant_id": acc.get("tenant_id"),
+                "tenant_id": acc["tenant_id"],  # Required for multi-tenant isolation
                 "host": acc["host"],
                 "port": int(acc["port"]),
                 "user": acc.get("user"),
@@ -138,7 +146,7 @@ class AccountsTable(Table):
                 "imap_password": acc.get("imap_password") or acc.get("password"),
                 "imap_folder": acc.get("imap_folder", "INBOX"),
             },
-            conflict_columns=["id"],
+            conflict_columns=["tenant_id", "id"],
             update_extras=["updated_at = CURRENT_TIMESTAMP"],
         )
 
@@ -219,13 +227,17 @@ class AccountsTable(Table):
 
         return [self._decode_account(acc) for acc in rows]
 
-    async def remove(self, account_id: str) -> None:
-        """Remove an SMTP account.
+    async def remove(self, tenant_id: str, account_id: str) -> None:
+        """Remove an SMTP account for a specific tenant.
+
+        Args:
+            tenant_id: The tenant that owns this account.
+            account_id: The account identifier.
 
         Note: Related messages and send_log should be cleaned by the calling code
         or via foreign key constraints.
         """
-        await self.delete(where={"id": account_id})
+        await self.delete(where={"tenant_id": tenant_id, "id": account_id})
 
     def _decode_use_tls(self, account: dict[str, Any]) -> dict[str, Any]:
         """Convert use_tls INTEGER to bool/None."""
@@ -242,6 +254,23 @@ class AccountsTable(Table):
             val = account["is_pec_account"]
             account["is_pec_account"] = bool(val) if val else False
         return account
+
+    async def sync_schema(self) -> None:
+        """Sync table schema.
+
+        For new databases, PRIMARY KEY (tenant_id, id) is created automatically.
+        For existing databases without the composite PK, creates a UNIQUE index
+        as a fallback to enforce multi-tenant isolation.
+        """
+        await super().sync_schema()
+        # Fallback: add UNIQUE index for existing DBs without composite PK
+        try:
+            await self.execute(
+                'CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_tenant_id '
+                'ON accounts ("tenant_id", "id")'
+            )
+        except Exception:
+            pass  # Index already exists or PK constraint covers it
 
 
 __all__ = ["AccountsTable"]

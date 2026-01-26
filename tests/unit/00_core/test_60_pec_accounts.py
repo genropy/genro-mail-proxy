@@ -10,14 +10,22 @@ import pytest
 from src.mail_proxy.mailproxy_db import MailProxyDb
 
 
+async def make_db_with_tenant(tmp_path, tenant_id="test_tenant"):
+    """Create a test database with a default tenant."""
+    db = MailProxyDb(str(tmp_path / "test.db"))
+    await db.init_db()
+    await db.add_tenant({"id": tenant_id, "name": "Test Tenant"})
+    return db
+
+
 @pytest.mark.asyncio
 async def test_add_pec_account(tmp_path):
     """Test creating a PEC account with IMAP configuration."""
-    db = MailProxyDb(str(tmp_path / "test.db"))
-    await db.init_db()
+    db = await make_db_with_tenant(tmp_path)
 
     await db.add_pec_account({
         "id": "pec-account",
+        "tenant_id": "test_tenant",
         "host": "smtp.pec.example.com",
         "port": 465,
         "user": "user@pec.example.com",
@@ -41,11 +49,11 @@ async def test_add_pec_account(tmp_path):
 @pytest.mark.asyncio
 async def test_add_pec_account_with_separate_imap_credentials(tmp_path):
     """Test PEC account with different IMAP credentials."""
-    db = MailProxyDb(str(tmp_path / "test.db"))
-    await db.init_db()
+    db = await make_db_with_tenant(tmp_path)
 
     await db.add_pec_account({
         "id": "pec-separate",
+        "tenant_id": "test_tenant",
         "host": "smtp.pec.example.com",
         "port": 465,
         "user": "smtp-user@pec.example.com",
@@ -65,12 +73,12 @@ async def test_add_pec_account_with_separate_imap_credentials(tmp_path):
 @pytest.mark.asyncio
 async def test_list_pec_accounts(tmp_path):
     """Test listing only PEC accounts."""
-    db = MailProxyDb(str(tmp_path / "test.db"))
-    await db.init_db()
+    db = await make_db_with_tenant(tmp_path)
 
     # Add regular account
     await db.add_account({
         "id": "regular-account",
+        "tenant_id": "test_tenant",
         "host": "smtp.example.com",
         "port": 587,
     })
@@ -78,12 +86,14 @@ async def test_list_pec_accounts(tmp_path):
     # Add PEC accounts
     await db.add_pec_account({
         "id": "pec-1",
+        "tenant_id": "test_tenant",
         "host": "smtp.pec1.example.com",
         "port": 465,
         "imap_host": "imap.pec1.example.com",
     })
     await db.add_pec_account({
         "id": "pec-2",
+        "tenant_id": "test_tenant",
         "host": "smtp.pec2.example.com",
         "port": 465,
         "imap_host": "imap.pec2.example.com",
@@ -102,11 +112,11 @@ async def test_list_pec_accounts(tmp_path):
 @pytest.mark.asyncio
 async def test_update_imap_sync_state(tmp_path):
     """Test updating IMAP sync state after processing receipts."""
-    db = MailProxyDb(str(tmp_path / "test.db"))
-    await db.init_db()
+    db = await make_db_with_tenant(tmp_path)
 
     await db.add_pec_account({
         "id": "pec-sync",
+        "tenant_id": "test_tenant",
         "host": "smtp.pec.example.com",
         "port": 465,
         "imap_host": "imap.pec.example.com",
@@ -165,23 +175,25 @@ async def test_pec_account_with_tenant(tmp_path):
 @pytest.mark.asyncio
 async def test_get_pec_account_ids(tmp_path):
     """Test getting set of PEC account IDs."""
-    db = MailProxyDb(str(tmp_path / "test.db"))
-    await db.init_db()
+    db = await make_db_with_tenant(tmp_path)
 
     # Add regular and PEC accounts
     await db.add_account({
         "id": "regular",
+        "tenant_id": "test_tenant",
         "host": "smtp.example.com",
         "port": 587,
     })
     await db.add_pec_account({
         "id": "pec-1",
+        "tenant_id": "test_tenant",
         "host": "smtp.pec.example.com",
         "port": 465,
         "imap_host": "imap.pec.example.com",
     })
     await db.add_pec_account({
         "id": "pec-2",
+        "tenant_id": "test_tenant",
         "host": "smtp.pec2.example.com",
         "port": 465,
         "imap_host": "imap.pec2.example.com",
@@ -194,12 +206,12 @@ async def test_get_pec_account_ids(tmp_path):
 @pytest.mark.asyncio
 async def test_insert_messages_auto_sets_is_pec(tmp_path):
     """Test that messages for PEC accounts get is_pec=1 automatically."""
-    db = MailProxyDb(str(tmp_path / "test.db"))
-    await db.init_db()
+    db = await make_db_with_tenant(tmp_path)
 
     # Create PEC account
     await db.add_pec_account({
         "id": "pec-account",
+        "tenant_id": "test_tenant",
         "host": "smtp.pec.example.com",
         "port": 465,
         "imap_host": "imap.pec.example.com",
@@ -208,6 +220,7 @@ async def test_insert_messages_auto_sets_is_pec(tmp_path):
     # Create regular account
     await db.add_account({
         "id": "regular-account",
+        "tenant_id": "test_tenant",
         "host": "smtp.example.com",
         "port": 587,
     })
@@ -240,12 +253,12 @@ async def test_insert_messages_auto_sets_is_pec(tmp_path):
 @pytest.mark.asyncio
 async def test_clear_pec_flag(tmp_path):
     """Test clearing the is_pec flag on a message."""
-    db = MailProxyDb(str(tmp_path / "test.db"))
-    await db.init_db()
+    db = await make_db_with_tenant(tmp_path)
 
     # Create PEC account
     await db.add_pec_account({
         "id": "pec-account",
+        "tenant_id": "test_tenant",
         "host": "smtp.pec.example.com",
         "port": 465,
         "imap_host": "imap.pec.example.com",
@@ -275,12 +288,12 @@ async def test_clear_pec_flag(tmp_path):
 @pytest.mark.asyncio
 async def test_insert_messages_without_auto_pec(tmp_path):
     """Test inserting messages with auto_pec=False."""
-    db = MailProxyDb(str(tmp_path / "test.db"))
-    await db.init_db()
+    db = await make_db_with_tenant(tmp_path)
 
     # Create PEC account
     await db.add_pec_account({
         "id": "pec-account",
+        "tenant_id": "test_tenant",
         "host": "smtp.pec.example.com",
         "port": 465,
         "imap_host": "imap.pec.example.com",

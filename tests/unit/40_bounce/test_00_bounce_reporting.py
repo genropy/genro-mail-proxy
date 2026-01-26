@@ -6,15 +6,23 @@ import pytest
 from mail_proxy.mailproxy_db import MailProxyDb
 
 
+async def make_db_with_tenant(tmp_path, tenant_id="test_tenant"):
+    """Create a test database with a default tenant."""
+    db = MailProxyDb(str(tmp_path / "test.db"))
+    await db.init_db()
+    await db.add_tenant({"id": tenant_id, "name": "Test Tenant"})
+    return db
+
+
 @pytest.mark.asyncio
 async def test_mark_bounced_creates_event(tmp_path):
     """Test that mark_bounced creates a bounce event in message_events table."""
-    db = MailProxyDb(str(tmp_path / "test.db"))
-    await db.init_db()
+    db = await make_db_with_tenant(tmp_path)
 
     # Create account
     await db.add_account({
         "id": "acc1",
+        "tenant_id": "test_tenant",
         "host": "smtp.example.com",
         "port": 587,
     })
@@ -55,11 +63,10 @@ async def test_mark_bounced_creates_event(tmp_path):
 @pytest.mark.asyncio
 async def test_bounce_event_in_unreported_events(tmp_path):
     """Test that bounce events are returned by fetch_unreported_events."""
-    db = MailProxyDb(str(tmp_path / "test.db"))
-    await db.init_db()
+    db = await make_db_with_tenant(tmp_path)
 
     # Create account and message
-    await db.add_account({"id": "acc1", "host": "smtp.example.com", "port": 587})
+    await db.add_account({"id": "acc1", "tenant_id": "test_tenant", "host": "smtp.example.com", "port": 587})
     await db.insert_messages([{
         "id": "msg1",
         "account_id": "acc1",
@@ -94,11 +101,10 @@ async def test_bounce_event_in_unreported_events(tmp_path):
 @pytest.mark.asyncio
 async def test_mark_bounce_reported(tmp_path):
     """Test that bounce events can be marked as reported."""
-    db = MailProxyDb(str(tmp_path / "test.db"))
-    await db.init_db()
+    db = await make_db_with_tenant(tmp_path)
 
     # Setup
-    await db.add_account({"id": "acc1", "host": "smtp.example.com", "port": 587})
+    await db.add_account({"id": "acc1", "tenant_id": "test_tenant", "host": "smtp.example.com", "port": 587})
     await db.insert_messages([{
         "id": "msg1",
         "account_id": "acc1",
@@ -139,11 +145,10 @@ async def test_mark_bounce_reported(tmp_path):
 @pytest.mark.asyncio
 async def test_multiple_events_for_same_message(tmp_path):
     """Test that a message can have multiple events (sent + bounce)."""
-    db = MailProxyDb(str(tmp_path / "test.db"))
-    await db.init_db()
+    db = await make_db_with_tenant(tmp_path)
 
     # Setup
-    await db.add_account({"id": "acc1", "host": "smtp.example.com", "port": 587})
+    await db.add_account({"id": "acc1", "tenant_id": "test_tenant", "host": "smtp.example.com", "port": 587})
     await db.insert_messages([{
         "id": "msg1",
         "account_id": "acc1",
@@ -174,11 +179,10 @@ async def test_multiple_events_for_same_message(tmp_path):
 @pytest.mark.asyncio
 async def test_fetch_unreported_includes_both_new_and_bounce(tmp_path):
     """Test fetch_unreported_events returns both new messages and bounce updates."""
-    db = MailProxyDb(str(tmp_path / "test.db"))
-    await db.init_db()
+    db = await make_db_with_tenant(tmp_path)
 
     # Setup
-    await db.add_account({"id": "acc1", "host": "smtp.example.com", "port": 587})
+    await db.add_account({"id": "acc1", "tenant_id": "test_tenant", "host": "smtp.example.com", "port": 587})
     await db.insert_messages([
         {
             "id": "msg-new",

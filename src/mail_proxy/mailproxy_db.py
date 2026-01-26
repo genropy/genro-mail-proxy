@@ -131,7 +131,7 @@ class MailProxyDb(SqlDb):
             account_id = acc["id"]
             await self.messages.purge_for_account(account_id)
             await self.send_log.purge_for_account(account_id)
-            await self.accounts.remove(account_id)
+            await self.accounts.remove(tenant_id, account_id)
         return await self.tenants.remove(tenant_id)
 
     async def get_tenant_for_account(self, account_id: str) -> dict[str, Any] | None:
@@ -154,10 +154,16 @@ class MailProxyDb(SqlDb):
         """Return all PEC accounts."""
         return await self.accounts.list_pec_accounts()
 
-    async def delete_account(self, account_id: str) -> None:
+    async def delete_account(self, tenant_id: str, account_id: str) -> None:
+        """Delete an account and its related messages/logs.
+
+        Args:
+            tenant_id: The tenant that owns this account.
+            account_id: The account identifier.
+        """
         await self.messages.purge_for_account(account_id)
         await self.send_log.purge_for_account(account_id)
-        await self.accounts.remove(account_id)
+        await self.accounts.remove(tenant_id, account_id)
 
     async def get_account(self, account_id: str) -> dict[str, Any]:
         return await self.accounts.get(account_id)

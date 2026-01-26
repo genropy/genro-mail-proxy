@@ -147,9 +147,13 @@ async def make_core_with_smtp(tmp_path, smtp_port) -> MailProxy:
         debug=lambda *args, **kwargs: None,
     )
 
+    # Create tenant first - accounts require tenant_id
+    await core.handle_command("addTenant", {"id": "test-tenant", "name": "Test"})
+
     # Add account pointing to fake SMTP server
     await core.handle_command("addAccount", {
         "id": "test-smtp",
+        "tenant_id": "test-tenant",
         "host": "127.0.0.1",
         "port": smtp_port,
         "use_tls": False,

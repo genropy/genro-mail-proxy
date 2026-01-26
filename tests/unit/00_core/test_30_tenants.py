@@ -137,19 +137,18 @@ async def test_get_tenant_for_account(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_get_tenant_for_account_no_tenant(tmp_path):
-    """Test account without tenant association."""
+async def test_account_requires_tenant_id(tmp_path):
+    """Test that accounts require tenant_id."""
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
-    await db.add_account({
-        "id": "standalone",
-        "host": "smtp.example.com",
-        "port": 587,
-    })
-
-    tenant = await db.get_tenant_for_account("standalone")
-    assert tenant is None
+    # Accounts now require tenant_id
+    with pytest.raises(KeyError):
+        await db.add_account({
+            "id": "standalone",
+            "host": "smtp.example.com",
+            "port": 587,
+        })
 
 
 @pytest.mark.asyncio
@@ -330,42 +329,6 @@ async def test_events_for_tenant_account(tmp_path):
     # Verify tenant can be retrieved from account
     tenant = await db.get_tenant_for_account("acme-main")
     assert tenant["id"] == "acme"
-
-
-@pytest.mark.asyncio
-async def test_events_no_tenant(tmp_path):
-    """Test events for messages without tenant (backward compatibility)."""
-    import time
-
-    db = MailProxyDb(str(tmp_path / "test.db"))
-    await db.init_db()
-
-    # Create account without tenant
-    await db.add_account({
-        "id": "standalone",
-        "host": "smtp.example.com",
-        "port": 587,
-    })
-
-    # Insert a message
-    await db.insert_messages([{
-        "id": "msg1",
-        "account_id": "standalone",
-        "priority": 2,
-        "payload": {"from": "test@example.com", "to": ["dest@example.com"], "subject": "Test"},
-    }])
-
-    # Mark message as sent
-    sent_ts = int(time.time())
-    await db.mark_sent("msg1", sent_ts)
-
-    # Fetch unreported events - tenant_id can be determined via account
-    events = await db.fetch_unreported_events(limit=10)
-    assert len(events) == 1
-
-    # Account has no tenant
-    tenant = await db.get_tenant_for_account("standalone")
-    assert tenant is None
 
 
 @pytest.mark.asyncio

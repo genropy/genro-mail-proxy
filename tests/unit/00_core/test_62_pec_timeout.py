@@ -12,15 +12,23 @@ import pytest
 from src.mail_proxy.mailproxy_db import MailProxyDb
 
 
+async def make_db_with_tenant(tmp_path, tenant_id="test_tenant"):
+    """Create a test database with a default tenant."""
+    db = MailProxyDb(str(tmp_path / "test.db"))
+    await db.init_db()
+    await db.add_tenant({"id": tenant_id, "name": "Test Tenant"})
+    return db
+
+
 @pytest.mark.asyncio
 async def test_get_pec_messages_without_acceptance(tmp_path):
     """Test finding PEC messages that timed out without acceptance."""
-    db = MailProxyDb(str(tmp_path / "test.db"))
-    await db.init_db()
+    db = await make_db_with_tenant(tmp_path)
 
     # Create PEC account
     await db.add_pec_account({
         "id": "pec-account",
+        "tenant_id": "test_tenant",
         "host": "smtp.pec.example.com",
         "port": 465,
         "imap_host": "imap.pec.example.com",
@@ -48,12 +56,12 @@ async def test_get_pec_messages_without_acceptance(tmp_path):
 @pytest.mark.asyncio
 async def test_pec_message_with_acceptance_not_timed_out(tmp_path):
     """PEC message with acceptance event should not be in timeout list."""
-    db = MailProxyDb(str(tmp_path / "test.db"))
-    await db.init_db()
+    db = await make_db_with_tenant(tmp_path)
 
     # Create PEC account
     await db.add_pec_account({
         "id": "pec-account",
+        "tenant_id": "test_tenant",
         "host": "smtp.pec.example.com",
         "port": 465,
         "imap_host": "imap.pec.example.com",
@@ -89,12 +97,12 @@ async def test_pec_message_with_acceptance_not_timed_out(tmp_path):
 @pytest.mark.asyncio
 async def test_recent_pec_message_not_timed_out(tmp_path):
     """Recently sent PEC message should not be in timeout list."""
-    db = MailProxyDb(str(tmp_path / "test.db"))
-    await db.init_db()
+    db = await make_db_with_tenant(tmp_path)
 
     # Create PEC account
     await db.add_pec_account({
         "id": "pec-account",
+        "tenant_id": "test_tenant",
         "host": "smtp.pec.example.com",
         "port": 465,
         "imap_host": "imap.pec.example.com",
@@ -122,12 +130,12 @@ async def test_recent_pec_message_not_timed_out(tmp_path):
 @pytest.mark.asyncio
 async def test_non_pec_message_not_in_timeout_list(tmp_path):
     """Non-PEC messages should not appear in timeout list."""
-    db = MailProxyDb(str(tmp_path / "test.db"))
-    await db.init_db()
+    db = await make_db_with_tenant(tmp_path)
 
     # Create regular account
     await db.add_account({
         "id": "regular-account",
+        "tenant_id": "test_tenant",
         "host": "smtp.example.com",
         "port": 587,
     })

@@ -320,7 +320,7 @@ async def test_process_client_cycle_fallback_global(tmp_path):
 
 @pytest.mark.asyncio
 async def test_process_client_cycle_mixed_tenants(tmp_path):
-    """Test handling mix of tenants with and without sync URLs."""
+    """Test handling mix of tenant messages and messages without account."""
     core = await make_core(tmp_path)
     core._client_sync_url = "https://global.com/sync"
 
@@ -338,13 +338,6 @@ async def test_process_client_cycle_mixed_tenants(tmp_path):
         "port": 587,
     })
 
-    # Account without tenant (backward compatibility)
-    await core.db.add_account({
-        "id": "acc-no-tenant",
-        "host": "smtp2.com",
-        "port": 587,
-    })
-
     await core.db.insert_messages([
         {
             "id": "msg-with-tenant",
@@ -353,8 +346,9 @@ async def test_process_client_cycle_mixed_tenants(tmp_path):
             "payload": {"from": "a@1.com", "to": ["b@1.com"], "subject": "With"},
         },
         {
-            "id": "msg-no-tenant",
-            "account_id": "acc-no-tenant",
+            # Message without account_id uses global fallback
+            "id": "msg-no-account",
+            "account_id": None,
             "priority": 2,
             "payload": {"from": "a@2.com", "to": ["b@2.com"], "subject": "Without"},
         },
@@ -362,7 +356,7 @@ async def test_process_client_cycle_mixed_tenants(tmp_path):
 
     sent_ts = core._utc_now_epoch()
     await core.db.mark_sent("msg-with-tenant", sent_ts)
-    await core.db.mark_sent("msg-no-tenant", sent_ts)
+    await core.db.mark_sent("msg-no-account", sent_ts)
 
     with aioresponses() as m:
         m.post("https://api.with-url.com/sync", status=200, payload={"ok": True})
@@ -372,7 +366,7 @@ async def test_process_client_cycle_mixed_tenants(tmp_path):
 
         # Tenant-specific URL called for tenant message
         assert ("POST", URL("https://api.with-url.com/sync")) in m.requests
-        # Global URL called for non-tenant message
+        # Global URL called for message without account
         assert ("POST", URL("https://global.com/sync")) in m.requests
 
 

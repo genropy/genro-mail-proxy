@@ -10,9 +10,12 @@ async def test_account_crud(tmp_path):
     db = tmp_path / "test.db"
     p = MailProxyDb(str(db))
     await p.init_db()
+    # Create a tenant first - accounts require tenant_id
+    await p.add_tenant({"id": "test_tenant", "name": "Test"})
     await p.add_account(
         {
             "id": "gmail",
+            "tenant_id": "test_tenant",
             "host": "smtp.gmail.com",
             "port": 587,
             "user": "a",
@@ -26,7 +29,7 @@ async def test_account_crud(tmp_path):
     assert lst[0]["use_tls"] is False
     acc = await p.get_account("gmail")
     assert acc["use_tls"] is False
-    await p.delete_account("gmail")
+    await p.delete_account("test_tenant", "gmail")
     lst = await p.list_accounts()
     assert len(lst) == 0
 

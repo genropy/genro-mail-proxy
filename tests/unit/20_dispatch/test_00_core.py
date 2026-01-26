@@ -149,7 +149,26 @@ async def make_core(tmp_path, max_retries=5) -> MailProxy:
         info=lambda *args, **kwargs: None,
         debug=lambda *args, **kwargs: None,
     )
-    await core.handle_command("addAccount", {"id": "acc", "host": "smtp.local", "port": 25})
+
+    # Mock _send_reports_to_tenant to avoid real HTTP calls
+    async def mock_send_reports(tenant, payloads):
+        return [p["id"] for p in payloads], 0  # acked, queued
+
+    core._send_reports_to_tenant = mock_send_reports
+
+    # Create tenant first - accounts require tenant_id
+    # Use client_base_url to enable event reporting for this tenant
+    await core.handle_command("addTenant", {
+        "id": "test-tenant",
+        "name": "Test",
+        "client_base_url": "http://test.example.com",  # Required for event reporting
+    })
+    await core.handle_command("addAccount", {
+        "id": "acc",
+        "tenant_id": "test-tenant",
+        "host": "smtp.local",
+        "port": 25,
+    })
     return core
 
 
@@ -513,8 +532,13 @@ async def test_batch_size_per_account_multiple_accounts(tmp_path):
     """Test that batch_size_per_account is applied per account independently."""
     core = await make_core(tmp_path)
 
-    # Add second account
-    await core.handle_command("addAccount", {"id": "acc2", "host": "smtp2.local", "port": 25})
+    # Add second account (tenant created by make_core)
+    await core.handle_command("addAccount", {
+        "id": "acc2",
+        "tenant_id": "test-tenant",
+        "host": "smtp2.local",
+        "port": 25,
+    })
 
     core._batch_size_per_account = 2  # Set limit to 2 messages per account
 
@@ -555,12 +579,13 @@ async def test_batch_size_per_account_override(tmp_path):
     core = await make_core(tmp_path)
     core._batch_size_per_account = 10  # Global default
 
-    # Add second account with custom batch_size
+    # Add second account with custom batch_size (tenant created by make_core)
     await core.handle_command("addAccount", {
         "id": "acc2",
+        "tenant_id": "test-tenant",
         "host": "smtp2.local",
         "port": 25,
-        "batch_size": 1  # Override: only 1 message per cycle
+        "batch_size": 1,  # Override: only 1 message per cycle
     })
 
     # Add 3 messages for each account
