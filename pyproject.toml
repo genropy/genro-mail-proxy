@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genro-mail-proxy"
-version = "0.6.0"
+version = "0.6.1"
 description = "Asynchronous email dispatcher microservice with scheduling, rate limiting, attachments, and a FastAPI REST API."
 readme = "README.md"
 license = "Apache-2.0"
@@ -156,6 +156,7 @@ omit = [
     "src/mail_proxy/forms.py",   # Interactive REPL forms
     "src/mail_proxy/server.py",  # Uvicorn entry point
     "src/mail_proxy/cli.py",     # Interactive CLI commands
+    "src/mail_proxy/core/event_reporting.py",  # Mixin tested via MailProxy (coverage can't track)
 ]
 
 [tool.coverage.report]
