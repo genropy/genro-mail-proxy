@@ -2,6 +2,7 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/genro-mail-proxy?style=flat)](https://pypi.org/project/genro-mail-proxy/)
 [![Tests](https://github.com/genropy/genro-mail-proxy/actions/workflows/tests.yml/badge.svg)](https://github.com/genropy/genro-mail-proxy/actions/workflows/tests.yml)
+[![Fullstack Tests](https://github.com/genropy/genro-mail-proxy/actions/workflows/fullstack-tests.yml/badge.svg)](https://github.com/genropy/genro-mail-proxy/actions/workflows/fullstack-tests.yml)
 [![codecov](https://codecov.io/gh/genropy/genro-mail-proxy/branch/main/graph/badge.svg)](https://codecov.io/gh/genropy/genro-mail-proxy)
 [![Documentation](https://readthedocs.org/projects/genro-mail-proxy/badge/?version=latest)](https://genro-mail-proxy.readthedocs.io/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)

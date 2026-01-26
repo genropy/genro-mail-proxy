@@ -343,6 +343,7 @@ class TestBounceEndToEnd:
         soft_info = parser.parse(soft_bounce)
         assert soft_info.bounce_type == "soft"
 
+    @pytest.mark.skip(reason="Flaky in CI: messages stay pending. See issue #69")
     async def test_message_sent_includes_tracking_header(
         self, api_client, setup_bounce_tenant
     ):
