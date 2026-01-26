@@ -501,7 +501,12 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
                 if not tenant_id:
                     return {"ok": False, "error": "tenant_id is required"}
                 active_only = bool(payload.get("active_only", False)) if isinstance(payload, dict) else False
-                messages = await self.db.list_messages(tenant_id=tenant_id, active_only=active_only)
+                include_history = bool(payload.get("include_history", False)) if isinstance(payload, dict) else False
+                messages = await self.db.list_messages(
+                    tenant_id=tenant_id,
+                    active_only=active_only,
+                    include_history=include_history,
+                )
                 return {"ok": True, "messages": messages}
             case "addMessages":
                 return await self._handle_add_messages(payload)

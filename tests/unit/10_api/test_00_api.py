@@ -154,7 +154,7 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
         ("addAccount", {"id": "acc", "tenant_id": None, "host": "smtp.local", "port": 25, "user": None, "password": None, "ttl": 300, "limit_per_minute": None, "limit_per_hour": None, "limit_per_day": None, "limit_behavior": "defer", "use_tls": None, "batch_size": None, "is_pec_account": None, "imap_host": None, "imap_port": None, "imap_user": None, "imap_password": None, "imap_ssl": None}),
         ("listAccounts", {"tenant_id": "test-tenant"}),
         ("deleteAccount", {"id": "acc", "tenant_id": "test-tenant"}),
-        ("listMessages", {"tenant_id": "test-tenant", "active_only": False}),
+        ("listMessages", {"tenant_id": "test-tenant", "active_only": False, "include_history": False}),
     ]
     assert svc.calls == expected_calls
 
@@ -687,8 +687,8 @@ def test_messages_filtered_by_tenant_id():
     assert len(data_b["messages"]) == 1
 
     # Verify tenant_id was passed correctly to service
-    assert svc.calls[0] == ("listMessages", {"tenant_id": "tenant-a", "active_only": False})
-    assert svc.calls[1] == ("listMessages", {"tenant_id": "tenant-b", "active_only": False})
+    assert svc.calls[0] == ("listMessages", {"tenant_id": "tenant-a", "active_only": False, "include_history": False})
+    assert svc.calls[1] == ("listMessages", {"tenant_id": "tenant-b", "active_only": False, "include_history": False})
 
 
 def test_cross_tenant_isolation_accounts():

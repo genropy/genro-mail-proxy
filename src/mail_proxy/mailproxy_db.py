@@ -300,9 +300,17 @@ class MailProxyDb(SqlDb):
         )
 
     async def list_messages(
-        self, *, tenant_id: str | None = None, active_only: bool = False
+        self,
+        *,
+        tenant_id: str | None = None,
+        active_only: bool = False,
+        include_history: bool = False,
     ) -> list[dict[str, Any]]:
-        return await self.messages.list_all(tenant_id=tenant_id, active_only=active_only)
+        return await self.messages.list_all(
+            tenant_id=tenant_id,
+            active_only=active_only,
+            include_history=include_history,
+        )
 
     async def count_active_messages(self) -> int:
         return await self.messages.count_active()

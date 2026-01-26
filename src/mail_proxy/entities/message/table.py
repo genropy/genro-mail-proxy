@@ -378,7 +378,11 @@ class MessagesTable(Table):
         )
 
     async def list_all(
-        self, *, tenant_id: str | None = None, active_only: bool = False
+        self,
+        *,
+        tenant_id: str | None = None,
+        active_only: bool = False,
+        include_history: bool = False,
     ) -> list[dict[str, Any]]:
         """Return messages for inspection purposes, optionally filtered by tenant.
 
@@ -386,9 +390,12 @@ class MessagesTable(Table):
             tenant_id: If provided, filter messages to those belonging to this tenant
                 (via the account's tenant_id).
             active_only: If True, only return messages pending delivery.
+            include_history: If True, include event history for each message.
 
         Returns:
             List of message dicts including error info from message_events.
+            If include_history=True, each message includes a 'history' field with
+            the list of events ordered chronologically.
         """
         params: dict[str, Any] = {}
         where_clauses: list[str] = []
@@ -435,7 +442,48 @@ class MessagesTable(Table):
         query += " ORDER BY m.priority ASC, m.created_at ASC, m.id ASC"
 
         rows = await self.db.adapter.fetch_all(query, params)
-        return [self._decode_payload(row) for row in rows]
+        messages = [self._decode_payload(row) for row in rows]
+
+        if include_history and messages:
+            messages = await self._add_history_to_messages(messages)
+
+        return messages
+
+    async def _add_history_to_messages(
+        self, messages: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Add event history to each message in a single query."""
+        message_ids = [m["id"] for m in messages]
+        placeholders = ", ".join(f":id_{i}" for i in range(len(message_ids)))
+        params = {f"id_{i}": mid for i, mid in enumerate(message_ids)}
+
+        events_query = f"""
+            SELECT id as event_id, message_id, event_type, event_ts,
+                   description, metadata, reported_ts
+            FROM message_events
+            WHERE message_id IN ({placeholders})
+            ORDER BY event_ts ASC, id ASC
+        """
+        event_rows = await self.db.adapter.fetch_all(events_query, params)
+
+        # Group events by message_id
+        events_by_message: dict[str, list[dict[str, Any]]] = {m["id"]: [] for m in messages}
+        for row in event_rows:
+            event = dict(row)
+            if event.get("metadata"):
+                try:
+                    event["metadata"] = json.loads(event["metadata"])
+                except (json.JSONDecodeError, TypeError):
+                    event["metadata"] = None
+            msg_id = event.pop("message_id")
+            if msg_id in events_by_message:
+                events_by_message[msg_id].append(event)
+
+        # Add history to each message
+        for msg in messages:
+            msg["history"] = events_by_message.get(msg["id"], [])
+
+        return messages
 
     async def count_active(self) -> int:
         """Return the number of messages still awaiting delivery."""

@@ -1216,8 +1216,8 @@ def _add_stats_command(group: click.Group, instance_name: str) -> None:
             accounts = await persistence.list_accounts()
             messages = await persistence.list_messages()
 
-            pending = sum(1 for m in messages if not m.get("sent_ts") and not m.get("error_ts"))
-            sent = sum(1 for m in messages if m.get("sent_ts"))
+            pending = sum(1 for m in messages if not m.get("smtp_ts") and not m.get("error_ts"))
+            sent = sum(1 for m in messages if m.get("smtp_ts"))
             errors = sum(1 for m in messages if m.get("error_ts"))
 
             return {
@@ -1929,7 +1929,7 @@ def _add_messages_commands(group: click.Group, instance_name: str, tenant_id: st
             if status != "all":
                 filtered = []
                 for m in messages:
-                    if status == "pending" and not m.get("sent_ts") and not m.get("error_ts") or status == "sent" and m.get("sent_ts") or status == "error" and m.get("error_ts"):
+                    if status == "pending" and not m.get("smtp_ts") and not m.get("error_ts") or status == "sent" and m.get("smtp_ts") or status == "error" and m.get("error_ts"):
                         filtered.append(m)
                 messages = filtered
 
@@ -1955,7 +1955,7 @@ def _add_messages_commands(group: click.Group, instance_name: str, tenant_id: st
         for msg in msg_list[:limit]:
             if msg.get("error_ts"):
                 msg_status = "[red]error[/red]"
-            elif msg.get("sent_ts"):
+            elif msg.get("smtp_ts"):
                 msg_status = "[green]sent[/green]"
             elif msg.get("deferred_ts"):
                 msg_status = "[yellow]deferred[/yellow]"
@@ -1993,14 +1993,15 @@ def _add_messages_commands(group: click.Group, instance_name: str, tenant_id: st
 
     @messages.command("show")
     @click.argument("message_id")
+    @click.option("--history", "-H", is_flag=True, help="Include event history.")
     @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
-    def messages_show(message_id: str, as_json: bool) -> None:
+    def messages_show(message_id: str, history: bool, as_json: bool) -> None:
         """Show details for a specific message."""
         persistence = _get_persistence_for_instance(instance_name)
 
         async def _show():
             await persistence.init_db()
-            messages = await persistence.list_messages()
+            messages = await persistence.list_messages(include_history=history)
             for m in messages:
                 if m["id"] == message_id:
                     return m
@@ -2021,7 +2022,7 @@ def _add_messages_commands(group: click.Group, instance_name: str, tenant_id: st
         console.print(f"  Priority:    {msg.get('priority', 2)}")
         console.print(f"  Created:     {msg.get('created_at') or '-'}")
         console.print(f"  Deferred:    {msg.get('deferred_ts') or '-'}")
-        console.print(f"  Sent:        {msg.get('sent_ts') or '-'}")
+        console.print(f"  Sent:        {msg.get('smtp_ts') or '-'}")
         console.print(f"  Error:       {msg.get('error') or '-'}")
 
         if msg.get("message"):
@@ -2030,6 +2031,15 @@ def _add_messages_commands(group: click.Group, instance_name: str, tenant_id: st
             console.print(f"    From:      {m.get('from', '-')}")
             console.print(f"    To:        {m.get('to', '-')}")
             console.print(f"    Subject:   {m.get('subject', '-')}")
+
+        if history and msg.get("history"):
+            console.print("\n  [bold]Event History:[/bold]")
+            for event in msg["history"]:
+                event_ts = event.get("event_ts", "-")
+                event_type = event.get("event_type", "-")
+                description = event.get("description") or ""
+                reported = "[green]✓[/green]" if event.get("reported_ts") else "[yellow]○[/yellow]"
+                console.print(f"    {reported} [{event_ts}] {event_type}: {description}")
 
         console.print()
 

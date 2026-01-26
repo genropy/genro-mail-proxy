@@ -310,6 +310,16 @@ class AddMessagesResponse(CommandStatus):
     rejected: list[RejectedMessage] = Field(default_factory=list)
 
 
+class MessageEvent(BaseModel):
+    """Single event in message history."""
+    event_id: int
+    event_type: str
+    event_ts: int
+    description: str | None = None
+    metadata: dict[str, Any] | None = None
+    reported_ts: int | None = None
+
+
 class MessageRecord(BaseModel):
     """Full representation of a message tracked by the dispatcher."""
     id: str
@@ -330,6 +340,8 @@ class MessageRecord(BaseModel):
     message: dict[str, Any]
     # PEC flag
     is_pec: bool | None = None
+    # Event history (when include_history=True)
+    history: list[MessageEvent] | None = None
 
 
 class MessagesResponse(CommandStatus):
@@ -787,7 +799,12 @@ def create_app(
         return BasicOkResponse.model_validate(result)
 
     @api.get("/messages", response_model=MessagesResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
-    async def all_messages(request: Request, tenant_id: str, active_only: bool = False):
+    async def all_messages(
+        request: Request,
+        tenant_id: str,
+        active_only: bool = False,
+        include_history: bool = False,
+    ):
         """List messages for a specific tenant.
 
         Returns message records including payload, status timestamps,
@@ -796,6 +813,7 @@ def create_app(
         Args:
             tenant_id: Tenant identifier (required for security isolation).
             active_only: If True, returns only messages pending delivery.
+            include_history: If True, includes event history for each message.
 
         Returns:
             MessagesResponse: List of message records with ``ok=True``.
@@ -812,7 +830,8 @@ def create_app(
         await verify_tenant_token(tenant_id, getattr(request.state, "api_token", None), getattr(request.app.state, "api_token", None))
         result = await service.handle_command("listMessages", {
             "tenant_id": tenant_id,
-            "active_only": active_only
+            "active_only": active_only,
+            "include_history": include_history,
         })
         return MessagesResponse.model_validate(result)
 
