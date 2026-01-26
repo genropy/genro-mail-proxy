@@ -350,23 +350,33 @@ class TestBounceEndToEnd:
         await clear_mailhog(MAILHOG_TENANT1_API)
 
         ts = int(time.time())
+        msg_id = f"track-header-{ts}"
         message = {
-            "id": f"track-header-{ts}",
+            "id": msg_id,
             "account_id": "bounce-account",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
-            "subject": "Tracking Header Test",
+            "subject": f"Tracking Header Test {ts}",
             "body": "Testing X-Genro-Mail-ID header.",
         }
 
         resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
         assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("queued", 0) >= 1, f"Message not queued: {data}"
 
         await trigger_dispatch(api_client, "bounce-tenant")
 
+        # Verify message was sent via API
+        resp = await api_client.get(f"/messages?tenant_id=bounce-tenant")
+        all_msgs = resp.json().get("messages", [])
+        our_msg = next((m for m in all_msgs if m.get("id") == msg_id), None)
+        assert our_msg is not None, f"Message {msg_id} not found in API response"
+        assert our_msg.get("sent_ts") is not None, f"Message not sent: {our_msg}"
+
         # Check MailHog for the sent email
-        emails = await wait_for_messages(MAILHOG_TENANT1_API, 1)
-        assert len(emails) >= 1
+        emails = await wait_for_messages(MAILHOG_TENANT1_API, 1, timeout=15)
+        assert len(emails) >= 1, f"No emails in MailHog. Message status: {our_msg}"
 
         # Find our email (check both header case variants)
         found_email = None
@@ -376,11 +386,11 @@ class TestBounceEndToEnd:
             mail_id_list = headers.get("X-Genro-Mail-Id") or headers.get("X-Genro-Mail-ID")
             if mail_id_list:
                 mail_id = mail_id_list[0] if isinstance(mail_id_list, list) else mail_id_list
-                if mail_id == f"track-header-{ts}":
+                if mail_id == msg_id:
                     found_email = email
                     break
 
-        assert found_email is not None, "Email with X-Genro-Mail-ID header not found"
+        assert found_email is not None, f"Email with X-Genro-Mail-ID={msg_id} not found in {len(emails)} emails"
 
     async def test_bounce_updates_message_record(self, api_client, setup_bounce_tenant):
         """Bounce detected by BounceReceiver updates message record.
