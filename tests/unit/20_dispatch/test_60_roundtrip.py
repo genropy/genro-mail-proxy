@@ -199,7 +199,7 @@ async def test_full_roundtrip_single_tenant(tmp_path, smtp_server, smtp_handler)
     assert "Welcome to ACME" in msg["data"]
 
     # Verify: Message marked as processed (smtp_ts set), event not yet reported
-    messages = await core.db.list_messages()
+    messages = await core.db.list_messages("acme")
     assert len(messages) == 1
     assert messages[0]["smtp_ts"] is not None
     pk = messages[0]["pk"]
@@ -397,7 +397,7 @@ async def test_roundtrip_with_smtp_error(tmp_path, smtp_server, smtp_handler):
     await core._process_smtp_cycle()
 
     # Message should be marked as processed (permanent error)
-    messages = await core.db.list_messages()
+    messages = await core.db.list_messages("error-tenant")
     assert len(messages) == 1
     assert messages[0]["smtp_ts"] is not None
 
@@ -472,7 +472,7 @@ async def test_roundtrip_tenant_sync_failure_retry(tmp_path, smtp_server, smtp_h
         await core._process_client_cycle()
 
     # Event should NOT be marked as reported (will retry)
-    messages = await core.db.list_messages()
+    messages = await core.db.list_messages("flaky-tenant")
     pk = messages[0]["pk"]
     events = await core.db.get_events_for_message(pk)
     assert len(events) == 1

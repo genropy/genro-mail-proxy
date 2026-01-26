@@ -392,11 +392,23 @@ class MailProxyDb(SqlDb):
 
     async def list_messages(
         self,
+        tenant_id: str,
         *,
-        tenant_id: str | None = None,
         active_only: bool = False,
         include_history: bool = False,
     ) -> list[dict[str, Any]]:
+        """List messages for a specific tenant.
+
+        Args:
+            tenant_id: Required tenant ID for multi-tenant isolation.
+            active_only: If True, only return messages pending delivery.
+            include_history: If True, include event history for each message.
+
+        Raises:
+            ValueError: If tenant_id is not provided.
+        """
+        if not tenant_id:
+            raise ValueError("tenant_id is required for list_messages")
         return await self.messages.list_all(
             tenant_id=tenant_id,
             active_only=active_only,

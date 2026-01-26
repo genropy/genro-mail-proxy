@@ -98,7 +98,7 @@ async def test_messages_lifecycle(tmp_path):
     # Retention cleanup via events
     removed = await p.remove_fully_reported_before(now + 10)
     assert removed == 1
-    assert await p.list_messages() == []
+    assert await p.list_messages("test_tenant") == []
 
 
 @pytest.mark.asyncio

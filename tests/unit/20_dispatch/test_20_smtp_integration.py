@@ -191,7 +191,7 @@ async def test_send_email_via_real_smtp(tmp_path, smtp_server, smtp_handler):
     assert "Hello, this is a test email." in msg["data"]
 
     # Verify message is marked as processed (smtp_ts set)
-    messages = await core.db.list_messages()
+    messages = await core.db.list_messages("test-tenant")
     assert messages[0]["smtp_ts"] is not None
     assert core.metrics.sent_count == 1
 
@@ -276,7 +276,7 @@ async def test_smtp_rejection_marks_error(tmp_path, smtp_server, smtp_handler):
     await core._process_smtp_cycle()
 
     # Message should be marked as processed (permanent error)
-    messages = await core.db.list_messages()
+    messages = await core.db.list_messages("test-tenant")
     assert messages[0]["smtp_ts"] is not None  # Processed
     assert messages[0]["deferred_ts"] is None  # Not retrying
 
@@ -315,7 +315,7 @@ async def test_smtp_temporary_error_defers(tmp_path, smtp_server, smtp_handler):
     await core._process_smtp_cycle()
 
     # Message should be deferred, not permanently failed
-    messages = await core.db.list_messages()
+    messages = await core.db.list_messages("test-tenant")
     assert messages[0]["smtp_ts"] is None  # Not processed (back in pending state)
     assert messages[0]["deferred_ts"] is not None  # Deferred for retry
 
@@ -346,7 +346,7 @@ async def test_send_multiple_messages_batch(tmp_path, smtp_server, smtp_handler)
     assert core.metrics.sent_count == 5
 
     # All messages should be marked as processed (sent)
-    db_messages = await core.db.list_messages()
+    db_messages = await core.db.list_messages("test-tenant")
     assert all(m["smtp_ts"] is not None for m in db_messages)
 
 

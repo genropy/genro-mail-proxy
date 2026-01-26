@@ -1217,17 +1217,22 @@ def _add_stats_command(group: click.Group, instance_name: str) -> None:
 
             tenants = await persistence.list_tenants()
             accounts = await persistence.list_accounts()
-            messages = await persistence.list_messages()
 
-            pending = sum(1 for m in messages if not m.get("smtp_ts") and not m.get("error_ts"))
-            sent = sum(1 for m in messages if m.get("smtp_ts"))
-            errors = sum(1 for m in messages if m.get("error_ts"))
+            # Aggregate messages across all tenants
+            all_messages: list[dict] = []
+            for tenant in tenants:
+                tenant_messages = await persistence.list_messages(tenant["id"])
+                all_messages.extend(tenant_messages)
+
+            pending = sum(1 for m in all_messages if not m.get("smtp_ts") and not m.get("error_ts"))
+            sent = sum(1 for m in all_messages if m.get("smtp_ts"))
+            errors = sum(1 for m in all_messages if m.get("error_ts"))
 
             return {
                 "tenants": len(tenants),
                 "accounts": len(accounts),
                 "messages": {
-                    "total": len(messages),
+                    "total": len(all_messages),
                     "pending": pending,
                     "sent": sent,
                     "error": errors,

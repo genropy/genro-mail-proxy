@@ -175,7 +175,7 @@ async def test_delete_tenant_cascades(tmp_path):
 
     # Verify data exists
     assert len(await db.list_accounts(tenant_id="acme")) == 1
-    assert len(await db.list_messages()) == 1
+    assert len(await db.list_messages("acme")) == 1
 
     # Delete tenant
     await db.delete_tenant("acme")
@@ -183,7 +183,7 @@ async def test_delete_tenant_cascades(tmp_path):
     # Verify cascade
     assert await db.get_tenant("acme") is None
     assert len(await db.list_accounts(tenant_id="acme")) == 0
-    assert len(await db.list_messages()) == 0
+    assert len(await db.list_messages("acme")) == 0
 
 
 @pytest.mark.asyncio

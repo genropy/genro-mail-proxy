@@ -236,7 +236,7 @@ async def test_add_messages_and_dispatch(tmp_path):
     assert len(core.pool.smtp.sent) == 1
     assert core.metrics.sent_accounts == ["acc"]
     # Message stored with smtp_ts (processed)
-    messages = await core.db.list_messages()
+    messages = await core.db.list_messages("test-tenant")
     assert messages[0]["smtp_ts"] is not None
 
     # Delivery report cycle marks events as reported
@@ -256,7 +256,7 @@ async def test_add_messages_and_dispatch(tmp_path):
     await core.db.mark_events_reported(event_ids, past_ts)
 
     await core._apply_retention()
-    assert await core.db.list_messages() == []
+    assert await core.db.list_messages("test-tenant") == []
 
 
 @pytest.mark.asyncio
@@ -393,7 +393,7 @@ async def test_send_failure_sets_error(tmp_path):
     }
     await core.handle_command("addMessages", payload)
     await core._process_smtp_cycle()
-    messages = await core.db.list_messages()
+    messages = await core.db.list_messages("test-tenant")
 
     # RuntimeError("boom") is classified as temporary, so message should be deferred
     # smtp_ts should be NULL (message back in pending state for retry)
@@ -438,7 +438,7 @@ async def test_temporary_error_retry_exhaustion(tmp_path):
 
         # Process the SMTP cycle
         processed = await core._process_smtp_cycle()
-        messages = await core.db.list_messages()
+        messages = await core.db.list_messages("test-tenant")
 
         if attempt < 3:
             # Should be deferred for retries - smtp_ts is NULL (back in pending state)
@@ -489,7 +489,7 @@ async def test_permanent_error_no_retry(tmp_path):
     }
     await core.handle_command("addMessages", payload)
     await core._process_smtp_cycle()
-    messages = await core.db.list_messages()
+    messages = await core.db.list_messages("test-tenant")
 
     # 5xx errors should be marked as permanent errors immediately
     # smtp_ts is set (message processed) and deferred_ts is NULL (not retrying)
@@ -668,14 +668,14 @@ async def test_cleanup_messages_command(tmp_path):
 
     # Mark events as reported (artificially old)
     old_ts = core._utc_now_epoch() - 10000
-    messages = await core.db.list_messages()
+    messages = await core.db.list_messages("test-tenant")
     pk = messages[0]["pk"]
     events = await core.db.get_events_for_message(pk)
     event_ids = [e["event_id"] for e in events]
     await core.db.mark_events_reported(event_ids, old_ts)
 
     # Verify message exists
-    messages = await core.db.list_messages()
+    messages = await core.db.list_messages("test-tenant")
     assert len(messages) == 1
 
     # Cleanup with custom threshold (older than 5000 seconds)
@@ -687,7 +687,7 @@ async def test_cleanup_messages_command(tmp_path):
     assert result["removed"] == 1
 
     # Verify message was removed
-    messages = await core.db.list_messages()
+    messages = await core.db.list_messages("test-tenant")
     assert len(messages) == 0
 
 

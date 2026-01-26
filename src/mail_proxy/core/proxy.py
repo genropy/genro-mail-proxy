@@ -537,7 +537,7 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
                 active_only = bool(payload.get("active_only", False)) if isinstance(payload, dict) else False
                 include_history = bool(payload.get("include_history", False)) if isinstance(payload, dict) else False
                 messages = await self.db.list_messages(
-                    tenant_id=tenant_id,
+                    tenant_id,
                     active_only=active_only,
                     include_history=include_history,
                 )
