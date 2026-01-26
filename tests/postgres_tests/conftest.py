@@ -33,7 +33,13 @@ async def pg_db(pg_container):
     Yields a connected SqlDb instance with clean tables.
     Tables are dropped after each test to ensure isolation.
     """
-    from mail_proxy.entities import AccountsTable, MessagesTable, SendLogTable, TenantsTable
+    from mail_proxy.entities import (
+        AccountsTable,
+        MessageEventTable,
+        MessagesTable,
+        SendLogTable,
+        TenantsTable,
+    )
     from mail_proxy.sql import SqlDb
 
     db = SqlDb(pg_container)
@@ -43,6 +49,7 @@ async def pg_db(pg_container):
     db.add_table(TenantsTable)
     db.add_table(AccountsTable)
     db.add_table(MessagesTable)
+    db.add_table(MessageEventTable)
     db.add_table(SendLogTable)
     await db.check_structure()
 
@@ -50,7 +57,7 @@ async def pg_db(pg_container):
 
     # Cleanup: drop all tables in reverse order (to respect FK constraints)
     import contextlib
-    for table_name in ["send_log", "messages", "accounts", "tenants"]:
+    for table_name in ["send_log", "message_events", "messages", "accounts", "tenants"]:
         with contextlib.suppress(Exception):
             await db.execute(f"DROP TABLE IF EXISTS {table_name} CASCADE")
 
