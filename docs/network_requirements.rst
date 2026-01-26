@@ -12,7 +12,7 @@ configurations, and network topology.
 Network Architecture
 --------------------
 
-genro-mail-proxy acts as a middleware service between your Genropy application
+genro-mail-proxy acts as a middleware service between your your application application
 and external SMTP servers. Understanding the network flows is essential for
 proper firewall configuration and security planning.
 
@@ -27,7 +27,7 @@ Network Flow Diagram
 
    ┌──────────────────┐                    ┌──────────────────┐
    │                  │ ➊ REST API         │                  │
-   │    Genropy       │───────────────────>│ genro-mail-proxy │
+   │    your application       │───────────────────>│ genro-mail-proxy │
    │  Application     │   (HTTP/HTTPS)     │                  │
    │                  │                    │                  │
    │                  │ ➋ Delivery Reports │                  │
@@ -47,7 +47,7 @@ Network Flow Diagram
 Connection Details
 ------------------
 
-1. Genropy → genro-mail-proxy (REST API)
+1. your application → genro-mail-proxy (REST API)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 **Direction:** Inbound to genro-mail-proxy
@@ -73,8 +73,8 @@ Connection Details
 
 .. code-block:: text
 
-   # Allow Genropy instances to reach genro-mail-proxy
-   Source: Genropy servers (e.g., 10.0.1.0/24)
+   # Allow your application instances to reach genro-mail-proxy
+   Source: your application servers (e.g., 10.0.1.0/24)
    Destination: genro-mail-proxy (e.g., 10.0.2.10)
    Port: 8000/tcp (or configured GMP_PORT)
    Protocol: TCP
@@ -85,11 +85,11 @@ Connection Details
 - Use HTTPS in production (configure via reverse proxy like nginx)
 - Set strong ``GMP_API_TOKEN`` (minimum 32 characters)
 - Consider network segmentation (genro-mail-proxy in DMZ or separate subnet)
-- Enable firewall rules to restrict access to known Genropy IPs only
+- Enable firewall rules to restrict access to known your application IPs only
 
 **Client Configuration:**
 
-The Genropy client must be configured with:
+The your application client must be configured with:
 
 - **Mail Proxy URL**: The base URL where genro-mail-proxy is accessible (e.g., ``http://mail-proxy.internal:8000``)
 - **API Token**: The authentication token matching ``GMP_API_TOKEN`` on the proxy server
@@ -98,7 +98,7 @@ The client uses these parameters when making REST API calls to the proxy endpoin
 See ``example_client.py`` for a reference implementation showing how to configure
 and use these parameters in your client application.
 
-2. genro-mail-proxy → Genropy (Delivery Reports)
+2. genro-mail-proxy → your application (Delivery Reports)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 **Direction:** Outbound from genro-mail-proxy
@@ -116,17 +116,17 @@ and use these parameters in your client application.
 **Typical Endpoint:** ``/email/mailproxy/mp_endpoint/proxy_sync``
 
 **Purpose:**
-genro-mail-proxy periodically reports message delivery status back to Genropy
-(sent, error, deferred). This allows Genropy to update its database and track
+genro-mail-proxy periodically reports message delivery status back to your application
+(sent, error, deferred). This allows your application to update its database and track
 email delivery lifecycle.
 
 **Firewall Rules:**
 
 .. code-block:: text
 
-   # Allow genro-mail-proxy to report back to Genropy
+   # Allow genro-mail-proxy to report back to your application
    Source: genro-mail-proxy (e.g., 10.0.2.10)
-   Destination: Genropy servers (e.g., 10.0.1.0/24)
+   Destination: your application servers (e.g., 10.0.1.0/24)
    Port: Application port (e.g., 8080/tcp)
    Protocol: TCP
    Action: ALLOW
@@ -154,7 +154,7 @@ email delivery lifecycle.
 .. code-block:: bash
 
    # Environment variables
-   export GMP_CLIENT_SYNC_URL="http://genropy.internal:8080/email/mailproxy/mp_endpoint/proxy_sync"
+   export GMP_CLIENT_SYNC_URL="http://app.internal:8080/email/mailproxy/mp_endpoint/proxy_sync"
    export GMP_CLIENT_SYNC_USER="syncuser"
    export GMP_CLIENT_SYNC_PASSWORD="syncpass"
 
@@ -291,7 +291,7 @@ Scenario 1: Single Host (Development)
    │         Single Server (localhost)      │
    │                                        │
    │  ┌──────────┐      ┌──────────────┐  │
-   │  │ Genropy  │─────>│ mail-proxy   │──┼─> Internet
+   │  │ your application  │─────>│ mail-proxy   │──┼─> Internet
    │  │  :8080   │      │   :8000      │  │   (SMTP)
    │  └──────────┘      └──────────────┘  │
    └────────────────────────────────────────┘
@@ -306,7 +306,7 @@ Scenario 1: Single Host (Development)
 
 .. code-block:: bash
 
-   # Genropy config
+   # your application config
    GMP_CLIENT_SYNC_URL=http://127.0.0.1:8080/email/mailproxy/mp_endpoint/proxy_sync
 
 Scenario 2: Separate Hosts (Production)
@@ -315,7 +315,7 @@ Scenario 2: Separate Hosts (Production)
 .. code-block:: text
 
    ┌──────────────┐         ┌──────────────┐
-   │   Genropy    │         │ mail-proxy   │
+   │   your application    │         │ mail-proxy   │
    │  10.0.1.10   │────────>│  10.0.2.10   │───> Internet
    │   :8080      │         │    :8000     │     (SMTP)
    └──────────────┘         └──────────────┘
@@ -325,8 +325,8 @@ Scenario 2: Separate Hosts (Production)
 
 **Network Requirements:**
 
-1. Genropy → mail-proxy: Allow 10.0.1.10 → 10.0.2.10:8000
-2. mail-proxy → Genropy: Allow 10.0.2.10 → 10.0.1.10:8080
+1. your application → mail-proxy: Allow 10.0.1.10 → 10.0.2.10:8000
+2. mail-proxy → your application: Allow 10.0.2.10 → 10.0.1.10:8080
 3. mail-proxy → Internet: Allow outbound 587/tcp
 
 **Firewall Configuration (iptables example):**
@@ -334,10 +334,10 @@ Scenario 2: Separate Hosts (Production)
 .. code-block:: bash
 
    # On genro-mail-proxy host
-   # Allow inbound API from Genropy
+   # Allow inbound API from your application
    iptables -A INPUT -s 10.0.1.10 -p tcp --dport 8000 -j ACCEPT
 
-   # Allow outbound to Genropy
+   # Allow outbound to your application
    iptables -A OUTPUT -d 10.0.1.10 -p tcp --dport 8080 -j ACCEPT
 
    # Allow outbound SMTP
@@ -352,7 +352,7 @@ Scenario 3: Kubernetes Cluster
    │          Kubernetes Cluster                  │
    │                                              │
    │  ┌──────────────┐    ┌──────────────┐      │
-   │  │ genropy-svc  │───>│ mail-proxy   │──────┼──> Internet
+   │  │ app-svc  │───>│ mail-proxy   │──────┼──> Internet
    │  │ ClusterIP    │    │   Service    │      │    (SMTP)
    │  └──────────────┘    └──────────────┘      │
    └─────────────────────────────────────────────┘
@@ -379,20 +379,20 @@ Scenario 3: Kubernetes Cluster
        - Ingress
        - Egress
      ingress:
-       # Allow from Genropy pods
+       # Allow from your application pods
        - from:
          - podSelector:
              matchLabels:
-               app: genropy
+               app: myapp
          ports:
          - protocol: TCP
            port: 8000
      egress:
-       # Allow to Genropy pods
+       # Allow to your application pods
        - to:
          - podSelector:
              matchLabels:
-               app: genropy
+               app: myapp
          ports:
          - protocol: TCP
            port: 8080
@@ -414,7 +414,7 @@ Scenario 3: Kubernetes Cluster
 .. code-block:: bash
 
    # genro-mail-proxy uses service DNS name
-   export GMP_CLIENT_SYNC_URL="http://genropy-svc.default.svc.cluster.local:8080/email/mailproxy/mp_endpoint/proxy_sync"
+   export GMP_CLIENT_SYNC_URL="http://app-svc.default.svc.cluster.local:8080/email/mailproxy/mp_endpoint/proxy_sync"
 
 Security Considerations
 -----------------------
@@ -422,7 +422,7 @@ Security Considerations
 TLS/SSL Configuration
 ^^^^^^^^^^^^^^^^^^^^^
 
-**For API Communication (Genropy ↔ genro-mail-proxy):**
+**For API Communication (your application ↔ genro-mail-proxy):**
 
 genro-mail-proxy does not natively support HTTPS. Use a reverse proxy:
 
@@ -470,7 +470,7 @@ Store SMTP credentials securely:
 - Consider secrets management (Vault, AWS Secrets Manager)
 - Rotate credentials periodically
 
-**Genropy Sync Authentication:**
+**your application Sync Authentication:**
 
 Use token-based auth when possible (``GMP_CLIENT_SYNC_TOKEN``) instead of
 basic auth for better security.
@@ -485,7 +485,7 @@ Network Isolation
    ┌─────────────────┐
    │  Application    │  Private subnet: 10.0.1.0/24
    │  Tier           │
-   │  (Genropy)      │
+   │  (your application)      │
    └────────┬────────┘
             │
    ┌────────▼────────┐
@@ -513,7 +513,7 @@ Connection Testing
 
 .. code-block:: bash
 
-   # From Genropy server
+   # From your application server
    curl -H "X-API-Token: your-token" http://mail-proxy:8000/status
 
 **Test SMTP Connectivity:**
@@ -523,13 +523,13 @@ Connection Testing
    # From genro-mail-proxy server
    telnet smtp.gmail.com 587
 
-**Test Genropy Callback:**
+**Test your application Callback:**
 
 .. code-block:: bash
 
    # From genro-mail-proxy server
    curl -u syncuser:syncpass \\
-     http://genropy:8080/email/mailproxy/mp_endpoint/proxy_sync \\
+     http://myapp:8080/email/mailproxy/mp_endpoint/proxy_sync \\
      -H "Content-Type: application/json" \\
      -d '{"delivery_report": []}'
 
@@ -554,15 +554,15 @@ Common Issues
    2. Verify DNS resolution: nslookup smtp.gmail.com
    3. Check proxy/NAT configuration
 
-**Issue: Delivery reports not reaching Genropy**
+**Issue: Delivery reports not reaching your application**
 
 .. code-block:: text
 
    Solution:
    1. Verify GMP_CLIENT_SYNC_URL is correct
-   2. Check Genropy endpoint is accessible
+   2. Check your application endpoint is accessible
    3. Verify authentication credentials
-   4. Check Genropy logs for incoming requests
+   4. Check your application logs for incoming requests
 
 Monitoring and Logging
 -----------------------
@@ -597,8 +597,8 @@ Summary Checklist
 Before deploying genro-mail-proxy, ensure:
 
 ☑ **Firewall Rules:**
-  - ✅ Genropy → genro-mail-proxy (port 8000)
-  - ✅ genro-mail-proxy → Genropy (application port)
+  - ✅ your application → genro-mail-proxy (port 8000)
+  - ✅ genro-mail-proxy → your application (application port)
   - ✅ genro-mail-proxy → Internet SMTP (port 587)
 
 ☑ **DNS Resolution:**
@@ -612,13 +612,13 @@ Before deploying genro-mail-proxy, ensure:
 ☑ **Configuration:**
   - ✅ ``GMP_HOST=0.0.0.0`` (or specific interface)
   - ✅ ``GMP_PORT`` matches firewall rules
-  - ✅ ``GMP_CLIENT_SYNC_URL`` points to correct Genropy endpoint
+  - ✅ ``GMP_CLIENT_SYNC_URL`` points to correct your application endpoint
 
 ☑ **Testing:**
   - ✅ API health check succeeds: ``GET /status``
   - ✅ Can send test message: ``POST /commands/add-messages``
   - ✅ SMTP connection works (check logs)
-  - ✅ Delivery reports reach Genropy
+  - ✅ Delivery reports reach your application
 
 See Also
 --------

@@ -34,7 +34,7 @@ Traditional Direct SMTP
 .. code-block:: text
 
    ┌─────────────────────────────────────────────────────┐
-   │           Your Application (Genropy)                 │
+   │              Your Application                         │
    │                                                      │
    │  HTTP Request Handler                                │
    │    ↓                                                 │
@@ -69,7 +69,7 @@ Proxy-Based Architecture
 .. code-block:: text
 
    ┌─────────────────────────────────────────────────────┐
-   │           Your Application (Genropy)                 │
+   │              Your Application                         │
    │                                                      │
    │  HTTP Request Handler                                │
    │    ↓                                                 │
@@ -122,7 +122,7 @@ Key Benefits
 
 .. code-block:: python
 
-   # Your Application (Genropy)
+   # Your Application
    def create_order(order_data):
        # 1. Business logic
        order = db.table('orders').insert(order_data)

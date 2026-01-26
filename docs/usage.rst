@@ -100,7 +100,7 @@ configuration is done dynamically via API calls from your application:
      }'
 
 This allows dynamic multi-tenant configuration at runtime. Your application
-(e.g., Genropy) manages tenant and account lifecycle via these API endpoints.
+manages tenant and account lifecycle via these API endpoints.
 
 API Token
 ~~~~~~~~~
@@ -266,13 +266,13 @@ configured authentication (bearer token or basic auth):
    }
 
 If no events are pending, ``delivery_report`` is an empty list.  A typical
-response from Genropy is:
+response from your application is:
 
 .. code-block:: json
 
    {"sent": 12, "error": 1, "deferred": 0}
 
-Genropy will subsequently push new messages through ``/commands/add-messages``.
+Your application will subsequently push new messages through ``/commands/add-messages``.
 For automated deployments the background SMTP and reporting loops poll the queue
 every ``send_interval_seconds``. The ``/commands/run-now`` shortcut can be used
 to force an immediate iteration, waking the loops without waiting for the

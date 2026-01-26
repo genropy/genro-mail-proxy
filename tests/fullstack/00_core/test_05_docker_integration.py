@@ -240,6 +240,7 @@ async def test_send_email_to_tenant1_mailhog(docker_services, setup_tenants):
     await core.handle_command("addMessages", {
         "messages": [{
             "id": "docker-msg-t1",
+            "tenant_id": "tenant1",
             "account_id": "tenant1-smtp",
             "from": "sender@tenant1.com",
             "to": ["recipient@example.com"],
@@ -274,6 +275,7 @@ async def test_send_email_to_tenant2_mailhog(docker_services, setup_tenants):
     await core.handle_command("addMessages", {
         "messages": [{
             "id": "docker-msg-t2",
+            "tenant_id": "tenant2",
             "account_id": "tenant2-smtp",
             "from": "sender@tenant2.com",
             "to": ["recipient@example.com"],
@@ -310,6 +312,7 @@ async def test_tenant_isolation_smtp(docker_services, setup_tenants):
         "messages": [
             {
                 "id": "isolation-msg-t1",
+                "tenant_id": "tenant1",
                 "account_id": "tenant1-smtp",
                 "from": "sender@tenant1.com",
                 "to": ["user@example.com"],
@@ -318,6 +321,7 @@ async def test_tenant_isolation_smtp(docker_services, setup_tenants):
             },
             {
                 "id": "isolation-msg-t2",
+                "tenant_id": "tenant2",
                 "account_id": "tenant2-smtp",
                 "from": "sender@tenant2.com",
                 "to": ["user@example.com"],
@@ -357,6 +361,7 @@ async def test_batch_emails_same_tenant(docker_services, setup_tenants):
     for i in range(5):
         messages.append({
             "id": f"batch-msg-{i}",
+            "tenant_id": "tenant1",
             "account_id": "tenant1-smtp",
             "from": "sender@tenant1.com",
             "to": [f"recipient{i}@example.com"],
@@ -388,6 +393,7 @@ async def test_html_email_via_docker(docker_services, setup_tenants):
     await core.handle_command("addMessages", {
         "messages": [{
             "id": "html-docker-msg",
+            "tenant_id": "tenant1",
             "account_id": "tenant1-smtp",
             "from": "sender@tenant1.com",
             "to": ["recipient@example.com"],
@@ -423,6 +429,7 @@ async def test_email_with_custom_headers(docker_services, setup_tenants):
     await core.handle_command("addMessages", {
         "messages": [{
             "id": "custom-headers-msg",
+            "tenant_id": "tenant1",
             "account_id": "tenant1-smtp",
             "from": "sender@tenant1.com",
             "to": ["recipient@example.com"],

@@ -107,7 +107,7 @@ Local Development
 .. code-block:: bash
 
    # Clone and install in development mode
-   git clone https://github.com/genropy/genro-mail-proxy.git
+   git clone https://github.com/softwell/genro-mail-proxy.git
    cd genro-mail-proxy
    pip install -e ".[dev]"
 

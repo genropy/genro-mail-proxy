@@ -23,7 +23,7 @@ version = ".".join(release.split(".")[:2])
 # Project information
 project = "Genro Mail Proxy"
 copyright = "2025, Softwell S.r.l."
-author = "Genropy Team"
+author = "Softwell S.r.l."
 
 # General configuration
 extensions = [
@@ -89,7 +89,7 @@ html_title = project
 # HTML context (GitHub integration)
 html_context = {
     "display_github": True,
-    "github_user": "genropy",
+    "github_user": "softwell",
     "github_repo": "genro-mail-proxy",
     "github_version": "main",
     "conf_py_path": "/docs/",
@@ -139,7 +139,7 @@ typehints_document_rtype = True
 
 # Linkcheck configuration
 linkcheck_anchors_ignore_for_url = [
-    r"https://github\.com/genropy/genro-mail-proxy/.*",  # All GitHub anchors
+    r"https://github\.com/softwell/genro-mail-proxy/.*",  # All GitHub anchors
 ]
 linkcheck_ignore = [
     r"http://localhost:\d+",  # Local development URLs

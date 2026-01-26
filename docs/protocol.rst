@@ -241,7 +241,7 @@ per-tenant via CLI or environment variables). A typical exchange:
 
    sequenceDiagram
      participant Core as MailProxy
-     participant Upstream as Genropy / client
+     participant Upstream as Client Application
 
      Core->>Upstream: POST sync_endpoint<br/>delivery_report array
      Upstream-->>Core: HTTP 200 + summary JSON
