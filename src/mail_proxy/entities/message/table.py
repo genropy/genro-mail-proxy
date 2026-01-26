@@ -183,8 +183,8 @@ class MessagesTable(Table):
         query = f"""
             SELECT m.pk, m.id, m.tenant_id, m.account_id, m.priority, m.payload, m.batch_code, m.deferred_ts, m.is_pec
             FROM messages m
-            LEFT JOIN accounts a ON m.account_id = a.id
-            LEFT JOIN tenants t ON a.tenant_id = t.id
+            LEFT JOIN accounts a ON m.account_id = a.id AND m.tenant_id = a.tenant_id
+            LEFT JOIN tenants t ON m.tenant_id = t.id
             WHERE {' AND '.join(conditions)}
             ORDER BY m.priority ASC, m.created_at ASC, m.pk ASC
             LIMIT :limit
@@ -393,7 +393,7 @@ class MessagesTable(Table):
             f"""
             SELECT m.id
             FROM messages m
-            JOIN accounts a ON m.account_id = a.id
+            JOIN accounts a ON m.account_id = a.id AND m.tenant_id = a.tenant_id
             WHERE m.id IN ({placeholders})
               AND a.tenant_id = :tenant_id
             """,
@@ -445,7 +445,7 @@ class MessagesTable(Table):
             DELETE FROM messages
             WHERE pk IN (
                 SELECT m.pk FROM messages m
-                JOIN accounts a ON m.account_id = a.id
+                JOIN accounts a ON m.account_id = a.id AND m.tenant_id = a.tenant_id
                 WHERE a.tenant_id = :tenant_id
                   AND m.smtp_ts IS NOT NULL
                   AND NOT EXISTS (
@@ -602,7 +602,7 @@ class MessagesTable(Table):
             query = """
                 SELECT COUNT(*) as cnt
                 FROM messages m
-                JOIN accounts a ON m.account_id = a.id
+                JOIN accounts a ON m.account_id = a.id AND m.tenant_id = a.tenant_id
                 WHERE a.tenant_id = :tenant_id
                   AND m.batch_code = :batch_code
                   AND m.smtp_ts IS NULL
@@ -612,7 +612,7 @@ class MessagesTable(Table):
             query = """
                 SELECT COUNT(*) as cnt
                 FROM messages m
-                JOIN accounts a ON m.account_id = a.id
+                JOIN accounts a ON m.account_id = a.id AND m.tenant_id = a.tenant_id
                 WHERE a.tenant_id = :tenant_id
                   AND m.smtp_ts IS NULL
             """

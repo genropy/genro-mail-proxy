@@ -119,7 +119,7 @@ class MessageEventTable(Table):
                 m.tenant_id
             FROM message_events e
             JOIN messages m ON e.message_pk = m.pk
-            LEFT JOIN accounts a ON m.account_id = a.id
+            LEFT JOIN accounts a ON m.account_id = a.id AND m.tenant_id = a.tenant_id
             WHERE e.reported_ts IS NULL
             ORDER BY e.event_ts ASC, e.id ASC
             LIMIT :limit
