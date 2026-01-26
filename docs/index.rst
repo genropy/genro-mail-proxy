@@ -133,6 +133,7 @@ with separate databases.
    overview
    features
    architecture_overview
+   protocol
    installation
    network_requirements
    usage
@@ -145,7 +146,6 @@ with separate databases.
    integrations
    multi_tenancy
    pec
-   protocol
    api_reference
    faq
    modules
