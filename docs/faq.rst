@@ -41,9 +41,26 @@ Configuration
    interactive prompts for easy setup.
 
 **How do I secure the API?**
-   The CLI generates an API token automatically when creating an instance.
-   View it with ``mail-proxy myserver token``. All requests must include
-   the ``X-API-Token`` header with this value.
+   The service uses a two-tier authentication model:
+
+   - **Admin Token** (``GMP_API_TOKEN``): Full access to all endpoints. Generated
+     automatically when creating an instance. View it with ``mail-proxy myserver token``.
+   - **Tenant Token**: Scoped access to a tenant's own resources only. Generated
+     automatically when creating a tenant via API or CLI.
+
+   All requests must include the ``X-API-Token`` header. Admin endpoints (tenant
+   management, instance config) require the admin token; tenant-scoped endpoints
+   accept either token type.
+
+**What's the difference between admin and tenant tokens?**
+   The **admin token** (global) grants full access: create/delete tenants, manage
+   all accounts, configure the instance, and access any tenant's messages.
+
+   **Tenant tokens** are scoped to their own resources: they can only manage
+   their own accounts, send messages, and query their own message history.
+   Tenant tokens cannot access other tenants' data or perform admin operations.
+
+   See :doc:`multi_tenancy` for the complete authentication model.
 
 **Can I run multiple instances?**
    Yes. Each instance has its own database at ``~/.mail-proxy/<name>/``.
@@ -131,6 +148,19 @@ Multi-tenancy
         --name "ACME Corp" \
         --base-url "https://acme.com" \
         --sync-path "/mail-proxy/sync"
+
+   When a tenant is created, an API key is automatically generated and displayed
+   **once**. Store it securely - it cannot be retrieved later. If lost, you can
+   regenerate it with ``POST /tenant/{id}/api-key`` (requires admin token).
+
+**How do I get a tenant's API key?**
+   The API key is shown only once when creating the tenant. If you lose it,
+   regenerate a new one using the admin token::
+
+      curl -X POST https://mailproxy/tenant/acme/api-key \
+        -H "X-API-Token: $ADMIN_TOKEN"
+
+   The response contains the new ``api_key``. The old key is invalidated immediately.
 
 **Can tenants share SMTP accounts?**
    No. Each account belongs to one tenant (via ``tenant_id``). This ensures
