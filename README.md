@@ -25,14 +25,11 @@ genro-mail-proxy sits between your application and SMTP servers. Your applicatio
 - **Large file handling**: Auto-upload attachments to S3/GCS/Azure and replace with download links *(BSL 1.1)*
 - **Connection pooling**: SMTP connections are pooled with acquire/release semantics
 
-```text
-┌─────────────┐      REST       ┌──────────────────┐      SMTP      ┌─────────────┐
-│ Application │ ──────────────► │ genro-mail-proxy │ ─────────────► │ SMTP Server │
-└─────────────┘                 └──────────────────┘                └─────────────┘
-       ▲                               │
-       │                               │
-       └───────────────────────────────┘
-                delivery reports
+```mermaid
+flowchart LR
+    App[Application] -->|REST| Proxy[genro-mail-proxy]
+    Proxy -->|SMTP| SMTP[SMTP Server]
+    Proxy -->|delivery reports| App
 ```
 
 ## When to use it
