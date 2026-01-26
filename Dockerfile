@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 TZ=Europe/Rome GMP_DB_PATH=/data/mail_service.db
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 TZ=Europe/Rome
 
 # Install tini for proper signal handling in containers (PID 1 problem)
 RUN apt-get update && apt-get install -y --no-install-recommends tini \
