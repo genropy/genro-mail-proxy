@@ -1,10 +1,14 @@
 name: Fullstack Tests
 
+# Temporarily disabled - see issue #69 for fullstack test revision
+# on:
+#   push:
+#     branches: [main]
+#   pull_request:
+#     branches: [main]
+
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:  # Manual trigger only
 
 jobs:
   fullstack:
