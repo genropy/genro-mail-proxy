@@ -305,42 +305,112 @@ Each report includes ``tenant_id``, ``id`` (client-facing), and ``pk`` (internal
 Event-specific fields depend on the event type: ``sent_ts`` for successful delivery,
 ``error_ts`` and ``error`` for failures, ``deferred_ts`` for retries.
 
-Your application should reply with a JSON summary (for example
-``{"sent": 12, "error": 1, "deferred": 3}``). Upon success the dispatcher sets
-``reported_ts`` on the transmitted rows and cleans up any message whose
-``reported_ts`` is older than the configured retention window.
-
 Client Callback Endpoints
 -------------------------
 
 These endpoints are **NOT** exposed by the proxy. Your application must implement
 them to receive callbacks from the proxy.
 
-Delivery Report Endpoint
+Sync Endpoint (Required)
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
 The proxy sends delivery reports to your sync endpoint (per-tenant: ``client_base_url``
-+ ``client_sync_path``, or global: ``GMP_CLIENT_SYNC_URL``). Your endpoint must:
++ ``client_sync_path``, or global: ``GMP_CLIENT_SYNC_URL``). This is a **bidirectional**
+protocol that allows you to both receive reports AND signal pending messages.
 
-- Accept POST requests with JSON body containing ``delivery_report`` array
-- Return a JSON summary response
+**Request** (from proxy to your application):
 
-Example implementation:
+.. code-block:: json
+
+   {
+     "delivery_report": [
+       {"id": "MSG-001", "sent_ts": 1728458400},
+       {"id": "MSG-002", "error_ts": 1728458612, "error": "SMTP timeout"},
+       {"id": "MSG-003", "pec_event": "pec_acceptance", "pec_ts": 1728458700}
+     ]
+   }
+
+**Response schema** (from your application to proxy):
+
+.. code-block:: json
+
+   {
+     "ok": true,
+     "queued": 15,
+     "error": [],
+     "not_found": []
+   }
+
+**Response fields:**
+
+.. list-table::
+   :header-rows: 1
+
+   * - Field
+     - Type
+     - Required
+     - Description
+   * - ``ok``
+     - bool
+     - Yes
+     - ``true`` if reports were processed successfully
+   * - ``queued``
+     - int
+     - No (default: 0)
+     - Number of messages your application has ready to send. **Important**: When
+       ``queued > 0``, the proxy immediately re-calls sync instead of waiting
+       for the normal interval (5 minutes). This enables efficient batch submission.
+   * - ``error``
+     - list[str]
+     - No
+     - Message IDs that could not be processed
+   * - ``not_found``
+     - list[str]
+     - No
+     - Message IDs not found in your database
+
+**Accelerated sync loop:**
+
+When your application responds with ``queued > 0``:
+
+1. Proxy receives response with ``queued: N``
+2. Your application calls ``POST /commands/add-messages`` with next batch
+3. Proxy immediately calls sync endpoint again (no wait)
+4. Repeat until ``queued: 0``
+
+This design allows efficient batch submission without polling.
+
+**Example implementation:**
 
 .. code-block:: python
 
-   @app.post("/delivery-report")
-   async def receive_delivery_report(request: Request):
+   @app.post("/proxy-sync")
+   async def sync_endpoint(request: Request):
        data = await request.json()
        reports = data.get("delivery_report", [])
 
-       sent = sum(1 for r in reports if r.get("sent_ts"))
-       error = sum(1 for r in reports if r.get("error_ts"))
-       deferred = sum(1 for r in reports if r.get("deferred_ts"))
+       # 1. Process delivery reports
+       for report in reports:
+           msg_id = report["id"]
+           if "sent_ts" in report:
+               mark_sent(msg_id, report["sent_ts"])
+           elif "error_ts" in report:
+               mark_failed(msg_id, report["error"])
+           elif "pec_event" in report:
+               handle_pec(msg_id, report["pec_event"], report.get("pec_ts"))
 
-       # Update your local database with delivery status...
+       # 2. Check outbox and submit next batch
+       pending = get_pending_messages(limit=100)
+       total_pending = count_all_pending()
 
-       return {"sent": sent, "error": error, "deferred": deferred}
+       if pending:
+           # Submit batch to proxy (async, don't block this response)
+           asyncio.create_task(submit_to_proxy(pending))
+
+       # 3. Return queued count to trigger immediate resync if needed
+       return {"ok": True, "queued": total_pending}
+
+See :doc:`protocol` for the complete specification.
 
 Attachment Endpoint (optional)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -223,29 +223,196 @@ was deferred by the rate limiter.
 Client synchronisation protocol
 -------------------------------
 
+The proxy implements a **bidirectional sync protocol** that allows the client
+to both receive delivery reports AND submit new messages to send. This design
+enables efficient batch processing without requiring the client to poll.
+
 The "client report loop" sends ``POST`` requests to the configured
 sync endpoint (per-tenant: ``client_base_url`` + ``client_sync_path``, or global: ``GMP_CLIENT_SYNC_URL``).
 Authentication uses either HTTP basic auth or a bearer token (configured
-per-tenant via CLI or environment variables). A typical exchange:
+per-tenant via CLI or environment variables).
 
-1. Dispatcher computes a batch of pending delivery results (respecting the
-   configured batch size).
-2. Dispatcher sends the JSON payload above to the sync endpoint.
-3. Upstream service replies with an acknowledgment summarising the received
-   items (for example ``{"sent": 12, "error": 1, "deferred": 3}``).
-4. Dispatcher sets ``reported_ts`` on the acknowledged rows and eventually
-   purges them when they exceed ``delivery_report_retention_seconds``.
+Sync request format
+~~~~~~~~~~~~~~~~~~~
+
+The proxy sends a POST request with the following JSON body:
+
+.. code-block:: json
+
+   {
+     "delivery_report": [
+       {
+         "id": "MSG-001",
+         "sent_ts": 1728470500
+       },
+       {
+         "id": "MSG-002",
+         "error_ts": 1728470501,
+         "error": "Connection refused"
+       },
+       {
+         "id": "MSG-003",
+         "pec_event": "pec_acceptance",
+         "pec_ts": 1728470502,
+         "pec_details": "Accepted by provider"
+       }
+     ]
+   }
+
+The ``delivery_report`` array contains status updates for messages. Each entry
+includes the message ``id`` plus event-specific fields:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Event Type
+     - Fields
+     - Description
+   * - Sent
+     - ``sent_ts``
+     - Message delivered successfully
+   * - Error
+     - ``error_ts``, ``error``
+     - Permanent delivery failure
+   * - Deferred
+     - ``deferred_ts``, ``deferred_reason``
+     - Temporary failure, will retry
+   * - Bounce
+     - ``bounce_ts``, ``bounce_type``, ``bounce_code``, ``bounce_reason``
+     - Bounce detected from DSN
+   * - PEC events
+     - ``pec_event``, ``pec_ts``, ``pec_details``
+     - PEC acceptance/delivery/error
+
+Sync response format
+~~~~~~~~~~~~~~~~~~~~
+
+The client **must** respond with a JSON object containing at minimum an ``ok``
+field. The ``queued`` field enables the accelerated sync loop:
+
+.. code-block:: json
+
+   {
+     "ok": true,
+     "queued": 15
+   }
+
+Response fields:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Field
+     - Type
+     - Required
+     - Description
+   * - ``ok``
+     - bool
+     - Yes
+     - ``true`` if reports were processed successfully
+   * - ``queued``
+     - int
+     - No
+     - Number of messages the client has ready to send
+   * - ``error``
+     - list[str]
+     - No
+     - Message IDs that failed to process
+   * - ``not_found``
+     - list[str]
+     - No
+     - Message IDs not found in client database
+
+Accelerated sync loop
+~~~~~~~~~~~~~~~~~~~~~
+
+When the client responds with ``queued > 0``, the proxy **immediately**
+initiates another sync cycle without waiting for the normal interval
+(default: 5 minutes). This creates an efficient message submission flow:
+
+1. Proxy calls sync endpoint with delivery reports
+2. Client processes reports and checks its outbox
+3. Client responds with ``{"ok": true, "queued": N}`` where N = pending messages
+4. Client calls ``POST /commands/add-messages`` with a batch of messages
+5. **If queued > 0**: Proxy immediately calls sync again (goto step 1)
+6. **If queued == 0**: Proxy waits for next interval
+
+This design allows the client to submit messages in controlled batches while
+the proxy orchestrates the timing.
 
 .. mermaid::
-   :caption: proxy_sync HTTP exchange
+   :caption: Bidirectional sync with message submission
 
    sequenceDiagram
-     participant Core as MailProxy
-     participant Upstream as Client Application
+     participant Proxy as MailProxy
+     participant Client as Client Application
 
-     Core->>Upstream: POST sync_endpoint<br/>delivery_report array
-     Upstream-->>Core: HTTP 200 + summary JSON
-     Core->>Core: mark_reported() & retention cleanup
+     Note over Proxy,Client: Sync cycle starts
+     Proxy->>Client: POST sync_endpoint {delivery_report: [...]}
+     Client->>Client: Process reports, check outbox
+     Client-->>Proxy: {ok: true, queued: 10}
+
+     Note over Client: Client has 10 messages to send
+     Client->>Proxy: POST /add-messages (batch of 5)
+     Proxy-->>Client: {ok: true, queued: 5}
+
+     Note over Proxy: queued > 0, immediate resync
+     Proxy->>Client: POST sync_endpoint {delivery_report: [...]}
+     Client-->>Proxy: {ok: true, queued: 5}
+     Client->>Proxy: POST /add-messages (batch of 5)
+     Proxy-->>Client: {ok: true, queued: 5}
+
+     Proxy->>Client: POST sync_endpoint {delivery_report: [...]}
+     Client-->>Proxy: {ok: true, queued: 0}
+     Note over Proxy: queued == 0, wait for interval
+
+Client implementation example
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A typical client sync endpoint handler:
+
+.. code-block:: python
+
+   from flask import Flask, request, jsonify
+   import httpx
+
+   app = Flask(__name__)
+   PROXY_URL = "http://mailproxy:8000"
+   BATCH_SIZE = 100
+
+   @app.route("/proxy_sync", methods=["POST"])
+   def proxy_sync():
+       data = request.json
+       reports = data.get("delivery_report", [])
+
+       # 1. Process delivery reports
+       for report in reports:
+           msg_id = report["id"]
+           if "sent_ts" in report:
+               mark_as_sent(msg_id, report["sent_ts"])
+           elif "error_ts" in report:
+               mark_as_failed(msg_id, report["error"])
+           elif "pec_event" in report:
+               handle_pec_event(msg_id, report)
+
+       # 2. Check outbox for pending messages
+       pending = get_pending_messages(limit=BATCH_SIZE)
+       queued_count = count_total_pending()
+
+       # 3. Submit batch to proxy (async, don't block response)
+       if pending:
+           submit_to_proxy(pending)
+
+       # 4. Return queued count to trigger accelerated sync
+       return jsonify({"ok": True, "queued": queued_count})
+
+   def submit_to_proxy(messages):
+       """Submit messages to proxy API."""
+       httpx.post(
+           f"{PROXY_URL}/commands/add-messages",
+           json={"messages": messages},
+           headers={"X-API-Token": TENANT_TOKEN}
+       )
 
 Error handling
 --------------

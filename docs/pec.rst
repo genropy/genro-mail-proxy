@@ -268,8 +268,9 @@ API Endpoints
 Delivery Report Integration
 ---------------------------
 
-PEC events are included in delivery reports sent to tenant callbacks.
-The ``delivery_report`` payload includes PEC-specific information:
+PEC events are delivered to tenants via the bidirectional sync protocol
+(see :doc:`protocol` for the complete specification). When the proxy calls
+the tenant's sync endpoint, PEC events are included in the ``delivery_report``:
 
 .. code-block:: json
 
@@ -277,23 +278,85 @@ The ``delivery_report`` payload includes PEC-specific information:
      "delivery_report": [
        {
          "id": "acme-msg-001",
-         "account_id": "pec-acme",
-         "is_pec": true,
-         "sent_ts": 1705750100,
-         "pec_acceptance_ts": 1705750150,
-         "pec_delivery_ts": 1705750800,
-         "error_ts": null,
-         "error": null
+         "pec_event": "pec_acceptance",
+         "pec_ts": 1705750150,
+         "pec_details": "Accepted by provider"
+       },
+       {
+         "id": "acme-msg-001",
+         "pec_event": "pec_delivery",
+         "pec_ts": 1705750800,
+         "pec_details": "Delivered to recipient"
        }
      ]
    }
 
-**PEC-specific fields in reports:**
+**PEC event fields in delivery reports:**
 
-* ``is_pec``: Message was sent via PEC account
-* ``pec_acceptance_ts``: Timestamp of acceptance receipt
-* ``pec_delivery_ts``: Timestamp of delivery confirmation
-* ``pec_error``: Error description from failure receipts
+.. list-table::
+   :header-rows: 1
+
+   * - Field
+     - Type
+     - Description
+   * - ``pec_event``
+     - str
+     - Event type: ``pec_acceptance``, ``pec_delivery``, ``pec_error``, ``pec_relay``
+   * - ``pec_ts``
+     - int
+     - Unix timestamp when PEC event was recorded
+   * - ``pec_details``
+     - str
+     - Additional information from the PEC receipt
+
+**Sync protocol for PEC:**
+
+The sync protocol is particularly important for PEC because:
+
+1. **Acceptance receipts** (ricevuta di accettazione) arrive within minutes of sending
+2. **Delivery receipts** (ricevuta di consegna) arrive when the recipient's PEC server accepts
+
+The proxy reports these events as they arrive. The client can use the ``queued``
+response field to signal it has new PEC messages to send, triggering an
+accelerated sync cycle. See :doc:`protocol` for details on the sync loop.
+
+Client implementation example for PEC
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+   @app.route("/proxy_sync", methods=["POST"])
+   def proxy_sync():
+       data = request.json
+       reports = data.get("delivery_report", [])
+
+       for report in reports:
+           msg_id = report["id"]
+
+           # Handle PEC-specific events
+           if "pec_event" in report:
+               pec_event = report["pec_event"]
+               pec_ts = report["pec_ts"]
+
+               if pec_event == "pec_acceptance":
+                   # Legal proof: message accepted by PEC system
+                   record_pec_acceptance(msg_id, pec_ts)
+               elif pec_event == "pec_delivery":
+                   # Legal proof: message delivered to recipient
+                   record_pec_delivery(msg_id, pec_ts)
+               elif pec_event == "pec_error":
+                   # Delivery failed - needs attention
+                   record_pec_failure(msg_id, report.get("pec_details"))
+
+           # Handle standard delivery events
+           elif "sent_ts" in report:
+               mark_as_sent(msg_id, report["sent_ts"])
+           elif "error_ts" in report:
+               mark_as_failed(msg_id, report["error"])
+
+       # Check for pending PEC messages to send
+       pending_pec = get_pending_pec_messages()
+       return jsonify({"ok": True, "queued": len(pending_pec)})
 
 Italian PEC Providers
 ---------------------
