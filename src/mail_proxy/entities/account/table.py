@@ -170,12 +170,21 @@ class AccountsTable(Table):
 
     async def update_imap_sync_state(
         self,
+        tenant_id: str,
         account_id: str,
         last_uid: int,
         uidvalidity: int | None = None,
     ) -> None:
-        """Update IMAP sync state after processing receipts."""
+        """Update IMAP sync state after processing receipts.
+
+        Args:
+            tenant_id: The tenant that owns this account.
+            account_id: The account identifier.
+            last_uid: The last processed UID.
+            uidvalidity: The UIDVALIDITY value (optional).
+        """
         params: dict[str, Any] = {
+            "tenant_id": tenant_id,
             "account_id": account_id,
             "last_uid": last_uid,
         }
@@ -187,7 +196,7 @@ class AccountsTable(Table):
                     imap_uidvalidity = :uidvalidity,
                     imap_last_sync = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE id = :account_id
+                WHERE tenant_id = :tenant_id AND id = :account_id
                 """,
                 {**params, "uidvalidity": uidvalidity},
             )
@@ -198,16 +207,24 @@ class AccountsTable(Table):
                 SET imap_last_uid = :last_uid,
                     imap_last_sync = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE id = :account_id
+                WHERE tenant_id = :tenant_id AND id = :account_id
                 """,
                 params,
             )
 
-    async def get(self, account_id: str) -> dict[str, Any]:
-        """Fetch a single SMTP account or raise if not found."""
-        account = await self.select_one(where={"id": account_id})
+    async def get(self, tenant_id: str, account_id: str) -> dict[str, Any]:
+        """Fetch a single SMTP account or raise if not found.
+
+        Args:
+            tenant_id: The tenant that owns this account.
+            account_id: The account identifier.
+
+        Raises:
+            ValueError: If account not found for this tenant.
+        """
+        account = await self.select_one(where={"tenant_id": tenant_id, "id": account_id})
         if not account:
-            raise ValueError(f"Account '{account_id}' not found")
+            raise ValueError(f"Account '{account_id}' not found for tenant '{tenant_id}'")
         return self._decode_use_tls(account)
 
     async def list_all(self, tenant_id: str | None = None) -> list[dict[str, Any]]:

@@ -403,6 +403,14 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
             return f"{preview[:197]}..."
         return preview or "-"
 
+    # Commands that modify state and should be logged for audit trail
+    _LOGGED_COMMANDS = frozenset({
+        "addMessages", "deleteMessages", "cleanupMessages",
+        "addAccount", "deleteAccount",
+        "addTenant", "updateTenant", "deleteTenant",
+        "suspend", "activate",
+    })
+
     # ------------------------------------------------------------------ commands
     async def handle_command(self, cmd: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         """Execute an external control command.
@@ -416,6 +424,9 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
         - ``cleanupMessages``: Remove old reported messages
         - ``addTenant``, ``getTenant``, ``listTenants``, ``updateTenant``, ``deleteTenant``: Tenant management
 
+        State-modifying commands are automatically logged to the command_log table
+        for audit trail and replay capability.
+
         Args:
             cmd: Command name to execute.
             payload: Command-specific parameters.
@@ -424,6 +435,31 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
             dict: Command result with ``ok`` status and command-specific data.
         """
         payload = payload or {}
+
+        # Log state-modifying commands for audit trail
+        should_log = cmd in self._LOGGED_COMMANDS
+        tenant_id = payload.get("tenant_id") if isinstance(payload, dict) else None
+
+        result = await self._execute_command(cmd, payload)
+
+        # Log after execution to capture result status
+        if should_log:
+            try:
+                ok = result.get("ok", False) if isinstance(result, dict) else False
+                await self.db.log_command(
+                    endpoint=cmd,
+                    payload=payload,
+                    tenant_id=tenant_id,
+                    response_status=200 if ok else 400,
+                    response_body=result,
+                )
+            except Exception as e:
+                self.logger.warning(f"Failed to log command {cmd}: {e}")
+
+        return result
+
+    async def _execute_command(self, cmd: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Internal command dispatcher."""
         match cmd:
             case "run now":
                 # Global wake-up - processes all pending messages
@@ -480,9 +516,7 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
                 account_id = payload.get("id")
                 # Verify account belongs to tenant before deletion
                 try:
-                    account = await self.db.get_account(account_id)
-                    if account.get("tenant_id") != tenant_id:
-                        return {"ok": False, "error": "account not found or not owned by tenant"}
+                    await self.db.get_account(tenant_id, account_id)
                 except ValueError:
                     return {"ok": False, "error": "account not found or not owned by tenant"}
                 await self.db.delete_account(tenant_id, account_id)
@@ -626,21 +660,10 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
         inserted: list[dict[str, str]] = []
 
         if validated:
-            # Build account_id -> tenant_id mapping for messages without explicit tenant_id
-            account_tenant_map: dict[str, str] = {}
-            for msg in validated:
-                account_id = msg.get("account_id")
-                if account_id and not msg.get("tenant_id") and account_id not in account_tenant_map:
-                    try:
-                        account = await self.db.get_account(account_id)
-                        account_tenant_map[account_id] = account.get("tenant_id")
-                    except Exception:
-                        pass  # Account not found - will be caught by insert_messages
-
             entries = [
                 {
                     "id": msg["id"],
-                    "tenant_id": msg.get("tenant_id") or account_tenant_map.get(msg.get("account_id")),
+                    "tenant_id": msg["tenant_id"],  # Required for multi-tenant isolation
                     "account_id": msg.get("account_id"),
                     "priority": int(msg["priority"]),
                     "payload": msg,
@@ -742,8 +765,8 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
     async def _validate_enqueue_payload(self, payload: dict[str, Any]) -> tuple[bool, str | None]:
         """Validate a message payload before enqueueing.
 
-        Checks for required fields (id, from, to, subject) and verifies
-        that the specified SMTP account exists if provided.
+        Checks for required fields (id, tenant_id, account_id, from, to, subject)
+        and verifies that the specified SMTP account exists for the tenant.
 
         Args:
             payload: Message payload dict to validate.
@@ -754,6 +777,12 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
         msg_id = payload.get("id")
         if not msg_id:
             return False, "missing id"
+        tenant_id = payload.get("tenant_id")
+        if not tenant_id:
+            return False, "missing tenant_id"
+        account_id = payload.get("account_id")
+        if not account_id:
+            return False, "missing account_id"
         payload.setdefault("priority", 2)
         sender = payload.get("from")
         if not sender:
@@ -767,14 +796,11 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
         subject = payload.get("subject")
         if not subject:
             return False, "missing subject"
-        account_id = payload.get("account_id")
-        if account_id:
-            try:
-                await self.db.get_account(account_id)
-            except Exception:
-                return False, "account not found"
-        elif not (self.default_host and self.default_port):
-            return False, "missing account configuration"
+        # Verify account exists and belongs to tenant
+        try:
+            await self.db.get_account(tenant_id, account_id)
+        except Exception:
+            return False, "account not found for tenant"
         return True, None
 
     # ----------------------------------------------------------------- lifecycle

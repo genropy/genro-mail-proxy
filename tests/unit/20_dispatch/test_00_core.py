@@ -1043,15 +1043,11 @@ async def test_summarise_addresses():
 
 
 @pytest.mark.asyncio
-async def test_message_without_account_uses_default(tmp_path):
-    """Test that messages without account_id use default SMTP settings."""
+async def test_message_without_account_is_rejected(tmp_path):
+    """Test that messages without account_id are rejected."""
     core = await make_core(tmp_path)
 
-    # Set default SMTP settings
-    core.default_host = "default.smtp.local"
-    core.default_port = 587
-
-    # Add message WITHOUT account_id
+    # Add message WITHOUT account_id - should be rejected
     payload = {
         "messages": [{
             "id": "msg-no-account",
@@ -1063,15 +1059,13 @@ async def test_message_without_account_uses_default(tmp_path):
         }]
     }
     result = await core.handle_command("addMessages", payload)
-    assert result["ok"] is True
-
-    await core._process_smtp_cycle()
-
-    # Should have used default host
-    assert len(core.pool.requests) == 1
-    host, port, _, _, _ = core.pool.requests[0]
-    assert host == "default.smtp.local"
-    assert port == 587
+    # addMessages always returns ok: True, but with rejected messages
+    assert result.get("ok") is True or result.get("queued", 0) == 0
+    # Message should be rejected, not queued
+    assert result.get("queued", 0) == 0
+    rejected = result.get("rejected", [])
+    assert len(rejected) == 1
+    assert rejected[0]["reason"] == "missing account_id"
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,7 @@ from typing import Any
 
 from .entities import (
     AccountsTable,
+    CommandLogTable,
     InstanceConfigTable,
     InstanceTable,
     MessageEventTable,
@@ -61,6 +62,7 @@ class MailProxyDb(SqlDb):
         self.add_table(MessagesTable)
         self.add_table(MessageEventTable)
         self.add_table(SendLogTable)
+        self.add_table(CommandLogTable)
         self.add_table(InstanceConfigTable)
         self.add_table(InstanceTable)
 
@@ -92,6 +94,10 @@ class MailProxyDb(SqlDb):
     def instance(self) -> InstanceTable:
         return self.table("instance")  # type: ignore[return-value]
 
+    @property
+    def command_log(self) -> CommandLogTable:
+        return self.table("command_log")  # type: ignore[return-value]
+
     async def init_db(self) -> None:
         """Initialize database: connect, create schema, run migrations.
 
@@ -108,6 +114,7 @@ class MailProxyDb(SqlDb):
         await self.messages.sync_schema()
         await self.message_events.sync_schema()
         await self.send_log.sync_schema()
+        await self.command_log.sync_schema()
 
     # -------------------------------------------------------------------------
     # Tenants
@@ -165,17 +172,27 @@ class MailProxyDb(SqlDb):
         await self.send_log.purge_for_account(account_id)
         await self.accounts.remove(tenant_id, account_id)
 
-    async def get_account(self, account_id: str) -> dict[str, Any]:
-        return await self.accounts.get(account_id)
+    async def get_account(self, tenant_id: str, account_id: str) -> dict[str, Any]:
+        """Get an account by tenant and account ID.
+
+        Args:
+            tenant_id: The tenant that owns this account.
+            account_id: The account identifier.
+
+        Raises:
+            ValueError: If account not found for this tenant.
+        """
+        return await self.accounts.get(tenant_id, account_id)
 
     async def update_imap_sync_state(
         self,
+        tenant_id: str,
         account_id: str,
         last_uid: int,
         uidvalidity: int | None = None,
     ) -> None:
         """Update IMAP sync state after processing PEC receipts."""
-        await self.accounts.update_imap_sync_state(account_id, last_uid, uidvalidity)
+        await self.accounts.update_imap_sync_state(tenant_id, account_id, last_uid, uidvalidity)
 
     async def get_pec_account_ids(self) -> set[str]:
         """Return set of account IDs that are PEC accounts."""
@@ -463,6 +480,63 @@ class MailProxyDb(SqlDb):
 
     async def get_all_config(self) -> dict[str, str]:
         return await self.config.get_all()
+
+    # -------------------------------------------------------------------------
+    # Command log (audit trail)
+    # -------------------------------------------------------------------------
+    async def log_command(
+        self,
+        endpoint: str,
+        payload: dict[str, Any],
+        *,
+        tenant_id: str | None = None,
+        response_status: int | None = None,
+        response_body: dict[str, Any] | None = None,
+    ) -> int:
+        """Record an API command for audit trail."""
+        return await self.command_log.log_command(
+            endpoint=endpoint,
+            payload=payload,
+            tenant_id=tenant_id,
+            response_status=response_status,
+            response_body=response_body,
+        )
+
+    async def list_commands(
+        self,
+        *,
+        tenant_id: str | None = None,
+        since_ts: int | None = None,
+        until_ts: int | None = None,
+        endpoint_filter: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """List logged commands with optional filters."""
+        return await self.command_log.list_commands(
+            tenant_id=tenant_id,
+            since_ts=since_ts,
+            until_ts=until_ts,
+            endpoint_filter=endpoint_filter,
+            limit=limit,
+        )
+
+    async def export_commands(
+        self,
+        *,
+        tenant_id: str | None = None,
+        since_ts: int | None = None,
+        until_ts: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Export commands in replay-friendly format."""
+        return await self.command_log.export_commands(
+            tenant_id=tenant_id,
+            since_ts=since_ts,
+            until_ts=until_ts,
+        )
+
+    async def purge_commands_before(self, threshold_ts: int) -> int:
+        """Delete command logs older than threshold."""
+        return await self.command_log.purge_before(threshold_ts)
 
 
 # Backward compatibility alias

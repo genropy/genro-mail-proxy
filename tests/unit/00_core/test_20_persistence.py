@@ -27,7 +27,7 @@ async def test_account_crud(tmp_path):
     lst = await p.list_accounts()
     assert len(lst) == 1
     assert lst[0]["use_tls"] is False
-    acc = await p.get_account("gmail")
+    acc = await p.get_account("test_tenant", "gmail")
     assert acc["use_tls"] is False
     await p.delete_account("test_tenant", "gmail")
     lst = await p.list_accounts()
@@ -140,8 +140,9 @@ async def test_get_account_missing_raises(tmp_path):
     db = tmp_path / "missing.db"
     p = MailProxyDb(str(db))
     await p.init_db()
+    await p.add_tenant({"id": "test_tenant", "name": "Test"})
     with pytest.raises(ValueError):
-        await p.get_account("unknown")
+        await p.get_account("test_tenant", "unknown")
 
 
 @pytest.mark.asyncio

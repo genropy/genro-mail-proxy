@@ -611,6 +611,7 @@ def _create_instance_group(instance_name: str) -> click.Group:
     _add_connect_command(instance_group, instance_name)
     _add_token_command(instance_group, instance_name)
     _add_config_command(instance_group, instance_name)
+    _add_command_log_commands(instance_group, instance_name)
 
     return instance_group
 
@@ -1571,6 +1572,136 @@ def _add_config_command(group: click.Group, instance_name: str) -> None:
 
 
 # ============================================================================
+# COMMAND-LOG commands (audit trail)
+# ============================================================================
+
+def _add_command_log_commands(group: click.Group, instance_name: str) -> None:
+    """Add command-log subgroup to the instance group."""
+
+    @group.group("command-log")
+    @click.pass_context
+    def command_log(ctx):
+        """API command audit log for replay."""
+        ctx.ensure_object(dict)
+        if ctx.invoked_subcommand is None:
+            click.echo(ctx.get_help())
+
+    @command_log.command("list")
+    @click.option("--tenant", "-t", help="Filter by tenant ID.")
+    @click.option("--since", type=int, help="Filter commands after Unix timestamp.")
+    @click.option("--until", type=int, help="Filter commands before Unix timestamp.")
+    @click.option("--endpoint", "-e", help="Filter by endpoint (partial match).")
+    @click.option("--limit", "-l", type=int, default=50, help="Max commands to show.")
+    @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+    def command_log_list(
+        tenant: str | None,
+        since: int | None,
+        until: int | None,
+        endpoint: str | None,
+        limit: int,
+        as_json: bool,
+    ) -> None:
+        """List logged API commands."""
+        persistence = _get_persistence_for_instance(instance_name)
+
+        async def _list():
+            await persistence.init_db()
+            return await persistence.list_commands(
+                tenant_id=tenant,
+                since_ts=since,
+                until_ts=until,
+                endpoint_filter=endpoint,
+                limit=limit,
+            )
+
+        commands = run_async(_list())
+
+        if as_json:
+            print_json(commands)
+            return
+
+        if not commands:
+            console.print("[dim]No commands logged.[/dim]")
+            return
+
+        from datetime import datetime
+
+        console.print(f"\n[bold cyan]Command Log ({len(commands)} commands)[/bold cyan]\n")
+
+        for cmd in commands:
+            ts = datetime.fromtimestamp(cmd["command_ts"]).strftime("%Y-%m-%d %H:%M:%S")
+            status = cmd.get("response_status", "-")
+            tenant_id = cmd.get("tenant_id") or "-"
+            endpoint_str = cmd["endpoint"]
+
+            status_color = "green" if status and 200 <= status < 300 else "red" if status else "dim"
+            console.print(
+                f"  [{status_color}]{status}[/{status_color}] "
+                f"[dim]{ts}[/dim] "
+                f"[cyan]{endpoint_str}[/cyan] "
+                f"[dim](tenant: {tenant_id})[/dim]"
+            )
+
+        console.print()
+
+    @command_log.command("export")
+    @click.option("--tenant", "-t", help="Filter by tenant ID.")
+    @click.option("--since", type=int, help="Filter commands after Unix timestamp.")
+    @click.option("--until", type=int, help="Filter commands before Unix timestamp.")
+    @click.option("--output", "-o", type=click.Path(), help="Output file (default: stdout).")
+    def command_log_export(
+        tenant: str | None,
+        since: int | None,
+        until: int | None,
+        output: str | None,
+    ) -> None:
+        """Export commands for replay in JSON format."""
+        import json
+
+        persistence = _get_persistence_for_instance(instance_name)
+
+        async def _export():
+            await persistence.init_db()
+            return await persistence.export_commands(
+                tenant_id=tenant,
+                since_ts=since,
+                until_ts=until,
+            )
+
+        commands = run_async(_export())
+
+        json_data = json.dumps(commands, indent=2)
+
+        if output:
+            with open(output, "w") as f:
+                f.write(json_data)
+            print_success(f"Exported {len(commands)} commands to {output}")
+        else:
+            click.echo(json_data)
+
+    @command_log.command("purge")
+    @click.option("--before", type=int, required=True, help="Delete commands before Unix timestamp.")
+    @click.option("--force", "-f", is_flag=True, help="Skip confirmation.")
+    def command_log_purge(before: int, force: bool) -> None:
+        """Delete old command logs."""
+        from datetime import datetime
+
+        persistence = _get_persistence_for_instance(instance_name)
+
+        ts_str = datetime.fromtimestamp(before).strftime("%Y-%m-%d %H:%M:%S")
+        if not force and not click.confirm(f"Delete all commands before {ts_str}?"):
+            console.print("Aborted.")
+            return
+
+        async def _purge():
+            await persistence.init_db()
+            return await persistence.purge_commands_before(before)
+
+        deleted = run_async(_purge())
+        print_success(f"Deleted {deleted} command(s).")
+
+
+# ============================================================================
 # Tenant-level commands factory
 # ============================================================================
 
@@ -1714,19 +1845,14 @@ def _add_accounts_commands(group: click.Group, instance_name: str, tenant_id: st
         async def _show():
             await persistence.init_db()
             try:
-                return await persistence.get_account(account_id)
+                return await persistence.get_account(tenant_id, account_id)
             except ValueError:
                 return None
 
         account_data = run_async(_show())
 
         if not account_data:
-            print_error(f"Account '{account_id}' not found.")
-            sys.exit(1)
-
-        # Verify it belongs to this tenant
-        if account_data.get("tenant_id") != tenant_id:
-            print_error(f"Account '{account_id}' does not belong to tenant '{tenant_id}'.")
+            print_error(f"Account '{account_id}' not found for tenant '{tenant_id}'.")
             sys.exit(1)
 
         display_data = {k: v for k, v in account_data.items() if k != "password"}
@@ -1880,13 +2006,11 @@ def _add_accounts_commands(group: click.Group, instance_name: str, tenant_id: st
 
         async def _delete():
             await persistence.init_db()
-            # Verify it belongs to this tenant
+            # Verify account exists for this tenant
             try:
-                acc = await persistence.get_account(account_id)
-                if acc and acc.get("tenant_id") != tenant_id:
-                    return False, f"Account '{account_id}' does not belong to tenant '{tenant_id}'."
+                await persistence.get_account(tenant_id, account_id)
             except ValueError:
-                return False, f"Account '{account_id}' not found."
+                return False, f"Account '{account_id}' not found for tenant '{tenant_id}'."
 
             await persistence.delete_account(tenant_id, account_id)
             return True, None

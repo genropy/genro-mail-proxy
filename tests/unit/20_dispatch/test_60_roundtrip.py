@@ -177,6 +177,7 @@ async def test_full_roundtrip_single_tenant(tmp_path, smtp_server, smtp_handler)
     result = await core.handle_command("addMessages", {
         "messages": [{
             "id": "acme-msg-001",
+            "tenant_id": "acme",
             "account_id": "smtp-acme",
             "from": "noreply@acme.com",
             "to": ["customer@example.com"],
@@ -286,6 +287,7 @@ async def test_full_roundtrip_multi_tenant(tmp_path, smtp_server, smtp_handler):
         "messages": [
             {
                 "id": "alpha-msg-001",
+                "tenant_id": "tenant-alpha",
                 "account_id": "smtp-alpha",
                 "from": "noreply@alpha.com",
                 "to": ["user1@example.com"],
@@ -294,6 +296,7 @@ async def test_full_roundtrip_multi_tenant(tmp_path, smtp_server, smtp_handler):
             },
             {
                 "id": "beta-msg-001",
+                "tenant_id": "tenant-beta",
                 "account_id": "smtp-beta",
                 "from": "noreply@beta.com",
                 "to": ["user2@example.com"],
@@ -380,6 +383,7 @@ async def test_roundtrip_with_smtp_error(tmp_path, smtp_server, smtp_handler):
     await core.handle_command("addMessages", {
         "messages": [{
             "id": "error-msg-001",
+            "tenant_id": "error-tenant",
             "account_id": "smtp-error",
             "from": "sender@error.com",
             "to": ["invalid@example.com"],
@@ -448,6 +452,7 @@ async def test_roundtrip_tenant_sync_failure_retry(tmp_path, smtp_server, smtp_h
     await core.handle_command("addMessages", {
         "messages": [{
             "id": "flaky-msg-001",
+            "tenant_id": "flaky-tenant",
             "account_id": "smtp-flaky",
             "from": "sender@flaky.com",
             "to": ["recipient@example.com"],
@@ -514,6 +519,7 @@ async def test_roundtrip_fallback_to_global_url(tmp_path, smtp_server, smtp_hand
     await core.handle_command("addMessages", {
         "messages": [{
             "id": "no-url-msg-001",
+            "tenant_id": "no-url-tenant",
             "account_id": "smtp-no-url",
             "from": "sender@nourl.com",
             "to": ["recipient@example.com"],
@@ -562,6 +568,7 @@ async def test_roundtrip_batch_messages(tmp_path, smtp_server, smtp_handler):
     messages_to_send = [
         {
             "id": f"batch-msg-{i:03d}",
+            "tenant_id": "batch-tenant",
             "account_id": "smtp-batch",
             "from": "batch@example.com",
             "to": [f"user{i}@example.com"],

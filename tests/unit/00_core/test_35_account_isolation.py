@@ -156,11 +156,11 @@ async def test_pec_accounts_isolated_by_tenant(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_get_account_returns_any_matching_id(tmp_path):
-    """get_account() returns the account matching the id (first found)."""
+async def test_get_account_requires_tenant_id(tmp_path):
+    """get_account() requires tenant_id and returns the correct account."""
     db = await make_db_with_tenants(tmp_path)
 
-    # Add accounts for both tenants
+    # Add accounts for both tenants with same id
     await db.add_account({
         "id": "smtp1",
         "tenant_id": "tenant_a",
@@ -174,11 +174,22 @@ async def test_get_account_returns_any_matching_id(tmp_path):
         "port": 587,
     })
 
-    # get_account returns one of them (implementation dependent)
-    account = await db.get_account("smtp1")
-    assert account["id"] == "smtp1"
-    # The host will be one of the two - this is expected behavior
-    assert account["host"] in ("smtp.tenant-a.com", "smtp.tenant-b.com")
+    # get_account returns the correct account for each tenant
+    account_a = await db.get_account("tenant_a", "smtp1")
+    assert account_a["id"] == "smtp1"
+    assert account_a["tenant_id"] == "tenant_a"
+    assert account_a["host"] == "smtp.tenant-a.com"
+
+    account_b = await db.get_account("tenant_b", "smtp1")
+    assert account_b["id"] == "smtp1"
+    assert account_b["tenant_id"] == "tenant_b"
+    assert account_b["host"] == "smtp.tenant-b.com"
+
+    # get_account raises ValueError for non-existent tenant/account combo
+    with pytest.raises(ValueError):
+        await db.get_account("tenant_a", "nonexistent")
+    with pytest.raises(ValueError):
+        await db.get_account("nonexistent", "smtp1")
 
 
 @pytest.mark.asyncio

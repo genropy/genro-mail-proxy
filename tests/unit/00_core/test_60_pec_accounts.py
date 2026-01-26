@@ -34,7 +34,7 @@ async def test_add_pec_account(tmp_path):
         "imap_port": 993,
     })
 
-    account = await db.get_account("pec-account")
+    account = await db.get_account("test_tenant", "pec-account")
     assert account["id"] == "pec-account"
     assert account["host"] == "smtp.pec.example.com"
     assert account["is_pec_account"] == 1
@@ -64,7 +64,7 @@ async def test_add_pec_account_with_separate_imap_credentials(tmp_path):
         "imap_folder": "PEC",
     })
 
-    account = await db.get_account("pec-separate")
+    account = await db.get_account("test_tenant", "pec-separate")
     assert account["imap_user"] == "imap-user@pec.example.com"
     assert account["imap_password"] == "imap-secret"
     assert account["imap_folder"] == "PEC"
@@ -123,22 +123,22 @@ async def test_update_imap_sync_state(tmp_path):
     })
 
     # Initial state
-    account = await db.get_account("pec-sync")
+    account = await db.get_account("test_tenant", "pec-sync")
     assert account["imap_last_uid"] is None
     assert account["imap_uidvalidity"] is None
 
     # Update sync state
-    await db.update_imap_sync_state("pec-sync", last_uid=100, uidvalidity=12345)
+    await db.update_imap_sync_state("test_tenant", "pec-sync", last_uid=100, uidvalidity=12345)
 
-    account = await db.get_account("pec-sync")
+    account = await db.get_account("test_tenant", "pec-sync")
     assert account["imap_last_uid"] == 100
     assert account["imap_uidvalidity"] == 12345
     assert account["imap_last_sync"] is not None
 
     # Update only last_uid
-    await db.update_imap_sync_state("pec-sync", last_uid=150)
+    await db.update_imap_sync_state("test_tenant", "pec-sync", last_uid=150)
 
-    account = await db.get_account("pec-sync")
+    account = await db.get_account("test_tenant", "pec-sync")
     assert account["imap_last_uid"] == 150
     assert account["imap_uidvalidity"] == 12345  # unchanged
 
@@ -162,7 +162,7 @@ async def test_pec_account_with_tenant(tmp_path):
         "imap_host": "imap.pec.example.com",
     })
 
-    account = await db.get_account("acme-pec")
+    account = await db.get_account("acme", "acme-pec")
     assert account["tenant_id"] == "acme"
     assert account["is_pec_account"] == 1
 

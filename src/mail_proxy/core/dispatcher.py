@@ -155,13 +155,16 @@ class DispatcherMixin:
         for account_id, account_messages in messages_by_account.items():
             # Get account-specific batch_size if available, otherwise use global default
             account_batch_size = self._batch_size_per_account
-            if account_id and account_id != "default":
-                try:
-                    account_data = await self.db.get_account(account_id)
-                    if account_data and account_data.get("batch_size"):
-                        account_batch_size = int(account_data["batch_size"])
-                except Exception:
-                    pass  # Fall back to global default on any error
+            if account_id and account_id != "default" and account_messages:
+                # Get tenant_id from first message in the group
+                tenant_id = account_messages[0].get("tenant_id")
+                if tenant_id:
+                    try:
+                        account_data = await self.db.get_account(tenant_id, account_id)
+                        if account_data and account_data.get("batch_size"):
+                            account_batch_size = int(account_data["batch_size"])
+                    except Exception:
+                        pass  # Fall back to global default on any error
 
             # Limit messages for this account to its batch_size
             messages_to_send = account_messages[:account_batch_size]
@@ -287,9 +290,10 @@ class DispatcherMixin:
         """
         from .proxy import AccountConfigurationError
 
+        tenant_id = payload.get("tenant_id") or ""
         account_id = payload.get("account_id")
         try:
-            host, port, user, password, acc = await self._resolve_account(account_id)
+            host, port, user, password, acc = await self._resolve_account(tenant_id, account_id)
         except AccountConfigurationError as exc:
             error_ts = self._utc_now_epoch()
             if pk:
@@ -444,11 +448,12 @@ class DispatcherMixin:
         }
 
     async def _resolve_account(
-        self: MailProxy, account_id: str | None
+        self: MailProxy, tenant_id: str, account_id: str | None
     ) -> tuple[str, int, str | None, str | None, dict[str, Any]]:
         """Resolve SMTP connection parameters for a message.
 
         Args:
+            tenant_id: Tenant ID that owns the account.
             account_id: Account ID to look up, or None to use defaults.
 
         Returns:
@@ -460,7 +465,7 @@ class DispatcherMixin:
         from .proxy import AccountConfigurationError
 
         if account_id:
-            acc = await self.db.get_account(account_id)
+            acc = await self.db.get_account(tenant_id, account_id)
             return acc["host"], int(acc["port"]), acc.get("user"), acc.get("password"), acc
         if self.default_host and self.default_port:
             return (
