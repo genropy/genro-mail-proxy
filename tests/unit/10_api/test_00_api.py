@@ -507,7 +507,7 @@ def test_delete_messages_empty_list(client_and_service):
 # ============================================================================
 
 def test_create_tenant_without_token_rejected():
-    """Test that creating a tenant without API token is rejected when token is configured."""
+    """Test that creating a tenant without API token is rejected (admin-only endpoint)."""
     class TenantService(DummyService):
         async def handle_command(self, cmd, payload):
             self.calls.append((cmd, payload))
@@ -527,13 +527,13 @@ def test_create_tenant_without_token_rejected():
 
     response = client.post("/tenant", json=tenant_payload)
     assert response.status_code == 401
-    assert "Invalid or missing API token" in response.json()["detail"]
+    assert "Admin token required" in response.json()["detail"]
     # Verify the service was never called
     assert len(svc.calls) == 0
 
 
 def test_create_tenant_with_wrong_token_rejected():
-    """Test that creating a tenant with wrong API token is rejected."""
+    """Test that creating a tenant with wrong token is rejected (admin-only)."""
     class TenantService(DummyService):
         async def handle_command(self, cmd, payload):
             self.calls.append((cmd, payload))
@@ -553,6 +553,7 @@ def test_create_tenant_with_wrong_token_rejected():
 
     response = client.post("/tenant", json=tenant_payload)
     assert response.status_code == 401
+    # Wrong token (not admin, not tenant) should be rejected
     assert "Invalid or missing API token" in response.json()["detail"]
     # Verify the service was never called
     assert len(svc.calls) == 0

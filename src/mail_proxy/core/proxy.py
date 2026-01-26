@@ -552,8 +552,11 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
                 removed = await self._cleanup_reported_messages(older_than, tenant_id)
                 return {"ok": True, "removed": removed}
             case "addTenant":
-                await self.db.add_tenant(payload)
-                return {"ok": True}
+                api_key = await self.db.add_tenant(payload)
+                result: dict[str, Any] = {"ok": True}
+                if api_key:
+                    result["api_key"] = api_key
+                return result
             case "getTenant":
                 tenant_id = payload.get("id")
                 tenant = await self.db.get_tenant(tenant_id)

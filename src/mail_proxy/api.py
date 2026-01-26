@@ -69,17 +69,16 @@ app.state.api_token = None
 
 
 async def verify_tenant_token(tenant_id: str | None, api_token: str | None, global_token: str | None) -> None:
-    """Verify API token for a request, with tenant-specific key support.
+    """Verify API token for a tenant-scoped request.
 
     Authentication logic:
-    1. Look up token in tenants table (by hash)
-    2. If found → token belongs to a tenant, verify tenant_id matches
-    3. If not found → verify against global token
+    1. Global token (admin) → can access any tenant
+    2. Tenant token → can ONLY access own tenant resources
 
     Args:
-        tenant_id: The tenant ID from the request (may be None for some endpoints).
+        tenant_id: The tenant ID from the request (required for tenant-scoped endpoints).
         api_token: The token from X-API-Token header.
-        global_token: The configured global API token.
+        global_token: The configured global API token (admin).
 
     Raises:
         HTTPException: 401 if token is invalid or tenant_id mismatch.
@@ -89,6 +88,10 @@ async def verify_tenant_token(tenant_id: str | None, api_token: str | None, glob
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing API token")
         return  # No token configured, allow access
 
+    # Check global token first (admin can access everything)
+    if global_token is not None and secrets.compare_digest(api_token, global_token):
+        return  # Global admin token, full access
+
     # Look up token in tenants table
     if service and getattr(service, "db", None):
         token_tenant = await service.db.tenants.get_tenant_by_token(api_token)
@@ -96,13 +99,51 @@ async def verify_tenant_token(tenant_id: str | None, api_token: str | None, glob
             # Token belongs to a tenant - verify tenant_id matches
             if tenant_id and token_tenant["id"] != tenant_id:
                 raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token not authorized for this tenant")
-            return  # Valid tenant token
+            return  # Valid tenant token for own resources
 
-    # Token not found in tenants - verify against global token
-    if global_token is None:
+    # Token didn't match global or any tenant
+    raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing API token")
+
+
+async def require_admin_token(
+    request: Request,
+    api_token: str | None = Depends(api_key_scheme)
+) -> None:
+    """Require global admin token for admin-only endpoints.
+
+    Admin-only endpoints include:
+    - Creating/deleting tenants
+    - Listing all tenants
+    - Managing tenant API keys
+    - Instance configuration
+    - Command log access
+
+    Tenant tokens are NOT allowed for these operations.
+
+    Raises:
+        HTTPException: 401 if token is not the global admin token.
+    """
+    expected = getattr(request.app.state, "api_token", None)
+
+    if not api_token:
+        if expected is not None:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Admin token required")
         return  # No global token configured, allow access
-    if not secrets.compare_digest(api_token, global_token):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing API token")
+
+    # Only accept global admin token
+    if expected is not None and secrets.compare_digest(api_token, expected):
+        return  # Valid admin token
+
+    # Check if it's a tenant token (to give a helpful error message)
+    if service and getattr(service, "db", None):
+        token_tenant = await service.db.tenants.get_tenant_by_token(api_token)
+        if token_tenant:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Admin token required, tenant tokens not allowed for this operation")
+
+    raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing API token")
+
+
+admin_dependency = Depends(require_admin_token)
 
 
 async def require_token(
@@ -112,10 +153,10 @@ async def require_token(
     """Validate the API token carried in the ``X-API-Token`` header.
 
     Accepts either:
-    - The global API token (GMP_API_TOKEN)
-    - A valid tenant-specific API key
+    - The global API token (GMP_API_TOKEN) - admin, full access
+    - A valid tenant-specific API key - limited to own tenant resources
 
-    For endpoints with tenant_id, verify_tenant_token() performs additional
+    For tenant-scoped endpoints, verify_tenant_token() performs additional
     scope verification to ensure the token matches the requested tenant.
     """
     # Store token in request state for later tenant-aware verification
@@ -129,21 +170,22 @@ async def require_token(
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing API token")
         return  # No global token configured, allow access
 
-    # Check global token first
+    # Check global token first (admin)
     if expected is not None and secrets.compare_digest(api_token, expected):
-        return  # Global token matches
+        request.state.is_admin = True
+        return  # Global admin token
 
     # Check tenant token
     if service and getattr(service, "db", None):
         token_tenant = await service.db.tenants.get_tenant_by_token(api_token)
         if token_tenant:
-            # Valid tenant token - store tenant info for later scope verification
+            # Valid tenant token - store tenant info for scope verification
             request.state.token_tenant_id = token_tenant["id"]
+            request.state.is_admin = False
             return
 
     # Token didn't match global or any tenant
-    if expected is not None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing API token")
+    raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing API token")
 
 
 auth_dependency = Depends(require_token)
@@ -203,6 +245,11 @@ class CommandStatus(BaseModel):
 
 class BasicOkResponse(CommandStatus):
     pass
+
+
+class AddTenantResponse(CommandStatus):
+    """Response from POST /tenant endpoint."""
+    api_key: str | None = Field(default=None, description="API key for new tenant (shown once)")
 
 
 class StatusResponse(CommandStatus):
@@ -872,19 +919,24 @@ def create_app(
             raise HTTPException(500, "Service not initialized")
         return Response(content=service.metrics.generate_latest(), media_type="text/plain; version=0.0.4")
 
-    # Tenant endpoints
-    @api.post("/tenant", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
+    # Tenant endpoints (admin-only: create, delete, list all, manage API keys)
+    @api.post("/tenant", response_model=AddTenantResponse, response_model_exclude_none=True, dependencies=[admin_dependency])
     async def add_tenant(payload: TenantPayload):
         """Register or update a tenant configuration.
 
         Creates a new tenant or updates an existing one. Tenants provide
         multi-tenancy support with isolated message queues and SMTP accounts.
 
+        For **new tenants**, an API key is automatically generated and returned
+        in the response. This key is shown only once and must be stored securely.
+
+        For **existing tenants**, the API key is not changed or returned.
+
         Args:
             payload: Tenant configuration including client sync settings and rate limits.
 
         Returns:
-            BasicOkResponse: Confirmation with ``ok=True``.
+            AddTenantResponse: Confirmation with ``ok=True`` and ``api_key`` for new tenants.
 
         Raises:
             HTTPException: 500 if the service is not initialized.
@@ -892,11 +944,11 @@ def create_app(
         if not service:
             raise HTTPException(500, "Service not initialized")
         result = await service.handle_command("addTenant", payload.model_dump())
-        return BasicOkResponse.model_validate(result)
+        return AddTenantResponse.model_validate(result)
 
-    @api.get("/tenants", response_model=TenantsResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
+    @api.get("/tenants", response_model=TenantsResponse, response_model_exclude_none=True, dependencies=[admin_dependency])
     async def list_tenants(active_only: bool = False):
-        """Retrieve all registered tenants.
+        """Retrieve all registered tenants (admin only).
 
         Args:
             active_only: If True, returns only active tenants. Defaults to False.
@@ -966,9 +1018,9 @@ def create_app(
             raise HTTPException(404, f"Tenant '{tenant_id}' not found")
         return BasicOkResponse.model_validate(result)
 
-    @api.delete("/tenant/{tenant_id}", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
-    async def delete_tenant(request: Request, tenant_id: str):
-        """Delete a tenant and all associated resources.
+    @api.delete("/tenant/{tenant_id}", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[admin_dependency])
+    async def delete_tenant(tenant_id: str):
+        """Delete a tenant and all associated resources (admin only).
 
         Removes the tenant along with all its SMTP accounts and queued messages.
         This operation is irreversible.
@@ -986,15 +1038,15 @@ def create_app(
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
-        await verify_tenant_token(tenant_id, getattr(request.state, "api_token", None), getattr(request.app.state, "api_token", None))
+        # Admin-only endpoint, no tenant scope verification needed
         result = await service.handle_command("deleteTenant", {"id": tenant_id})
         if not result.get("ok"):
             raise HTTPException(404, f"Tenant '{tenant_id}' not found")
         return BasicOkResponse.model_validate(result)
 
-    @api.post("/tenant/{tenant_id}/api-key", response_model=ApiKeyResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
-    async def create_tenant_api_key(request: Request, tenant_id: str):
-        """Generate a new API key for a tenant.
+    @api.post("/tenant/{tenant_id}/api-key", response_model=ApiKeyResponse, response_model_exclude_none=True, dependencies=[admin_dependency])
+    async def create_tenant_api_key(tenant_id: str):
+        """Generate a new API key for a tenant (admin only).
 
         Creates a new API key for the specified tenant. The key is returned
         only once and should be stored securely by the client. Subsequent
@@ -1007,24 +1059,24 @@ def create_app(
             ApiKeyResponse: Contains the generated API key (show once).
 
         Raises:
-            HTTPException: 401 if API token is invalid.
+            HTTPException: 403 if using tenant token (admin required).
             HTTPException: 404 if the tenant is not found.
             HTTPException: 500 if the service is not initialized.
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
-        await verify_tenant_token(tenant_id, getattr(request.state, "api_token", None), getattr(request.app.state, "api_token", None))
+        # Admin-only endpoint
         api_key = await service.db.tenants.create_api_key(tenant_id)
         if not api_key:
             raise HTTPException(404, f"Tenant '{tenant_id}' not found")
         return ApiKeyResponse(ok=True, api_key=api_key)
 
-    @api.delete("/tenant/{tenant_id}/api-key", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
-    async def revoke_tenant_api_key(request: Request, tenant_id: str):
-        """Revoke the API key for a tenant.
+    @api.delete("/tenant/{tenant_id}/api-key", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[admin_dependency])
+    async def revoke_tenant_api_key(tenant_id: str):
+        """Revoke the API key for a tenant (admin only).
 
         Invalidates the current API key for the tenant. After revocation,
-        the tenant must use the global API token or generate a new key.
+        a new key must be generated via POST /tenant/{id}/api-key.
 
         Args:
             tenant_id: Unique identifier of the tenant.
@@ -1033,20 +1085,20 @@ def create_app(
             BasicOkResponse: Confirmation with ``ok=True``.
 
         Raises:
-            HTTPException: 401 if API token is invalid.
+            HTTPException: 403 if using tenant token (admin required).
             HTTPException: 404 if the tenant is not found.
             HTTPException: 500 if the service is not initialized.
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
-        await verify_tenant_token(tenant_id, getattr(request.state, "api_token", None), getattr(request.app.state, "api_token", None))
+        # Admin-only endpoint
         revoked = await service.db.tenants.revoke_api_key(tenant_id)
         if not revoked:
             raise HTTPException(404, f"Tenant '{tenant_id}' not found")
         return BasicOkResponse(ok=True)
 
-    # Instance configuration endpoints
-    @api.get("/instance", response_model=InstanceInfo, response_model_exclude_none=True, dependencies=[auth_dependency])
+    # Instance configuration endpoints (admin only)
+    @api.get("/instance", response_model=InstanceInfo, response_model_exclude_none=True, dependencies=[admin_dependency])
     async def get_instance():
         """Retrieve instance configuration.
 
@@ -1075,7 +1127,7 @@ def create_app(
         result.pop("bounce_imap_password", None)
         return InstanceInfo(**result)
 
-    @api.put("/instance", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
+    @api.put("/instance", response_model=BasicOkResponse, response_model_exclude_none=True, dependencies=[admin_dependency])
     async def update_instance(payload: InstanceUpdatePayload):
         """Update instance configuration.
 
@@ -1102,7 +1154,7 @@ def create_app(
         result = await service.handle_command("updateInstance", update_data)
         return BasicOkResponse.model_validate(result)
 
-    @api.post("/instance/reload-bounce", response_model=BasicOkResponse, dependencies=[auth_dependency])
+    @api.post("/instance/reload-bounce", response_model=BasicOkResponse, dependencies=[admin_dependency])
     async def reload_bounce_config():
         """Reload bounce detection configuration from database.
 
@@ -1150,7 +1202,7 @@ def create_app(
         await service._start_bounce_receiver()
         return BasicOkResponse(ok=True)
 
-    @api.get("/command-log", response_model=CommandLogResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
+    @api.get("/command-log", response_model=CommandLogResponse, response_model_exclude_none=True, dependencies=[admin_dependency])
     async def list_command_log(
         tenant_id: str | None = None,
         since_ts: int | None = None,
@@ -1189,7 +1241,7 @@ def create_app(
             total=len(commands),
         )
 
-    @api.get("/command-log/export", dependencies=[auth_dependency])
+    @api.get("/command-log/export", dependencies=[admin_dependency])
     async def export_command_log(
         tenant_id: str | None = None,
         since_ts: int | None = None,

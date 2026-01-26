@@ -119,8 +119,9 @@ class MailProxyDb(SqlDb):
     # -------------------------------------------------------------------------
     # Tenants
     # -------------------------------------------------------------------------
-    async def add_tenant(self, tenant: dict[str, Any]) -> None:
-        await self.tenants.add(tenant)
+    async def add_tenant(self, tenant: dict[str, Any]) -> str:
+        """Add or update a tenant. Returns API key for new tenants."""
+        return await self.tenants.add(tenant)
 
     async def get_tenant(self, tenant_id: str) -> dict[str, Any] | None:
         return await self.tenants.get(tenant_id)

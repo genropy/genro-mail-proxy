@@ -35,11 +35,53 @@ class TenantsTable(Table):
         c.column("created_at", Timestamp, default="CURRENT_TIMESTAMP")
         c.column("updated_at", Timestamp, default="CURRENT_TIMESTAMP")
 
-    async def add(self, tenant: dict[str, Any]) -> None:
-        """Insert or update a tenant configuration."""
+    async def add(self, tenant: dict[str, Any]) -> str:
+        """Insert or update a tenant configuration.
+
+        For new tenants, automatically generates an API key.
+        For existing tenants, keeps the existing API key.
+
+        Args:
+            tenant: Tenant configuration dict with at least 'id' field.
+
+        Returns:
+            The API key (raw, show once). For new tenants this is a fresh key.
+            For existing tenants, returns empty string (key unchanged).
+        """
+        import hashlib
+        import secrets
+
+        tenant_id = tenant["id"]
+
+        # Check if tenant exists
+        existing = await self.get(tenant_id)
+
+        if existing:
+            # Update existing tenant - don't change API key
+            await self.upsert(
+                {
+                    "id": tenant_id,
+                    "name": tenant.get("name"),
+                    "client_auth": tenant.get("client_auth"),
+                    "client_base_url": tenant.get("client_base_url"),
+                    "client_sync_path": tenant.get("client_sync_path"),
+                    "client_attachment_path": tenant.get("client_attachment_path"),
+                    "rate_limits": tenant.get("rate_limits"),
+                    "large_file_config": tenant.get("large_file_config"),
+                    "active": 1 if tenant.get("active", True) else 0,
+                },
+                conflict_columns=["id"],
+                update_extras=["updated_at = CURRENT_TIMESTAMP"],
+            )
+            return ""  # Key unchanged
+
+        # New tenant - generate API key
+        raw_key = secrets.token_urlsafe(32)
+        key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+
         await self.upsert(
             {
-                "id": tenant["id"],
+                "id": tenant_id,
                 "name": tenant.get("name"),
                 "client_auth": tenant.get("client_auth"),
                 "client_base_url": tenant.get("client_base_url"),
@@ -48,10 +90,12 @@ class TenantsTable(Table):
                 "rate_limits": tenant.get("rate_limits"),
                 "large_file_config": tenant.get("large_file_config"),
                 "active": 1 if tenant.get("active", True) else 0,
+                "api_key_hash": key_hash,
             },
             conflict_columns=["id"],
             update_extras=["updated_at = CURRENT_TIMESTAMP"],
         )
+        return raw_key
 
     async def get(self, tenant_id: str) -> dict[str, Any] | None:
         """Fetch a tenant configuration by ID."""
