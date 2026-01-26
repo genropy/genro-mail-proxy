@@ -228,8 +228,8 @@ class MessagePayload(BaseModel):
 
     Attributes:
         id: Unique message identifier (client-provided).
-        account_id: SMTP account to use for sending. If None, uses the instance's
-            default SMTP settings (default_host, default_port, etc.).
+        tenant_id: Tenant identifier (required for multi-tenant isolation).
+        account_id: SMTP account to use for sending (required).
         from_addr: Sender email address (aliased as "from" in JSON).
         to: Recipient address(es), string or list.
         cc: CC address(es), string or list.
@@ -248,7 +248,8 @@ class MessagePayload(BaseModel):
     """
     model_config = ConfigDict(populate_by_name=True)
     id: str
-    account_id: str | None = None
+    tenant_id: str
+    account_id: str
     from_addr: str = Field(alias="from")
     to: list[str] | str
     cc: list[str] | str | None = None
@@ -420,6 +421,22 @@ class TenantsResponse(CommandStatus):
 class ApiKeyResponse(CommandStatus):
     """Response with generated API key (shown once)."""
     api_key: str
+
+
+class CommandLogEntry(BaseModel):
+    """Single command log entry."""
+    id: int
+    command_ts: int
+    endpoint: str
+    tenant_id: str | None = None
+    payload: dict[str, Any]
+    response_status: int | None = None
+
+
+class CommandLogResponse(CommandStatus):
+    """Response with list of logged commands."""
+    commands: list[CommandLogEntry]
+    total: int
 
 
 class InstanceInfo(BaseModel):
@@ -1132,6 +1149,74 @@ def create_app(
         service.configure_bounce_receiver(config)
         await service._start_bounce_receiver()
         return BasicOkResponse(ok=True)
+
+    @api.get("/command-log", response_model=CommandLogResponse, response_model_exclude_none=True, dependencies=[auth_dependency])
+    async def list_command_log(
+        tenant_id: str | None = None,
+        since_ts: int | None = None,
+        until_ts: int | None = None,
+        endpoint_filter: str | None = None,
+        limit: int = 100,
+    ):
+        """List logged API commands for audit trail.
+
+        Query the command audit log with optional filters.
+
+        Args:
+            tenant_id: Filter by tenant ID.
+            since_ts: Filter commands after this Unix timestamp.
+            until_ts: Filter commands before this Unix timestamp.
+            endpoint_filter: Filter by endpoint (partial match).
+            limit: Max results (default 100).
+
+        Returns:
+            CommandLogResponse: List of logged commands.
+        """
+        if not service:
+            raise HTTPException(500, "Service not initialized")
+
+        commands = await service.db.list_commands(
+            tenant_id=tenant_id,
+            since_ts=since_ts,
+            until_ts=until_ts,
+            endpoint_filter=endpoint_filter,
+            limit=limit,
+        )
+
+        return CommandLogResponse(
+            ok=True,
+            commands=[CommandLogEntry(**cmd) for cmd in commands],
+            total=len(commands),
+        )
+
+    @api.get("/command-log/export", dependencies=[auth_dependency])
+    async def export_command_log(
+        tenant_id: str | None = None,
+        since_ts: int | None = None,
+        until_ts: int | None = None,
+    ):
+        """Export commands in replay-friendly JSON format.
+
+        Returns minimal payload for replaying commands.
+
+        Args:
+            tenant_id: Filter by tenant ID.
+            since_ts: Filter commands after this Unix timestamp.
+            until_ts: Filter commands before this Unix timestamp.
+
+        Returns:
+            List of replay-ready command objects.
+        """
+        if not service:
+            raise HTTPException(500, "Service not initialized")
+
+        commands = await service.db.export_commands(
+            tenant_id=tenant_id,
+            since_ts=since_ts,
+            until_ts=until_ts,
+        )
+
+        return {"ok": True, "commands": commands}
 
     api.include_router(router)
     return api

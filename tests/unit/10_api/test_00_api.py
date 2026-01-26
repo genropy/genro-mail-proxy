@@ -103,6 +103,8 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
         "messages": [
             {
                 "id": "msg-bulk",
+                "tenant_id": "test-tenant",
+                "account_id": "default",
                 "from": "sender@example.com",
                 "to": "dest@example.com, other@example.com",
                 "bcc": "hidden@example.com",
@@ -140,6 +142,8 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
                 "messages": [
                     {
                         "id": "msg-bulk",
+                        "tenant_id": "test-tenant",
+                        "account_id": "default",
                         "from": "sender@example.com",
                         "to": "dest@example.com, other@example.com",
                         "bcc": "hidden@example.com",
@@ -254,6 +258,8 @@ def test_add_messages_returns_400_on_service_error():
         "messages": [
             {
                 "id": "msg-1",
+                "tenant_id": "test-tenant",
+                "account_id": "default",
                 "from": "sender@example.com",
                 "to": "dest@example.com",
                 "subject": "Test",
@@ -311,6 +317,8 @@ def test_message_with_attachments(client_and_service):
         "messages": [
             {
                 "id": "msg-attach",
+                "tenant_id": "test-tenant",
+                "account_id": "default",
                 "from": "sender@example.com",
                 "to": "dest@example.com",
                 "subject": "With Attachment",
@@ -351,6 +359,8 @@ def test_message_with_priority(client_and_service):
         "messages": [
             {
                 "id": "msg-priority",
+                "tenant_id": "test-tenant",
+                "account_id": "default",
                 "from": "sender@example.com",
                 "to": "dest@example.com",
                 "subject": "High Priority",
@@ -378,6 +388,8 @@ def test_message_with_html_content(client_and_service):
         "messages": [
             {
                 "id": "msg-html",
+                "tenant_id": "test-tenant",
+                "account_id": "default",
                 "from": "sender@example.com",
                 "to": "dest@example.com",
                 "subject": "HTML Email",
@@ -402,6 +414,8 @@ def test_message_with_cc_and_bcc(client_and_service):
         "messages": [
             {
                 "id": "msg-cc-bcc",
+                "tenant_id": "test-tenant",
+                "account_id": "default",
                 "from": "sender@example.com",
                 "to": ["primary@example.com"],
                 "cc": ["copy1@example.com", "copy2@example.com"],
