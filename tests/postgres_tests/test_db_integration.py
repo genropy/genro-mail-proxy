@@ -47,7 +47,7 @@ class TestUnicodeHandling:
             "user": "user@日本.com",
         })
 
-        retrieved = await accounts.get("acc-unicode")
+        retrieved = await accounts.get("t1", "acc-unicode")
         assert retrieved["user"] == "user@日本.com"
 
     async def test_json_field_with_unicode(self, pg_db):
@@ -243,7 +243,7 @@ class TestPostgreSQLSpecificBehavior:
             "limit_per_day": 1000000,  # 1 million
         })
 
-        retrieved = await accounts.get("large-limits")
+        retrieved = await accounts.get("int-test", "large-limits")
         assert retrieved["limit_per_day"] == 1000000
 
 
