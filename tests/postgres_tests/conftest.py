@@ -1,8 +1,13 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Fixtures for database integration tests using testcontainers."""
 
+import os
+
 import pytest
 import pytest_asyncio
+
+# Disable testcontainers Reaper to avoid port mapping issues in local Docker
+os.environ["TESTCONTAINERS_RYUK_DISABLED"] = "true"
 
 
 @pytest.fixture(scope="session")
@@ -13,6 +18,7 @@ def pg_container():
     The container is automatically stopped and removed after the test session.
 
     Requires Docker to be running.
+    Note: Reaper (Ryuk) is disabled to avoid port mapping issues.
     """
     try:
         from testcontainers.postgres import PostgresContainer
