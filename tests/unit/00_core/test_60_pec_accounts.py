@@ -229,11 +229,13 @@ async def test_insert_messages_auto_sets_is_pec(tmp_path):
     msg_ids = await db.insert_messages([
         {
             "id": "msg-pec-001",
+            "tenant_id": "test_tenant",
             "account_id": "pec-account",
             "payload": {"from": "a@pec.it", "to": "b@pec.it", "subject": "PEC"},
         },
         {
             "id": "msg-regular-001",
+            "tenant_id": "test_tenant",
             "account_id": "regular-account",
             "payload": {"from": "a@mail.it", "to": "b@mail.it", "subject": "Normal"},
         },
@@ -268,6 +270,7 @@ async def test_clear_pec_flag(tmp_path):
     msg_ids = await db.insert_messages([
         {
             "id": "msg-pec-clear",
+            "tenant_id": "test_tenant",
             "account_id": "pec-account",
             "payload": {"from": "a@pec.it", "to": "b@normal.it", "subject": "Test"},
         },
@@ -277,8 +280,8 @@ async def test_clear_pec_flag(tmp_path):
     ready = await db.fetch_ready_messages(limit=10, now_ts=9999999999)
     assert ready[0]["is_pec"] == 1
 
-    # Clear the flag
-    await db.clear_pec_flag(msg_ids[0])
+    # Clear the flag using pk from insert result
+    await db.clear_pec_flag(msg_ids[0]["pk"])
 
     # Verify flag is cleared
     ready = await db.fetch_ready_messages(limit=10, now_ts=9999999999)
@@ -303,6 +306,7 @@ async def test_insert_messages_without_auto_pec(tmp_path):
     await db.insert_messages(
         [{
             "id": "msg-no-auto-pec",
+            "tenant_id": "test_tenant",
             "account_id": "pec-account",
             "payload": {"from": "a@pec.it", "to": "b@pec.it", "subject": "Test"},
         }],

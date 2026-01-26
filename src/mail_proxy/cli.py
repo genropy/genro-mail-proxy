@@ -1884,7 +1884,7 @@ def _add_accounts_commands(group: click.Group, instance_name: str, tenant_id: st
             except ValueError:
                 return False, f"Account '{account_id}' not found."
 
-            await persistence.delete_account(account_id)
+            await persistence.delete_account(tenant_id, account_id)
             return True, None
 
         success, error = run_async(_delete())

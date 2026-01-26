@@ -28,15 +28,17 @@ async def test_mark_bounced_creates_event(tmp_path):
     })
 
     # Insert message
-    await db.insert_messages([{
+    inserted = await db.insert_messages([{
         "id": "msg1",
+        "tenant_id": "test_tenant",
         "account_id": "acc1",
         "payload": {"from": "a@b.com", "to": ["c@d.com"], "subject": "Test", "body": "Hi"},
     }])
+    pk = inserted[0]["pk"]
 
     # Mark as sent first
     sent_ts = 1700000000
-    await db.mark_sent("msg1", sent_ts)
+    await db.mark_sent(pk, "msg1", sent_ts)
 
     # Mark as bounced
     bounce_ts = 1700000100
@@ -67,15 +69,17 @@ async def test_bounce_event_in_unreported_events(tmp_path):
 
     # Create account and message
     await db.add_account({"id": "acc1", "tenant_id": "test_tenant", "host": "smtp.example.com", "port": 587})
-    await db.insert_messages([{
+    inserted = await db.insert_messages([{
         "id": "msg1",
+        "tenant_id": "test_tenant",
         "account_id": "acc1",
         "payload": {"from": "a@b.com", "to": ["c@d.com"], "subject": "Test", "body": "Hi"},
     }])
+    pk = inserted[0]["pk"]
 
     # Mark as sent
     sent_ts = 1700000000
-    await db.mark_sent("msg1", sent_ts)
+    await db.mark_sent(pk, "msg1", sent_ts)
 
     # Mark sent event as reported
     events = await db.fetch_unreported_events(limit=10)
@@ -105,15 +109,17 @@ async def test_mark_bounce_reported(tmp_path):
 
     # Setup
     await db.add_account({"id": "acc1", "tenant_id": "test_tenant", "host": "smtp.example.com", "port": 587})
-    await db.insert_messages([{
+    inserted = await db.insert_messages([{
         "id": "msg1",
+        "tenant_id": "test_tenant",
         "account_id": "acc1",
         "payload": {"from": "a@b.com", "to": ["c@d.com"], "subject": "Test", "body": "Hi"},
     }])
+    pk = inserted[0]["pk"]
 
     # Mark as sent and reported
     sent_ts = 1700000000
-    await db.mark_sent("msg1", sent_ts)
+    await db.mark_sent(pk, "msg1", sent_ts)
 
     events = await db.fetch_unreported_events(limit=10)
     sent_event_ids = [e["event_id"] for e in events if e["event_type"] == "sent"]
@@ -149,15 +155,17 @@ async def test_multiple_events_for_same_message(tmp_path):
 
     # Setup
     await db.add_account({"id": "acc1", "tenant_id": "test_tenant", "host": "smtp.example.com", "port": 587})
-    await db.insert_messages([{
+    inserted = await db.insert_messages([{
         "id": "msg1",
+        "tenant_id": "test_tenant",
         "account_id": "acc1",
         "payload": {"from": "a@b.com", "to": ["c@d.com"], "subject": "Test", "body": "Hi"},
     }])
+    pk = inserted[0]["pk"]
 
     # Mark as sent
     sent_ts = 1700000000
-    await db.mark_sent("msg1", sent_ts)
+    await db.mark_sent(pk, "msg1", sent_ts)
 
     # Mark as bounced
     await db.mark_bounced(
@@ -183,26 +191,29 @@ async def test_fetch_unreported_includes_both_new_and_bounce(tmp_path):
 
     # Setup
     await db.add_account({"id": "acc1", "tenant_id": "test_tenant", "host": "smtp.example.com", "port": 587})
-    await db.insert_messages([
+    inserted = await db.insert_messages([
         {
             "id": "msg-new",
+            "tenant_id": "test_tenant",
             "account_id": "acc1",
             "payload": {"from": "a@b.com", "to": ["c@d.com"], "subject": "New", "body": "Hi"},
         },
         {
             "id": "msg-bounced",
+            "tenant_id": "test_tenant",
             "account_id": "acc1",
             "payload": {"from": "a@b.com", "to": ["e@f.com"], "subject": "Bounced", "body": "Hi"},
         },
     ])
+    pk_map = {m["id"]: m["pk"] for m in inserted}
 
     sent_ts = 1700000000
 
     # msg-new: just sent, not reported
-    await db.mark_sent("msg-new", sent_ts)
+    await db.mark_sent(pk_map["msg-new"], "msg-new", sent_ts)
 
     # msg-bounced: sent, reported, then bounced
-    await db.mark_sent("msg-bounced", sent_ts)
+    await db.mark_sent(pk_map["msg-bounced"], "msg-bounced", sent_ts)
 
     # Report only the sent event for msg-bounced
     events = await db.fetch_unreported_events(limit=10)

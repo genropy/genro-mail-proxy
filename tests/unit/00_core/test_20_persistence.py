@@ -40,31 +40,39 @@ async def test_messages_lifecycle(tmp_path):
     db = tmp_path / "messages.db"
     p = MailProxyDb(str(db))
     await p.init_db()
+    # Create tenant first - messages require tenant_id
+    await p.add_tenant({"id": "test_tenant", "name": "Test"})
     now = int(time.time())
     inserted = await p.insert_messages(
         [
             {
                 "id": "msg1",
+                "tenant_id": "test_tenant",
                 "account_id": "acc",
                 "priority": 2,
                 "payload": {"id": "msg1", "from": "a@example.com", "to": "b@example.com", "body": "hello"},
             }
         ]
     )
-    assert inserted == ["msg1"]
+    # insert_messages now returns list of {"id": msg_id, "pk": pk}
+    assert len(inserted) == 1
+    assert inserted[0]["id"] == "msg1"
+    pk = inserted[0]["pk"]
+
     ready = await p.fetch_ready_messages(limit=10, now_ts=now)
     assert len(ready) == 1
     assert ready[0]["id"] == "msg1"
+    assert ready[0]["pk"] == pk
 
-    # Test deferral
-    await p.set_deferred("msg1", now + 60)
+    # Test deferral - use pk for internal operations
+    await p.set_deferred(pk, "msg1", now + 60)
     assert await p.fetch_ready_messages(limit=10, now_ts=now) == []
-    await p.clear_deferred("msg1")
+    await p.clear_deferred(pk)
     ready = await p.fetch_ready_messages(limit=10, now_ts=now)
     assert len(ready) == 1
 
     # Test error - marks message as processed with smtp_ts
-    await p.mark_error("msg1", now, "boom")
+    await p.mark_error(pk, "msg1", now, "boom")
     # Message is no longer ready (smtp_ts is set)
     assert await p.fetch_ready_messages(limit=10, now_ts=now + 120) == []
 
@@ -75,7 +83,7 @@ async def test_messages_lifecycle(tmp_path):
     assert error_events[0]["description"] == "boom"
 
     # Test sent - updates smtp_ts
-    await p.mark_sent("msg1", now + 1)
+    await p.mark_sent(pk, "msg1", now + 1)
 
     # Verify sent event was created
     events = await p.fetch_unreported_events(limit=10)
@@ -98,10 +106,12 @@ async def test_existing_ids(tmp_path):
     db = tmp_path / "existing.db"
     p = MailProxyDb(str(db))
     await p.init_db()
+    await p.add_tenant({"id": "test_tenant", "name": "Test"})
     await p.insert_messages(
         [
             {
                 "id": "msg1",
+                "tenant_id": "test_tenant",
                 "account_id": None,
                 "priority": 2,
                 "payload": {"id": "msg1", "from": "a", "to": "b", "body": "hi"},
@@ -140,15 +150,16 @@ async def test_fetch_ready_messages_priority_filter(tmp_path):
     db = tmp_path / "priority.db"
     p = MailProxyDb(str(db))
     await p.init_db()
+    await p.add_tenant({"id": "test_tenant", "name": "Test"})
     now = int(time.time())
 
     # Insert messages with different priorities
     await p.insert_messages([
-        {"id": "immediate1", "account_id": "acc", "priority": 0, "payload": {"id": "immediate1", "body": "a"}},
-        {"id": "immediate2", "account_id": "acc", "priority": 0, "payload": {"id": "immediate2", "body": "b"}},
-        {"id": "high", "account_id": "acc", "priority": 1, "payload": {"id": "high", "body": "c"}},
-        {"id": "normal", "account_id": "acc", "priority": 2, "payload": {"id": "normal", "body": "d"}},
-        {"id": "low", "account_id": "acc", "priority": 3, "payload": {"id": "low", "body": "e"}},
+        {"id": "immediate1", "tenant_id": "test_tenant", "account_id": "acc", "priority": 0, "payload": {"id": "immediate1", "body": "a"}},
+        {"id": "immediate2", "tenant_id": "test_tenant", "account_id": "acc", "priority": 0, "payload": {"id": "immediate2", "body": "b"}},
+        {"id": "high", "tenant_id": "test_tenant", "account_id": "acc", "priority": 1, "payload": {"id": "high", "body": "c"}},
+        {"id": "normal", "tenant_id": "test_tenant", "account_id": "acc", "priority": 2, "payload": {"id": "normal", "body": "d"}},
+        {"id": "low", "tenant_id": "test_tenant", "account_id": "acc", "priority": 3, "payload": {"id": "low", "body": "e"}},
     ])
 
     # Fetch only immediate priority (priority=0)

@@ -167,6 +167,7 @@ async def test_delete_tenant_cascades(tmp_path):
     })
     await db.insert_messages([{
         "id": "msg1",
+        "tenant_id": "acme",
         "account_id": "acme-main",
         "priority": 2,
         "payload": {"from": "test@acme.com", "to": ["dest@example.com"], "subject": "Test"},
@@ -306,16 +307,18 @@ async def test_events_for_tenant_account(tmp_path):
     })
 
     # Insert a message
-    await db.insert_messages([{
+    inserted = await db.insert_messages([{
         "id": "msg1",
+        "tenant_id": "acme",
         "account_id": "acme-main",
         "priority": 2,
         "payload": {"from": "test@acme.com", "to": ["dest@example.com"], "subject": "Test"},
     }])
+    pk = inserted[0]["pk"]
 
     # Mark message as sent
     sent_ts = int(time.time())
-    await db.mark_sent("msg1", sent_ts)
+    await db.mark_sent(pk, "msg1", sent_ts)
 
     # Fetch unreported events
     events = await db.fetch_unreported_events(limit=10)
@@ -346,16 +349,17 @@ async def test_events_multiple_tenants(tmp_path):
     await db.add_account({"id": "acc2", "tenant_id": "tenant2", "host": "smtp2.com", "port": 587})
 
     # Insert messages for each tenant
-    await db.insert_messages([
-        {"id": "msg1", "account_id": "acc1", "priority": 2, "payload": {"from": "a@1.com", "to": ["b@1.com"], "subject": "T1"}},
-        {"id": "msg2", "account_id": "acc2", "priority": 2, "payload": {"from": "a@2.com", "to": ["b@2.com"], "subject": "T2"}},
-        {"id": "msg3", "account_id": "acc1", "priority": 2, "payload": {"from": "c@1.com", "to": ["d@1.com"], "subject": "T3"}},
+    inserted = await db.insert_messages([
+        {"id": "msg1", "tenant_id": "tenant1", "account_id": "acc1", "priority": 2, "payload": {"from": "a@1.com", "to": ["b@1.com"], "subject": "T1"}},
+        {"id": "msg2", "tenant_id": "tenant2", "account_id": "acc2", "priority": 2, "payload": {"from": "a@2.com", "to": ["b@2.com"], "subject": "T2"}},
+        {"id": "msg3", "tenant_id": "tenant1", "account_id": "acc1", "priority": 2, "payload": {"from": "c@1.com", "to": ["d@1.com"], "subject": "T3"}},
     ])
+    pk_by_id = {item["id"]: item["pk"] for item in inserted}
 
     # Mark all as sent
     sent_ts = int(time.time())
     for msg_id in ["msg1", "msg2", "msg3"]:
-        await db.mark_sent(msg_id, sent_ts)
+        await db.mark_sent(pk_by_id[msg_id], msg_id, sent_ts)
 
     # Fetch unreported events
     events = await db.fetch_unreported_events(limit=10)
@@ -703,11 +707,11 @@ async def test_fetch_ready_excludes_suspended_batches(tmp_path):
 
     # Insert messages with different batch codes
     await db.insert_messages([
-        {"id": "msg-1", "account_id": "acme-smtp", "priority": 2, "batch_code": "NL-01",
+        {"id": "msg-1", "tenant_id": "acme", "account_id": "acme-smtp", "priority": 2, "batch_code": "NL-01",
          "payload": {"from": "a@b.com", "to": ["c@d.com"], "subject": "NL-01"}},
-        {"id": "msg-2", "account_id": "acme-smtp", "priority": 2, "batch_code": "NL-02",
+        {"id": "msg-2", "tenant_id": "acme", "account_id": "acme-smtp", "priority": 2, "batch_code": "NL-02",
          "payload": {"from": "a@b.com", "to": ["c@d.com"], "subject": "NL-02"}},
-        {"id": "msg-3", "account_id": "acme-smtp", "priority": 2, "batch_code": None,
+        {"id": "msg-3", "tenant_id": "acme", "account_id": "acme-smtp", "priority": 2, "batch_code": None,
          "payload": {"from": "a@b.com", "to": ["c@d.com"], "subject": "No batch"}},
     ])
 
@@ -751,16 +755,17 @@ async def test_count_pending_for_tenant(tmp_path):
     now_ts = int(time.time())
 
     # Insert messages
-    await db.insert_messages([
-        {"id": "msg-1", "account_id": "acme-smtp", "priority": 2, "batch_code": "NL-01",
+    inserted = await db.insert_messages([
+        {"id": "msg-1", "tenant_id": "acme", "account_id": "acme-smtp", "priority": 2, "batch_code": "NL-01",
          "payload": {"from": "a@b.com", "to": ["c@d.com"], "subject": "NL-01 msg 1"}},
-        {"id": "msg-2", "account_id": "acme-smtp", "priority": 2, "batch_code": "NL-01",
+        {"id": "msg-2", "tenant_id": "acme", "account_id": "acme-smtp", "priority": 2, "batch_code": "NL-01",
          "payload": {"from": "a@b.com", "to": ["c@d.com"], "subject": "NL-01 msg 2"}},
-        {"id": "msg-3", "account_id": "acme-smtp", "priority": 2, "batch_code": "NL-02",
+        {"id": "msg-3", "tenant_id": "acme", "account_id": "acme-smtp", "priority": 2, "batch_code": "NL-02",
          "payload": {"from": "a@b.com", "to": ["c@d.com"], "subject": "NL-02"}},
-        {"id": "msg-4", "account_id": "acme-smtp", "priority": 2, "batch_code": None,
+        {"id": "msg-4", "tenant_id": "acme", "account_id": "acme-smtp", "priority": 2, "batch_code": None,
          "payload": {"from": "a@b.com", "to": ["c@d.com"], "subject": "No batch"}},
     ])
+    pk_by_id = {item["id"]: item["pk"] for item in inserted}
 
     # Count all pending for tenant
     count = await db.count_pending_messages("acme")
@@ -774,7 +779,7 @@ async def test_count_pending_for_tenant(tmp_path):
     assert count_nl02 == 1
 
     # Mark one as sent
-    await db.mark_sent("msg-1", now_ts)
+    await db.mark_sent(pk_by_id["msg-1"], "msg-1", now_ts)
 
     # Count updated
     count_nl01 = await db.count_pending_messages("acme", "NL-01")

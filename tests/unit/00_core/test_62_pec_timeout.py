@@ -35,15 +35,17 @@ async def test_get_pec_messages_without_acceptance(tmp_path):
     })
 
     # Insert PEC message
-    await db.insert_messages([{
+    inserted = await db.insert_messages([{
         "id": "msg-pec-timeout",
+        "tenant_id": "test_tenant",
         "account_id": "pec-account",
         "payload": {"from": "a@pec.it", "to": "b@pec.it", "subject": "Test"},
     }])
+    pk = inserted[0]["pk"]
 
     # Mark as sent 40 minutes ago
     old_ts = int(time.time()) - 40 * 60
-    await db.mark_sent("msg-pec-timeout", old_ts)
+    await db.mark_sent(pk, "msg-pec-timeout", old_ts)
 
     # Check for timed out messages (cutoff 30 min ago)
     cutoff_ts = int(time.time()) - 30 * 60
@@ -68,15 +70,17 @@ async def test_pec_message_with_acceptance_not_timed_out(tmp_path):
     })
 
     # Insert PEC message
-    await db.insert_messages([{
+    inserted = await db.insert_messages([{
         "id": "msg-pec-accepted",
+        "tenant_id": "test_tenant",
         "account_id": "pec-account",
         "payload": {"from": "a@pec.it", "to": "b@pec.it", "subject": "Test"},
     }])
+    pk = inserted[0]["pk"]
 
     # Mark as sent 40 minutes ago
     old_ts = int(time.time()) - 40 * 60
-    await db.mark_sent("msg-pec-accepted", old_ts)
+    await db.mark_sent(pk, "msg-pec-accepted", old_ts)
 
     # Add acceptance event
     await db.add_event(
@@ -109,15 +113,17 @@ async def test_recent_pec_message_not_timed_out(tmp_path):
     })
 
     # Insert PEC message
-    await db.insert_messages([{
+    inserted = await db.insert_messages([{
         "id": "msg-pec-recent",
+        "tenant_id": "test_tenant",
         "account_id": "pec-account",
         "payload": {"from": "a@pec.it", "to": "b@pec.it", "subject": "Test"},
     }])
+    pk = inserted[0]["pk"]
 
     # Mark as sent 10 minutes ago (within timeout window)
     recent_ts = int(time.time()) - 10 * 60
-    await db.mark_sent("msg-pec-recent", recent_ts)
+    await db.mark_sent(pk, "msg-pec-recent", recent_ts)
 
     # Check for timed out messages (cutoff 30 min ago)
     cutoff_ts = int(time.time()) - 30 * 60
@@ -141,15 +147,17 @@ async def test_non_pec_message_not_in_timeout_list(tmp_path):
     })
 
     # Insert regular message
-    await db.insert_messages([{
+    inserted = await db.insert_messages([{
         "id": "msg-regular",
+        "tenant_id": "test_tenant",
         "account_id": "regular-account",
         "payload": {"from": "a@mail.it", "to": "b@mail.it", "subject": "Test"},
     }])
+    pk = inserted[0]["pk"]
 
     # Mark as sent 40 minutes ago
     old_ts = int(time.time()) - 40 * 60
-    await db.mark_sent("msg-regular", old_ts)
+    await db.mark_sent(pk, "msg-regular", old_ts)
 
     # Check for timed out messages
     cutoff_ts = int(time.time()) - 30 * 60

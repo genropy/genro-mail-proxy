@@ -187,13 +187,16 @@ class MailProxyDb(SqlDb):
     # -------------------------------------------------------------------------
     async def insert_messages(
         self, entries: Sequence[dict[str, Any]], auto_pec: bool = True
-    ) -> list[str]:
+    ) -> list[dict[str, str]]:
         """Insert messages into the queue.
 
         Args:
             entries: List of message entries to insert.
             auto_pec: If True, automatically set is_pec=1 for messages
                 sent via PEC accounts.
+
+        Returns:
+            List of {"id": msg_id, "pk": pk} for inserted messages.
         """
         pec_account_ids = await self.get_pec_account_ids() if auto_pec else None
         return await self.messages.insert_batch(entries, pec_account_ids)
@@ -211,9 +214,17 @@ class MailProxyDb(SqlDb):
         )
 
     async def set_deferred(
-        self, msg_id: str, deferred_ts: int, reason: str | None = None
+        self, pk: str, msg_id: str, deferred_ts: int, reason: str | None = None
     ) -> None:
-        await self.messages.set_deferred(msg_id, deferred_ts)
+        """Mark message as deferred for retry.
+
+        Args:
+            pk: Internal primary key for the update operation (UUID string).
+            msg_id: Message ID for event recording.
+            deferred_ts: Timestamp when message can be retried.
+            reason: Optional reason for deferral.
+        """
+        await self.messages.set_deferred(pk, deferred_ts)
         # Record deferred event for reporting
         await self.message_events.add_event(
             message_id=msg_id,
@@ -222,21 +233,39 @@ class MailProxyDb(SqlDb):
             description=reason,
         )
 
-    async def clear_deferred(self, msg_id: str) -> None:
-        await self.messages.clear_deferred(msg_id)
+    async def clear_deferred(self, pk: str) -> None:
+        """Clear the deferred timestamp for a message.
 
-    async def mark_sent(self, msg_id: str, smtp_ts: int) -> None:
-        """Mark message as successfully sent."""
-        await self.messages.mark_sent(msg_id, smtp_ts)
+        Args:
+            pk: Internal primary key of the message (UUID string).
+        """
+        await self.messages.clear_deferred(pk)
+
+    async def mark_sent(self, pk: str, msg_id: str, smtp_ts: int) -> None:
+        """Mark message as successfully sent.
+
+        Args:
+            pk: Internal primary key for the update operation (UUID string).
+            msg_id: Message ID for event recording.
+            smtp_ts: Timestamp when SMTP send was attempted.
+        """
+        await self.messages.mark_sent(pk, smtp_ts)
         await self.message_events.add_event(
             message_id=msg_id,
             event_type="sent",
             event_ts=smtp_ts,
         )
 
-    async def mark_error(self, msg_id: str, smtp_ts: int, error: str) -> None:
-        """Mark message as failed with error."""
-        await self.messages.mark_error(msg_id, smtp_ts)
+    async def mark_error(self, pk: str, msg_id: str, smtp_ts: int, error: str) -> None:
+        """Mark message as failed with error.
+
+        Args:
+            pk: Internal primary key for the update operation (UUID string).
+            msg_id: Message ID for event recording.
+            smtp_ts: Timestamp when SMTP send was attempted.
+            error: Error description.
+        """
+        await self.messages.mark_error(pk, smtp_ts)
         await self.message_events.add_event(
             message_id=msg_id,
             event_type="error",
@@ -244,12 +273,22 @@ class MailProxyDb(SqlDb):
             description=error,
         )
 
-    async def update_message_payload(self, msg_id: str, payload: dict[str, Any]) -> None:
-        await self.messages.update_payload(msg_id, payload)
+    async def update_message_payload(self, pk: str, payload: dict[str, Any]) -> None:
+        """Update the payload field of a message.
 
-    async def clear_pec_flag(self, msg_id: str) -> None:
-        """Clear is_pec flag when recipient is not a PEC address."""
-        await self.messages.clear_pec_flag(msg_id)
+        Args:
+            pk: Internal primary key of the message (UUID string).
+            payload: New payload data.
+        """
+        await self.messages.update_payload(pk, payload)
+
+    async def clear_pec_flag(self, pk: str) -> None:
+        """Clear is_pec flag when recipient is not a PEC address.
+
+        Args:
+            pk: Internal primary key of the message (UUID string).
+        """
+        await self.messages.clear_pec_flag(pk)
 
     async def get_pec_messages_without_acceptance(self, cutoff_ts: int) -> list[dict[str, Any]]:
         """Get PEC messages sent before cutoff without acceptance receipt."""

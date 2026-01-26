@@ -208,9 +208,10 @@ class DispatcherMixin:
         and performs the actual send. Updates message status based on outcome.
 
         Args:
-            entry: Message entry dict with id, message payload, and metadata.
+            entry: Message entry dict with pk, id, message payload, and metadata.
             now_ts: Current UTC timestamp for error/sent timestamp recording.
         """
+        pk = entry.get("pk")
         msg_id = entry.get("id")
         message = entry.get("message") or {}
         if self._log_delivery_activity:
@@ -221,13 +222,14 @@ class DispatcherMixin:
                 recipients_preview,
                 message.get("account_id") or "default",
             )
-        if msg_id:
-            await self.db.clear_deferred(msg_id)
+        if pk:
+            await self.db.clear_deferred(pk)
         try:
             email_msg, envelope_from = await self._build_email(message)
         except KeyError as exc:
             reason = f"missing {exc}"
-            await self.db.mark_error(msg_id, now_ts, reason)
+            if pk and msg_id:
+                await self.db.mark_error(pk, msg_id, now_ts, reason)
             await self._publish_result(
                 {
                     "id": msg_id,
@@ -241,7 +243,8 @@ class DispatcherMixin:
         except ValueError as exc:
             # Attachment fetch failure or other validation error
             reason = str(exc)
-            await self.db.mark_error(msg_id, now_ts, reason)
+            if pk and msg_id:
+                await self.db.mark_error(pk, msg_id, now_ts, reason)
             await self._publish_result(
                 {
                     "id": msg_id,
@@ -253,7 +256,7 @@ class DispatcherMixin:
             )
             return
 
-        event = await self._send_with_limits(email_msg, envelope_from, msg_id, message)
+        event = await self._send_with_limits(email_msg, envelope_from, pk, msg_id, message)
         if event:
             await self._publish_result(event)
 
@@ -261,6 +264,7 @@ class DispatcherMixin:
         self: MailProxy,
         msg: EmailMessage,
         envelope_from: str | None,
+        pk: str | None,
         msg_id: str | None,
         payload: dict[str, Any],
     ) -> dict[str, Any] | None:
@@ -273,7 +277,8 @@ class DispatcherMixin:
         Args:
             msg: Constructed EmailMessage ready for sending.
             envelope_from: SMTP envelope sender address.
-            msg_id: Message ID for tracking and status updates.
+            pk: Internal primary key for database updates (UUID string).
+            msg_id: Message ID for tracking and event recording.
             payload: Original message payload with retry state.
 
         Returns:
@@ -287,7 +292,8 @@ class DispatcherMixin:
             host, port, user, password, acc = await self._resolve_account(account_id)
         except AccountConfigurationError as exc:
             error_ts = self._utc_now_epoch()
-            await self.db.mark_error(msg_id or "", error_ts, str(exc))
+            if pk and msg_id:
+                await self.db.mark_error(pk, msg_id, error_ts, str(exc))
             return {
                 "id": msg_id,
                 "status": "error",
@@ -313,7 +319,8 @@ class DispatcherMixin:
                     resolved_account_id,
                 )
                 error_ts = self._utc_now_epoch()
-                await self.db.mark_error(msg_id or "", error_ts, "rate_limit_exceeded")
+                if pk and msg_id:
+                    await self.db.mark_error(pk, msg_id, error_ts, "rate_limit_exceeded")
                 return {
                     "id": msg_id,
                     "status": "error",
@@ -325,7 +332,8 @@ class DispatcherMixin:
 
             # Rate limit hit - defer message for later retry (internal scheduling).
             # This is flow control, not an error, so it won't be reported to client.
-            await self.db.set_deferred(msg_id or "", deferred_until)
+            if pk and msg_id:
+                await self.db.set_deferred(pk, msg_id, deferred_until)
             self.metrics.inc_deferred(resolved_account_id)
             self.logger.debug(
                 "Message %s rate-limited for account %s, deferred until %s",
@@ -361,8 +369,10 @@ class DispatcherMixin:
                 updated_payload["retry_count"] = retry_count + 1
 
                 # Store updated payload and defer the message
-                await self.db.update_message_payload(msg_id or "", updated_payload)
-                await self.db.set_deferred(msg_id or "", deferred_until)
+                if pk:
+                    await self.db.update_message_payload(pk, updated_payload)
+                if pk and msg_id:
+                    await self.db.set_deferred(pk, msg_id, deferred_until)
                 self.metrics.inc_deferred(resolved_account_id)
 
                 # Log the retry attempt
@@ -407,7 +417,8 @@ class DispatcherMixin:
                         error_info,
                     )
 
-                await self.db.mark_error(msg_id or "", error_ts, error_info)
+                if pk and msg_id:
+                    await self.db.mark_error(pk, msg_id, error_ts, error_info)
                 self.metrics.inc_error(resolved_account_id)
 
                 return {
@@ -421,7 +432,8 @@ class DispatcherMixin:
                 }
 
         sent_ts = self._utc_now_epoch()
-        await self.db.mark_sent(msg_id or "", sent_ts)
+        if pk and msg_id:
+            await self.db.mark_sent(pk, msg_id, sent_ts)
         await self.rate_limiter.log_send(resolved_account_id)
         self.metrics.inc_sent(resolved_account_id)
         return {

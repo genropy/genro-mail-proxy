@@ -15,12 +15,14 @@ from src.mail_proxy.core.event_reporting import EventReporterMixin  # noqa: F401
 
 @pytest_asyncio.fixture
 async def proxy(tmp_path):
-    """Create a MailProxy for testing."""
+    """Create a MailProxy for testing with default tenant."""
     proxy = MailProxy(
         db_path=str(tmp_path / "test.db"),
         test_mode=True,
     )
     await proxy.init()
+    # Create default tenant for tests
+    await proxy.db.add_tenant({"id": "test_tenant", "name": "Test Tenant"})
     yield proxy
     await proxy.stop()
 
@@ -183,6 +185,7 @@ class TestEventReportingCycle:
         # Insert message without account_id so it uses global callable
         await proxy.db.insert_messages([{
             "id": "msg-001",
+            "tenant_id": "test_tenant",
             "account_id": None,
             "payload": {"from": "a@test.com", "to": ["b@test.com"], "subject": "Test"},
         }])
@@ -474,11 +477,13 @@ class TestProcessClientCycleWithTenants:
         await proxy.db.insert_messages([
             {
                 "id": "msg-a1",
+                "tenant_id": "tenant-a",
                 "account_id": "account-a",
                 "payload": {"from": "a@test.com", "to": ["b@test.com"], "subject": "A1"},
             },
             {
                 "id": "msg-b1",
+                "tenant_id": "tenant-b",
                 "account_id": "account-b",
                 "payload": {"from": "x@test.com", "to": ["y@test.com"], "subject": "B1"},
             },
@@ -527,6 +532,7 @@ class TestProcessClientCycleWithTenants:
         })
         await proxy.db.insert_messages([{
             "id": "msg-no-url",
+            "tenant_id": "tenant-no-url",
             "account_id": "account-no-url",
             "payload": {"from": "a@test.com", "to": ["b@test.com"], "subject": "Test"},
         }])

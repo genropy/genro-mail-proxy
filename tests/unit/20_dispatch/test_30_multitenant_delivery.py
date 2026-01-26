@@ -244,25 +244,28 @@ async def test_process_client_cycle_routes_to_tenants(tmp_path):
     })
 
     # Insert messages for each tenant
-    await core.db.insert_messages([
+    inserted = await core.db.insert_messages([
         {
             "id": "msg1",
+            "tenant_id": "tenant1",
             "account_id": "acc1",
             "priority": 2,
             "payload": {"from": "a@1.com", "to": ["b@1.com"], "subject": "T1"},
         },
         {
             "id": "msg2",
+            "tenant_id": "tenant2",
             "account_id": "acc2",
             "priority": 2,
             "payload": {"from": "a@2.com", "to": ["b@2.com"], "subject": "T2"},
         },
     ])
+    pk_map = {m["id"]: m["pk"] for m in inserted}
 
     # Mark messages as sent
     sent_ts = core._utc_now_epoch()
-    await core.db.mark_sent("msg1", sent_ts)
-    await core.db.mark_sent("msg2", sent_ts)
+    await core.db.mark_sent(pk_map["msg1"], "msg1", sent_ts)
+    await core.db.mark_sent(pk_map["msg2"], "msg2", sent_ts)
 
     with aioresponses() as m:
         # New protocol: response with sent/error/not_found lists
@@ -299,15 +302,16 @@ async def test_process_client_cycle_fallback_global(tmp_path):
         "port": 587,
     })
 
-    await core.db.insert_messages([{
+    inserted = await core.db.insert_messages([{
         "id": "msg-fallback",
+        "tenant_id": "no-url-tenant",
         "account_id": "acc-no-url",
         "priority": 2,
         "payload": {"from": "a@x.com", "to": ["b@x.com"], "subject": "Fallback"},
     }])
 
     sent_ts = core._utc_now_epoch()
-    await core.db.mark_sent("msg-fallback", sent_ts)
+    await core.db.mark_sent(inserted[0]["pk"], "msg-fallback", sent_ts)
 
     with aioresponses() as m:
         m.post("https://global.fallback.com/sync", status=200, payload={"ok": True})
@@ -338,25 +342,41 @@ async def test_process_client_cycle_mixed_tenants(tmp_path):
         "port": 587,
     })
 
-    await core.db.insert_messages([
+    # Create a tenant without sync URL for global fallback test
+    await core.db.add_tenant({
+        "id": "no-url-tenant",
+        "client_base_url": None,
+        "active": True,
+    })
+    await core.db.add_account({
+        "id": "acc-no-url",
+        "tenant_id": "no-url-tenant",
+        "host": "smtp.com",
+        "port": 587,
+    })
+
+    inserted = await core.db.insert_messages([
         {
             "id": "msg-with-tenant",
+            "tenant_id": "with-url",
             "account_id": "acc-with",
             "priority": 2,
             "payload": {"from": "a@1.com", "to": ["b@1.com"], "subject": "With"},
         },
         {
-            # Message without account_id uses global fallback
-            "id": "msg-no-account",
-            "account_id": None,
+            # Message with tenant that has no sync URL uses global fallback
+            "id": "msg-no-url",
+            "tenant_id": "no-url-tenant",
+            "account_id": "acc-no-url",
             "priority": 2,
             "payload": {"from": "a@2.com", "to": ["b@2.com"], "subject": "Without"},
         },
     ])
+    pk_map = {m["id"]: m["pk"] for m in inserted}
 
     sent_ts = core._utc_now_epoch()
-    await core.db.mark_sent("msg-with-tenant", sent_ts)
-    await core.db.mark_sent("msg-no-account", sent_ts)
+    await core.db.mark_sent(pk_map["msg-with-tenant"], "msg-with-tenant", sent_ts)
+    await core.db.mark_sent(pk_map["msg-no-url"], "msg-no-url", sent_ts)
 
     with aioresponses() as m:
         m.post("https://api.with-url.com/sync", status=200, payload={"ok": True})
@@ -401,24 +421,27 @@ async def test_process_client_cycle_partial_failure(tmp_path):
         "port": 587,
     })
 
-    await core.db.insert_messages([
+    inserted = await core.db.insert_messages([
         {
             "id": "msg-success",
+            "tenant_id": "success-tenant",
             "account_id": "acc-success",
             "priority": 2,
             "payload": {"from": "a@s.com", "to": ["b@s.com"], "subject": "S"},
         },
         {
             "id": "msg-fail",
+            "tenant_id": "fail-tenant",
             "account_id": "acc-fail",
             "priority": 2,
             "payload": {"from": "a@f.com", "to": ["b@f.com"], "subject": "F"},
         },
     ])
+    pk_map = {m["id"]: m["pk"] for m in inserted}
 
     sent_ts = core._utc_now_epoch()
-    await core.db.mark_sent("msg-success", sent_ts)
-    await core.db.mark_sent("msg-fail", sent_ts)
+    await core.db.mark_sent(pk_map["msg-success"], "msg-success", sent_ts)
+    await core.db.mark_sent(pk_map["msg-fail"], "msg-fail", sent_ts)
 
     with aioresponses() as m:
         m.post("https://api.success.com/sync", status=200, payload={"ok": True})

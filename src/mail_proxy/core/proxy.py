@@ -596,14 +596,17 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
                     priority, _ = self._normalise_priority(item.get("priority"), default_priority_value)
                     entry = {
                         "id": msg_id,
+                        "tenant_id": item.get("tenant_id"),
                         "account_id": item.get("account_id"),
                         "priority": priority,
                         "payload": item,
                         "deferred_ts": None,
                         "batch_code": item.get("batch_code"),
                     }
-                    await self.db.insert_messages([entry])
-                    await self.db.mark_error(msg_id, now_ts, reason)
+                    inserted_items = await self.db.insert_messages([entry])
+                    if inserted_items:
+                        pk = inserted_items[0]["pk"]
+                        await self.db.mark_error(pk, msg_id, now_ts, reason or "validation error")
                     rejected_for_sync.append({
                         "id": msg_id,
                         "status": "error",
@@ -620,12 +623,24 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
             validated.append(item)
 
         entries = []
-        inserted = []
+        inserted: list[dict[str, str]] = []
 
         if validated:
+            # Build account_id -> tenant_id mapping for messages without explicit tenant_id
+            account_tenant_map: dict[str, str] = {}
+            for msg in validated:
+                account_id = msg.get("account_id")
+                if account_id and not msg.get("tenant_id") and account_id not in account_tenant_map:
+                    try:
+                        account = await self.db.get_account(account_id)
+                        account_tenant_map[account_id] = account.get("tenant_id")
+                    except Exception:
+                        pass  # Account not found - will be caught by insert_messages
+
             entries = [
                 {
                     "id": msg["id"],
+                    "tenant_id": msg.get("tenant_id") or account_tenant_map.get(msg.get("account_id")),
                     "account_id": msg.get("account_id"),
                     "priority": int(msg["priority"]),
                     "payload": msg,
@@ -636,8 +651,9 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
             ]
             inserted = await self.db.insert_messages(entries)
             # Messages not inserted were already sent (sent_ts IS NOT NULL)
+            inserted_ids = {item["id"] for item in inserted}
             for msg in validated:
-                if msg["id"] not in inserted:
+                if msg["id"] not in inserted_ids:
                     rejected.append({"id": msg["id"], "reason": "already sent"})
 
         await self._refresh_queue_gauge()
@@ -647,7 +663,7 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
             for event in rejected_for_sync:
                 await self._publish_result(event)
 
-        queued_count = len([mid for mid in inserted if mid])
+        queued_count = len(inserted)
         # ok is False only if ALL messages were rejected due to validation errors
         # (not for "already sent" which is a normal case)
         validation_failures = [r for r in rejected if r.get("reason") != "already sent"]

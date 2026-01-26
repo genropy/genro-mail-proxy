@@ -32,11 +32,14 @@ async def db_with_message(db: MailProxyDb):
         "user": "test",
         "password": "test",
     })
-    await db.insert_messages([{
+    inserted = await db.insert_messages([{
         "id": "msg-001",
+        "tenant_id": "test-tenant",
         "account_id": "test-account",
         "payload": {"from": "a@test.com", "to": ["b@test.com"], "subject": "Test"},
     }])
+    # Store pk on db for tests that need it
+    db._test_pk = inserted[0]["pk"]
     return db
 
 
@@ -179,7 +182,8 @@ class TestDbMethodsCreateEvents:
     @pytest.mark.asyncio
     async def test_mark_sent_creates_event(self, db_with_message: MailProxyDb):
         """mark_sent should create a 'sent' event."""
-        await db_with_message.mark_sent("msg-001", 1700000000)
+        pk = db_with_message._test_pk
+        await db_with_message.mark_sent(pk, "msg-001", 1700000000)
 
         events = await db_with_message.get_events_for_message("msg-001")
         assert len(events) == 1
@@ -189,7 +193,8 @@ class TestDbMethodsCreateEvents:
     @pytest.mark.asyncio
     async def test_mark_error_creates_event(self, db_with_message: MailProxyDb):
         """mark_error should create an 'error' event."""
-        await db_with_message.mark_error("msg-001", 1700000000, "SMTP error 550")
+        pk = db_with_message._test_pk
+        await db_with_message.mark_error(pk, "msg-001", 1700000000, "SMTP error 550")
 
         events = await db_with_message.get_events_for_message("msg-001")
         assert len(events) == 1
@@ -199,7 +204,8 @@ class TestDbMethodsCreateEvents:
     @pytest.mark.asyncio
     async def test_set_deferred_creates_event(self, db_with_message: MailProxyDb):
         """set_deferred should create a 'deferred' event."""
-        await db_with_message.set_deferred("msg-001", 1700000060, "Rate limit")
+        pk = db_with_message._test_pk
+        await db_with_message.set_deferred(pk, "msg-001", 1700000060, "Rate limit")
 
         events = await db_with_message.get_events_for_message("msg-001")
         assert len(events) == 1

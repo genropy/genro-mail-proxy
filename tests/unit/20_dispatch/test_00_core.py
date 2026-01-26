@@ -216,6 +216,7 @@ async def test_add_messages_and_dispatch(tmp_path):
         "messages": [
             {
                 "id": "msg1",
+                "tenant_id": "test-tenant",
                 "account_id": "acc",
                 "from": "sender@example.com",
                 "to": ["dest@example.com"],
@@ -295,7 +296,7 @@ async def test_add_messages_partial_rejection_returns_ok_true(tmp_path):
     payload = {
         "messages": [
             # Valid message
-            {"id": "valid1", "account_id": "acc", "from": "a@x.com", "to": ["b@x.com"], "subject": "OK", "body": "Body"},
+            {"id": "valid1", "tenant_id": "test-tenant", "account_id": "acc", "from": "a@x.com", "to": ["b@x.com"], "subject": "OK", "body": "Body"},
             # Invalid - missing id
             {"from": "c@x.com", "to": ["d@x.com"], "subject": "No ID", "body": "Body"},
             # Invalid - missing id
@@ -314,6 +315,7 @@ async def test_duplicate_messages_rejected(tmp_path):
     core = await make_core(tmp_path)
     base_msg = {
         "id": "dup",
+        "tenant_id": "test-tenant",
         "account_id": "acc",
         "from": "sender@example.com",
         "to": ["dest@example.com"],
@@ -354,6 +356,7 @@ async def test_rate_limited_message_is_deferred(tmp_path):
         "messages": [
             {
                 "id": "msg-defer",
+                "tenant_id": "test-tenant",
                 "account_id": "acc",
                 "from": "sender@example.com",
                 "to": ["dest@example.com"],
@@ -378,6 +381,7 @@ async def test_send_failure_sets_error(tmp_path):
         "messages": [
             {
                 "id": "msg-error",
+                "tenant_id": "test-tenant",
                 "account_id": "acc",
                 "from": "sender@example.com",
                 "to": ["dest@example.com"],
@@ -411,6 +415,7 @@ async def test_temporary_error_retry_exhaustion(tmp_path):
         "messages": [
             {
                 "id": "msg-retry-exhausted",
+                "tenant_id": "test-tenant",
                 "account_id": "acc",
                 "from": "sender@example.com",
                 "to": ["dest@example.com"],
@@ -419,14 +424,16 @@ async def test_temporary_error_retry_exhaustion(tmp_path):
             }
         ]
     }
-    await core.handle_command("addMessages", payload)
+    result = await core.handle_command("addMessages", payload)
 
     # Simulate 4 attempts (initial + 3 retries)
     for attempt in range(4):
         # If not the first attempt, clear deferred_ts to make message ready for processing
         if attempt > 0:
-            # Clear deferred_ts so the message is immediately ready
-            await core.db.clear_deferred("msg-retry-exhausted")
+            # Get the message and clear deferred_ts so the message is immediately ready
+            msg = await core.db.get_message("msg-retry-exhausted")
+            if msg:
+                await core.db.clear_deferred(msg["pk"])
 
         # Process the SMTP cycle
         processed = await core._process_smtp_cycle()
@@ -469,6 +476,7 @@ async def test_permanent_error_no_retry(tmp_path):
         "messages": [
             {
                 "id": "msg-permanent",
+                "tenant_id": "test-tenant",
                 "account_id": "acc",
                 "from": "sender@example.com",
                 "to": ["dest@example.com"],
@@ -505,6 +513,7 @@ async def test_batch_size_per_account_limiting(tmp_path):
     for i in range(5):
         messages.append({
             "id": f"msg-acc-{i}",
+            "tenant_id": "test-tenant",
             "account_id": "acc",
             "from": "sender@example.com",
             "to": ["dest@example.com"],
@@ -547,6 +556,7 @@ async def test_batch_size_per_account_multiple_accounts(tmp_path):
     for i in range(3):
         messages.append({
             "id": f"msg-acc-{i}",
+            "tenant_id": "test-tenant",
             "account_id": "acc",
             "from": "sender@example.com",
             "to": ["dest@example.com"],
@@ -555,6 +565,7 @@ async def test_batch_size_per_account_multiple_accounts(tmp_path):
         })
         messages.append({
             "id": f"msg-acc2-{i}",
+            "tenant_id": "test-tenant",
             "account_id": "acc2",
             "from": "sender@example.com",
             "to": ["dest@example.com"],
@@ -593,6 +604,7 @@ async def test_batch_size_per_account_override(tmp_path):
     for i in range(3):
         messages.append({
             "id": f"msg-acc-{i}",
+            "tenant_id": "test-tenant",
             "account_id": "acc",
             "from": "sender@example.com",
             "to": ["dest@example.com"],
@@ -601,6 +613,7 @@ async def test_batch_size_per_account_override(tmp_path):
         })
         messages.append({
             "id": f"msg-acc2-{i}",
+            "tenant_id": "test-tenant",
             "account_id": "acc2",
             "from": "sender@example.com",
             "to": ["dest@example.com"],
@@ -638,6 +651,7 @@ async def test_cleanup_messages_command(tmp_path):
         "messages": [
             {
                 "id": "msg-cleanup",
+                "tenant_id": "test-tenant",
                 "account_id": "acc",
                 "from": "sender@example.com",
                 "to": ["dest@example.com"],
@@ -699,6 +713,7 @@ async def test_mime_type_override_in_attachment(tmp_path):
         "messages": [
             {
                 "id": "msg-mime-override",
+                "tenant_id": "test-tenant",
                 "account_id": "acc",
                 "from": "sender@example.com",
                 "to": ["dest@example.com"],
@@ -755,6 +770,7 @@ async def test_mime_type_fallback_when_not_specified(tmp_path):
         "messages": [
             {
                 "id": "msg-mime-guess",
+                "tenant_id": "test-tenant",
                 "account_id": "acc",
                 "from": "sender@example.com",
                 "to": ["dest@example.com"],
@@ -832,6 +848,7 @@ async def test_tenant_attachment_config_applied(tmp_path):
         "messages": [
             {
                 "id": "msg-tenant-att",
+                "tenant_id": "tenant1",
                 "account_id": "tenant1-acc",
                 "from": "sender@tenant1.com",
                 "to": ["dest@example.com"],
@@ -897,6 +914,7 @@ async def test_tenant_attachment_config_fallback_to_global(tmp_path):
         "messages": [
             {
                 "id": "msg-fallback",
+                "tenant_id": "tenant-no-config",
                 "account_id": "tenant-no-config-acc",
                 "from": "sender@example.com",
                 "to": ["dest@example.com"],
@@ -1032,6 +1050,7 @@ async def test_message_without_account_uses_default(tmp_path):
     payload = {
         "messages": [{
             "id": "msg-no-account",
+            "tenant_id": "test-tenant",
             "from": "sender@example.com",
             "to": ["dest@example.com"],
             "subject": "No Account",
@@ -1060,6 +1079,7 @@ async def test_parallel_dispatch_multiple_messages(tmp_path):
     for i in range(5):
         messages.append({
             "id": f"parallel-msg-{i}",
+            "tenant_id": "test-tenant",
             "account_id": "acc",
             "from": "sender@example.com",
             "to": ["dest@example.com"],
@@ -1138,11 +1158,11 @@ async def test_priority_immediate_processed_first(tmp_path):
 
     # Add messages: some regular, some immediate
     messages = [
-        {"id": "regular1", "account_id": "acc", "priority": 2, "from": "a@x.com", "to": ["b@x.com"], "subject": "r1", "body": "r1"},
-        {"id": "regular2", "account_id": "acc", "priority": 2, "from": "a@x.com", "to": ["b@x.com"], "subject": "r2", "body": "r2"},
-        {"id": "immediate1", "account_id": "acc", "priority": 0, "from": "a@x.com", "to": ["b@x.com"], "subject": "i1", "body": "i1"},
-        {"id": "regular3", "account_id": "acc", "priority": 3, "from": "a@x.com", "to": ["b@x.com"], "subject": "r3", "body": "r3"},
-        {"id": "immediate2", "account_id": "acc", "priority": 0, "from": "a@x.com", "to": ["b@x.com"], "subject": "i2", "body": "i2"},
+        {"id": "regular1", "tenant_id": "test-tenant", "account_id": "acc", "priority": 2, "from": "a@x.com", "to": ["b@x.com"], "subject": "r1", "body": "r1"},
+        {"id": "regular2", "tenant_id": "test-tenant", "account_id": "acc", "priority": 2, "from": "a@x.com", "to": ["b@x.com"], "subject": "r2", "body": "r2"},
+        {"id": "immediate1", "tenant_id": "test-tenant", "account_id": "acc", "priority": 0, "from": "a@x.com", "to": ["b@x.com"], "subject": "i1", "body": "i1"},
+        {"id": "regular3", "tenant_id": "test-tenant", "account_id": "acc", "priority": 3, "from": "a@x.com", "to": ["b@x.com"], "subject": "r3", "body": "r3"},
+        {"id": "immediate2", "tenant_id": "test-tenant", "account_id": "acc", "priority": 0, "from": "a@x.com", "to": ["b@x.com"], "subject": "i2", "body": "i2"},
     ]
     await core.handle_command("addMessages", {"messages": messages})
 

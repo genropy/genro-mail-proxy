@@ -171,6 +171,7 @@ async def test_send_email_via_real_smtp(tmp_path, smtp_server, smtp_handler):
     await core.handle_command("addMessages", {
         "messages": [{
             "id": "msg1",
+            "tenant_id": "test-tenant",
             "account_id": "test-smtp",
             "from": "sender@test.com",
             "to": ["recipient@test.com"],
@@ -204,6 +205,7 @@ async def test_send_email_with_multiple_recipients(tmp_path, smtp_server, smtp_h
     await core.handle_command("addMessages", {
         "messages": [{
             "id": "msg-multi",
+            "tenant_id": "test-tenant",
             "account_id": "test-smtp",
             "from": "sender@test.com",
             "to": ["alice@test.com", "bob@test.com"],
@@ -231,6 +233,7 @@ async def test_send_html_email(tmp_path, smtp_server, smtp_handler):
     await core.handle_command("addMessages", {
         "messages": [{
             "id": "msg-html",
+            "tenant_id": "test-tenant",
             "account_id": "test-smtp",
             "from": "sender@test.com",
             "to": ["recipient@test.com"],
@@ -261,6 +264,7 @@ async def test_smtp_rejection_marks_error(tmp_path, smtp_server, smtp_handler):
     await core.handle_command("addMessages", {
         "messages": [{
             "id": "msg-reject",
+            "tenant_id": "test-tenant",
             "account_id": "test-smtp",
             "from": "sender@test.com",
             "to": ["nonexistent@test.com"],
@@ -298,6 +302,7 @@ async def test_smtp_temporary_error_defers(tmp_path, smtp_server, smtp_handler):
     await core.handle_command("addMessages", {
         "messages": [{
             "id": "msg-temp-err",
+            "tenant_id": "test-tenant",
             "account_id": "test-smtp",
             "from": "sender@test.com",
             "to": ["recipient@test.com"],
@@ -324,6 +329,7 @@ async def test_send_multiple_messages_batch(tmp_path, smtp_server, smtp_handler)
     for i in range(5):
         messages.append({
             "id": f"batch-msg-{i}",
+            "tenant_id": "test-tenant",
             "account_id": "test-smtp",
             "from": "sender@test.com",
             "to": [f"recipient{i}@test.com"],
@@ -412,6 +418,7 @@ async def test_multitenant_smtp_dispatch(tmp_path, smtp_handler):
             "messages": [
                 {
                     "id": "tenant1-msg",
+                    "tenant_id": "tenant1",
                     "account_id": "tenant1-smtp",
                     "from": "sender@tenant1.com",
                     "to": ["user@example.com"],
@@ -420,6 +427,7 @@ async def test_multitenant_smtp_dispatch(tmp_path, smtp_handler):
                 },
                 {
                     "id": "tenant2-msg",
+                    "tenant_id": "tenant2",
                     "account_id": "tenant2-smtp",
                     "from": "sender@tenant2.com",
                     "to": ["user@example.com"],
@@ -456,6 +464,7 @@ async def test_smtp_connection_reuse(tmp_path, smtp_server, smtp_handler):
         await core.handle_command("addMessages", {
             "messages": [{
                 "id": f"reuse-msg-{i}",
+                "tenant_id": "test-tenant",
                 "account_id": "test-smtp",
                 "from": "sender@test.com",
                 "to": ["recipient@test.com"],
@@ -482,6 +491,7 @@ async def test_smtp_with_custom_headers(tmp_path, smtp_server, smtp_handler):
     await core.handle_command("addMessages", {
         "messages": [{
             "id": "msg-headers",
+            "tenant_id": "test-tenant",
             "account_id": "test-smtp",
             "from": "sender@test.com",
             "to": ["recipient@test.com"],

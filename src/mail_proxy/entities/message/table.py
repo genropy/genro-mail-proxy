@@ -8,13 +8,15 @@ from collections.abc import Iterable, Sequence
 from typing import Any
 
 from ...sql import Integer, String, Table, Timestamp
+from ...uid import get_uuid
 
 
 class MessagesTable(Table):
     """Messages table: email queue with scheduling.
 
     Fields:
-    - id: Message identifier
+    - pk: Internal primary key (autoincrement)
+    - tenant_id, id: Composite unique key for multi-tenant isolation
     - account_id: SMTP account (FK)
     - priority: 1=high, 2=normal, 3=low
     - payload: JSON-encoded message data
@@ -23,14 +25,24 @@ class MessagesTable(Table):
     - smtp_ts: Timestamp when SMTP send was attempted (NULL = not yet attempted)
     - is_pec: PEC flag (1=awaiting PEC receipts, 0=normal email)
 
+    Multi-tenant isolation is enforced via UNIQUE (tenant_id, id).
     Delivery status and reporting are tracked in the message_events table.
     """
 
     name = "messages"
 
+    def create_table_sql(self) -> str:
+        """Generate CREATE TABLE with UNIQUE (tenant_id, id) for multi-tenant isolation."""
+        sql = super().create_table_sql()
+        # Add UNIQUE constraint before final closing parenthesis
+        last_paren = sql.rfind(")")
+        return sql[:last_paren] + ',\n    UNIQUE ("tenant_id", "id")\n)'
+
     def configure(self) -> None:
         c = self.columns
-        c.column("id", String, primary_key=True)
+        c.column("pk", String, primary_key=True)  # get_uuid() generated
+        c.column("id", String, nullable=False)  # message_id from client
+        c.column("tenant_id", String, nullable=False)  # denormalized for isolation
         c.column("account_id", String)
         c.column("priority", Integer, nullable=False, default=2)
         c.column("payload", String, nullable=False)  # JSON but handled specially
@@ -42,22 +54,42 @@ class MessagesTable(Table):
         c.column("is_pec", Integer, default=0)  # PEC flag (1=awaiting receipts)
 
     async def insert_batch(
-        self, entries: Sequence[dict[str, Any]], pec_account_ids: set[str] | None = None
-    ) -> list[str]:
-        """Persist a batch of messages for delivery. Returns list of inserted IDs.
+        self,
+        entries: Sequence[dict[str, Any]],
+        pec_account_ids: set[str] | None = None,
+        tenant_id: str | None = None,
+    ) -> list[dict[str, str]]:
+        """Persist a batch of messages for delivery.
+
+        Returns list of dicts with 'id' (message_id) and 'pk' (internal key)
+        for each successfully inserted message.
 
         Args:
             entries: List of message entries to insert.
             pec_account_ids: Set of account IDs that are PEC accounts.
                 Messages sent via these accounts will have is_pec=1.
+            tenant_id: Tenant ID for multi-tenant isolation. Required unless
+                each entry has its own tenant_id.
+
+        Returns:
+            List of {"id": msg_id, "pk": pk} for inserted messages.
         """
         if not entries:
             return []
 
         pec_accounts = pec_account_ids or set()
-        inserted: list[str] = []
+        inserted: list[dict[str, str]] = []
         for entry in entries:
             msg_id = entry["id"]
+            # Use entry's tenant_id if present, otherwise use the parameter
+            entry_tenant_id = entry.get("tenant_id") or tenant_id
+            if not entry_tenant_id:
+                # Skip entries without tenant_id
+                continue
+
+            # Generate internal pk
+            pk = get_uuid()
+
             payload = json.dumps(entry["payload"])
             account_id = entry.get("account_id")
             priority = int(entry.get("priority", 2))
@@ -68,9 +100,9 @@ class MessagesTable(Table):
 
             rowcount = await self.execute(
                 """
-                INSERT INTO messages (id, account_id, priority, payload, batch_code, deferred_ts, is_pec)
-                VALUES (:id, :account_id, :priority, :payload, :batch_code, :deferred_ts, :is_pec)
-                ON CONFLICT(id) DO UPDATE SET
+                INSERT INTO messages (pk, id, tenant_id, account_id, priority, payload, batch_code, deferred_ts, is_pec)
+                VALUES (:pk, :id, :tenant_id, :account_id, :priority, :payload, :batch_code, :deferred_ts, :is_pec)
+                ON CONFLICT(tenant_id, id) DO UPDATE SET
                     account_id = excluded.account_id,
                     priority = excluded.priority,
                     payload = excluded.payload,
@@ -81,7 +113,9 @@ class MessagesTable(Table):
                 WHERE messages.smtp_ts IS NULL
                 """,
                 {
+                    "pk": pk,
                     "id": msg_id,
+                    "tenant_id": entry_tenant_id,
                     "account_id": account_id,
                     "priority": priority,
                     "payload": payload,
@@ -92,7 +126,7 @@ class MessagesTable(Table):
             )
 
             if rowcount:
-                inserted.append(msg_id)
+                inserted.append({"id": msg_id, "pk": pk})
 
         return inserted
 
@@ -147,74 +181,96 @@ class MessagesTable(Table):
         conditions.append(suspension_filter)
 
         query = f"""
-            SELECT m.id, m.account_id, m.priority, m.payload, m.batch_code, m.deferred_ts, m.is_pec
+            SELECT m.pk, m.id, m.tenant_id, m.account_id, m.priority, m.payload, m.batch_code, m.deferred_ts, m.is_pec
             FROM messages m
             LEFT JOIN accounts a ON m.account_id = a.id
             LEFT JOIN tenants t ON a.tenant_id = t.id
             WHERE {' AND '.join(conditions)}
-            ORDER BY m.priority ASC, m.created_at ASC, m.id ASC
+            ORDER BY m.priority ASC, m.created_at ASC, m.pk ASC
             LIMIT :limit
         """
 
         rows = await self.db.adapter.fetch_all(query, params)
         return [self._decode_payload(row) for row in rows]
 
-    async def set_deferred(self, msg_id: str, deferred_ts: int) -> None:
+    async def set_deferred(self, pk: str, deferred_ts: int) -> None:
         """Put message back in queue for retry at deferred_ts.
 
         Resets smtp_ts to NULL so the message becomes "pending" again.
+
+        Args:
+            pk: Internal primary key of the message (UUID string).
+            deferred_ts: Timestamp when message can be retried.
         """
         await self.execute(
             """
             UPDATE messages
             SET deferred_ts = :deferred_ts, smtp_ts = NULL, updated_at = CURRENT_TIMESTAMP
-            WHERE id = :msg_id
+            WHERE pk = :pk
             """,
-            {"deferred_ts": deferred_ts, "msg_id": msg_id},
+            {"deferred_ts": deferred_ts, "pk": pk},
         )
 
-    async def clear_deferred(self, msg_id: str) -> None:
-        """Clear the deferred timestamp for a message."""
+    async def clear_deferred(self, pk: str) -> None:
+        """Clear the deferred timestamp for a message.
+
+        Args:
+            pk: Internal primary key of the message (UUID string).
+        """
         await self.execute(
             """
             UPDATE messages
             SET deferred_ts = NULL, updated_at = CURRENT_TIMESTAMP
-            WHERE id = :msg_id
+            WHERE pk = :pk
             """,
-            {"msg_id": msg_id},
+            {"pk": pk},
         )
 
-    async def mark_sent(self, msg_id: str, smtp_ts: int) -> None:
-        """Mark a message as processed (SMTP attempted successfully)."""
+    async def mark_sent(self, pk: str, smtp_ts: int) -> None:
+        """Mark a message as processed (SMTP attempted successfully).
+
+        Args:
+            pk: Internal primary key of the message (UUID string).
+            smtp_ts: Timestamp when SMTP send was attempted.
+        """
         await self.execute(
             """
             UPDATE messages
             SET smtp_ts = :smtp_ts, deferred_ts = NULL, updated_at = CURRENT_TIMESTAMP
-            WHERE id = :msg_id
+            WHERE pk = :pk
             """,
-            {"smtp_ts": smtp_ts, "msg_id": msg_id},
+            {"smtp_ts": smtp_ts, "pk": pk},
         )
 
-    async def mark_error(self, msg_id: str, smtp_ts: int) -> None:
-        """Mark a message as processed (SMTP attempted with error)."""
+    async def mark_error(self, pk: str, smtp_ts: int) -> None:
+        """Mark a message as processed (SMTP attempted with error).
+
+        Args:
+            pk: Internal primary key of the message (UUID string).
+            smtp_ts: Timestamp when SMTP send was attempted.
+        """
         await self.execute(
             """
             UPDATE messages
             SET smtp_ts = :smtp_ts, deferred_ts = NULL, updated_at = CURRENT_TIMESTAMP
-            WHERE id = :msg_id
+            WHERE pk = :pk
             """,
-            {"smtp_ts": smtp_ts, "msg_id": msg_id},
+            {"smtp_ts": smtp_ts, "pk": pk},
         )
 
-    async def clear_pec_flag(self, msg_id: str) -> None:
-        """Clear the is_pec flag when recipient is not a PEC address."""
+    async def clear_pec_flag(self, pk: str) -> None:
+        """Clear the is_pec flag when recipient is not a PEC address.
+
+        Args:
+            pk: Internal primary key of the message (UUID string).
+        """
         await self.execute(
             """
             UPDATE messages
             SET is_pec = 0, updated_at = CURRENT_TIMESTAMP
-            WHERE id = :msg_id
+            WHERE pk = :pk
             """,
-            {"msg_id": msg_id},
+            {"pk": pk},
         )
 
     async def get_pec_without_acceptance(self, cutoff_ts: int) -> list[dict[str, Any]]:
@@ -242,30 +298,70 @@ class MessagesTable(Table):
         )
         return [dict(row) for row in rows]
 
-    async def update_payload(self, msg_id: str, payload: dict[str, Any]) -> None:
-        """Update the payload field of a message."""
+    async def update_payload(self, pk: str, payload: dict[str, Any]) -> None:
+        """Update the payload field of a message.
+
+        Args:
+            pk: Internal primary key of the message (UUID string).
+            payload: New payload data.
+        """
         await self.execute(
             """
             UPDATE messages
             SET payload = :payload, updated_at = CURRENT_TIMESTAMP
-            WHERE id = :msg_id
+            WHERE pk = :pk
             """,
-            {"payload": json.dumps(payload), "msg_id": msg_id},
+            {"payload": json.dumps(payload), "pk": pk},
         )
 
-    async def get(self, msg_id: str) -> dict[str, Any] | None:
-        """Get a single message by ID. Returns None if not found."""
+    async def get(self, msg_id: str, tenant_id: str | None = None) -> dict[str, Any] | None:
+        """Get a single message by ID. Returns None if not found.
+
+        Args:
+            msg_id: Client-provided message ID.
+            tenant_id: Optional tenant ID for multi-tenant lookup.
+                If not provided, returns first match (use with caution).
+        """
+        if tenant_id:
+            row = await self.db.adapter.fetch_one(
+                "SELECT * FROM messages WHERE tenant_id = :tenant_id AND id = :id",
+                {"tenant_id": tenant_id, "id": msg_id},
+            )
+        else:
+            row = await self.db.adapter.fetch_one(
+                "SELECT * FROM messages WHERE id = :id",
+                {"id": msg_id},
+            )
+        if row is None:
+            return None
+        return self._decode_payload(row)
+
+    async def get_by_pk(self, pk: str) -> dict[str, Any] | None:
+        """Get a single message by internal primary key.
+
+        Args:
+            pk: Internal primary key (UUID string).
+        """
         row = await self.db.adapter.fetch_one(
-            "SELECT * FROM messages WHERE id = :id",
-            {"id": msg_id},
+            "SELECT * FROM messages WHERE pk = :pk",
+            {"pk": pk},
         )
         if row is None:
             return None
         return self._decode_payload(row)
 
-    async def remove(self, msg_id: str) -> bool:
-        """Remove a message regardless of its state. Returns True if deleted."""
-        rowcount = await self.delete(where={"id": msg_id})
+    async def remove(self, msg_id: str, tenant_id: str | None = None) -> bool:
+        """Remove a message regardless of its state. Returns True if deleted.
+
+        Args:
+            msg_id: Client-provided message ID.
+            tenant_id: Optional tenant ID for multi-tenant deletion.
+                If not provided, deletes first match (use with caution).
+        """
+        if tenant_id:
+            rowcount = await self.delete(where={"tenant_id": tenant_id, "id": msg_id})
+        else:
+            rowcount = await self.delete(where={"id": msg_id})
         return rowcount > 0
 
     async def purge_for_account(self, account_id: str) -> None:
