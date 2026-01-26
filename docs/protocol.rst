@@ -340,31 +340,51 @@ initiates another sync cycle without waiting for the normal interval
 This design allows the client to submit messages in controlled batches while
 the proxy orchestrates the timing.
 
-.. mermaid::
-   :caption: Bidirectional sync with message submission
+.. code-block:: text
 
-   sequenceDiagram
-     participant Proxy as MailProxy
-     participant Client as Client Application
+   Bidirectional Sync Flow
+   =======================
 
-     Note over Proxy,Client: Sync cycle starts
-     Proxy->>Client: POST sync_endpoint {delivery_report: [...]}
-     Client->>Client: Process reports, check outbox
-     Client-->>Proxy: {ok: true, queued: 10}
-
-     Note over Client: Client has 10 messages to send
-     Client->>Proxy: POST /add-messages (batch of 5)
-     Proxy-->>Client: {ok: true, queued: 5}
-
-     Note over Proxy: queued > 0, immediate resync
-     Proxy->>Client: POST sync_endpoint {delivery_report: [...]}
-     Client-->>Proxy: {ok: true, queued: 5}
-     Client->>Proxy: POST /add-messages (batch of 5)
-     Proxy-->>Client: {ok: true, queued: 5}
-
-     Proxy->>Client: POST sync_endpoint {delivery_report: [...]}
-     Client-->>Proxy: {ok: true, queued: 0}
-     Note over Proxy: queued == 0, wait for interval
+   ┌───────────┐                              ┌────────────────┐
+   │   Proxy   │                              │     Client     │
+   └─────┬─────┘                              └───────┬────────┘
+         │                                            │
+         │  1. POST /sync {delivery_report: [...]}    │
+         │ ─────────────────────────────────────────► │
+         │                                            │
+         │                          Process reports,  │
+         │                          check outbox      │
+         │                                            │
+         │  2. Response {ok: true, queued: 10}        │
+         │ ◄───────────────────────────────────────── │
+         │                                            │
+         │                                            │  3. POST /add-messages
+         │ ◄───────────────────────────────────────── │     (batch of 5)
+         │                                            │
+         │  ┌─────────────────────────────────────┐   │
+         │  │ queued > 0 → immediate resync       │   │
+         │  └─────────────────────────────────────┘   │
+         │                                            │
+         │  4. POST /sync {delivery_report: [...]}    │
+         │ ─────────────────────────────────────────► │
+         │                                            │
+         │  5. Response {ok: true, queued: 5}         │
+         │ ◄───────────────────────────────────────── │
+         │                                            │
+         │                                            │  6. POST /add-messages
+         │ ◄───────────────────────────────────────── │     (batch of 5)
+         │                                            │
+         │  7. POST /sync {delivery_report: [...]}    │
+         │ ─────────────────────────────────────────► │
+         │                                            │
+         │  8. Response {ok: true, queued: 0}         │
+         │ ◄───────────────────────────────────────── │
+         │                                            │
+         │  ┌─────────────────────────────────────┐   │
+         │  │ queued == 0 → wait for interval     │   │
+         │  └─────────────────────────────────────┘   │
+         │                                            │
+         ▼                                            ▼
 
 Client implementation example
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
