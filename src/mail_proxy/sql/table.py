@@ -110,6 +110,26 @@ class Table:
         except Exception:
             pass  # Column already exists
 
+    async def sync_schema(self) -> None:
+        """Sync table schema by adding any missing columns.
+
+        Iterates over all columns defined in configure() and adds them
+        if they don't exist in the database. This enables automatic
+        schema migration when new columns are added to the codebase.
+
+        Safe to call on every startup - existing columns are ignored.
+        Works with both SQLite and PostgreSQL.
+        """
+        for col in self.columns.values():
+            if col.primary_key:
+                continue  # Skip primary key, it's created with the table
+            try:
+                await self.db.adapter.execute(
+                    f"ALTER TABLE {self.name} ADD COLUMN {col.to_sql()}"
+                )
+            except Exception:
+                pass  # Column already exists
+
     # -------------------------------------------------------------------------
     # JSON Encoding/Decoding
     # -------------------------------------------------------------------------

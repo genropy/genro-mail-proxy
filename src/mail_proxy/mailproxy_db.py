@@ -93,24 +93,21 @@ class MailProxyDb(SqlDb):
         return self.table("instance")  # type: ignore[return-value]
 
     async def init_db(self) -> None:
-        """Initialize database: connect, create schema, run migrations."""
+        """Initialize database: connect, create schema, run migrations.
+
+        After creating tables, sync_schema() is called on each table to add
+        any columns that may be missing from older database versions. This
+        enables automatic schema migration when new columns are added.
+        """
         await self.connect()
         await self.check_structure()
 
-        # Run migrations for existing databases
-        for col in ["use_tls", "batch_size", "tenant_id", "updated_at"]:
-            await self.accounts.add_column_if_missing(col)
-
-        await self.tenants.add_column_if_missing("large_file_config")
-
-        # PEC/IMAP columns for accounts table (v0.6.0+)
-        for col in ["is_pec_account", "imap_host", "imap_port", "imap_user",
-                    "imap_password", "imap_folder", "imap_last_uid",
-                    "imap_last_sync", "imap_uidvalidity"]:
-            await self.accounts.add_column_if_missing(col)
-
-        # PEC flag for messages table (v0.6.0+)
-        await self.messages.add_column_if_missing("is_pec")
+        # Sync schema for all tables - adds any missing columns automatically
+        await self.tenants.sync_schema()
+        await self.accounts.sync_schema()
+        await self.messages.sync_schema()
+        await self.message_events.sync_schema()
+        await self.send_log.sync_schema()
 
     # -------------------------------------------------------------------------
     # Tenants
