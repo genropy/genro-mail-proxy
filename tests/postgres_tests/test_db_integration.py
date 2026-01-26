@@ -300,7 +300,7 @@ class TestUpsertBehavior:
         # Mark as sent
         import time
         sent_ts = int(time.time())
-        await messages.mark_sent(pk, "msg-to-preserve", sent_ts)
+        await messages.mark_sent(pk, sent_ts)
 
         # Try to upsert - should not overwrite
         result = await messages.insert_batch([{

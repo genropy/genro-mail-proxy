@@ -228,8 +228,8 @@ class DispatcherMixin:
             email_msg, envelope_from = await self._build_email(message)
         except KeyError as exc:
             reason = f"missing {exc}"
-            if pk and msg_id:
-                await self.db.mark_error(pk, msg_id, now_ts, reason)
+            if pk:
+                await self.db.mark_error(pk, now_ts, reason)
             await self._publish_result(
                 {
                     "id": msg_id,
@@ -243,8 +243,8 @@ class DispatcherMixin:
         except ValueError as exc:
             # Attachment fetch failure or other validation error
             reason = str(exc)
-            if pk and msg_id:
-                await self.db.mark_error(pk, msg_id, now_ts, reason)
+            if pk:
+                await self.db.mark_error(pk, now_ts, reason)
             await self._publish_result(
                 {
                     "id": msg_id,
@@ -292,8 +292,8 @@ class DispatcherMixin:
             host, port, user, password, acc = await self._resolve_account(account_id)
         except AccountConfigurationError as exc:
             error_ts = self._utc_now_epoch()
-            if pk and msg_id:
-                await self.db.mark_error(pk, msg_id, error_ts, str(exc))
+            if pk:
+                await self.db.mark_error(pk, error_ts, str(exc))
             return {
                 "id": msg_id,
                 "status": "error",
@@ -319,8 +319,8 @@ class DispatcherMixin:
                     resolved_account_id,
                 )
                 error_ts = self._utc_now_epoch()
-                if pk and msg_id:
-                    await self.db.mark_error(pk, msg_id, error_ts, "rate_limit_exceeded")
+                if pk:
+                    await self.db.mark_error(pk, error_ts, "rate_limit_exceeded")
                 return {
                     "id": msg_id,
                     "status": "error",
@@ -332,8 +332,8 @@ class DispatcherMixin:
 
             # Rate limit hit - defer message for later retry (internal scheduling).
             # This is flow control, not an error, so it won't be reported to client.
-            if pk and msg_id:
-                await self.db.set_deferred(pk, msg_id, deferred_until)
+            if pk:
+                await self.db.set_deferred(pk, deferred_until)
             self.metrics.inc_deferred(resolved_account_id)
             self.logger.debug(
                 "Message %s rate-limited for account %s, deferred until %s",
@@ -371,8 +371,8 @@ class DispatcherMixin:
                 # Store updated payload and defer the message
                 if pk:
                     await self.db.update_message_payload(pk, updated_payload)
-                if pk and msg_id:
-                    await self.db.set_deferred(pk, msg_id, deferred_until)
+                if pk:
+                    await self.db.set_deferred(pk, deferred_until)
                 self.metrics.inc_deferred(resolved_account_id)
 
                 # Log the retry attempt
@@ -417,8 +417,8 @@ class DispatcherMixin:
                         error_info,
                     )
 
-                if pk and msg_id:
-                    await self.db.mark_error(pk, msg_id, error_ts, error_info)
+                if pk:
+                    await self.db.mark_error(pk, error_ts, error_info)
                 self.metrics.inc_error(resolved_account_id)
 
                 return {
@@ -432,8 +432,8 @@ class DispatcherMixin:
                 }
 
         sent_ts = self._utc_now_epoch()
-        if pk and msg_id:
-            await self.db.mark_sent(pk, msg_id, sent_ts)
+        if pk:
+            await self.db.mark_sent(pk, sent_ts)
         await self.rate_limiter.log_send(resolved_account_id)
         self.metrics.inc_sent(resolved_account_id)
         return {

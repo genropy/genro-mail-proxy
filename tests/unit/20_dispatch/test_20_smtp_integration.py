@@ -281,7 +281,8 @@ async def test_smtp_rejection_marks_error(tmp_path, smtp_server, smtp_handler):
     assert messages[0]["deferred_ts"] is None  # Not retrying
 
     # Verify error event was recorded
-    events = await core.db.get_events_for_message("msg-reject")
+    pk = messages[0]["pk"]
+    events = await core.db.get_events_for_message(pk)
     error_events = [e for e in events if e["event_type"] == "error"]
     assert len(error_events) == 1
     assert "550" in error_events[0]["description"] or "User unknown" in error_events[0]["description"]

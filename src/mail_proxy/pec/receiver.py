@@ -207,7 +207,8 @@ class PecReceiver:
 
     async def _handle_receipt(self, receipt_info) -> None:
         """Handle a parsed PEC receipt by creating appropriate event."""
-        msg_id = receipt_info.original_message_id
+        # original_message_id contains the pk (UUID) from the Message-ID header
+        message_pk = receipt_info.original_message_id
         receipt_type = receipt_info.receipt_type
 
         # Map receipt type to event type
@@ -233,7 +234,7 @@ class PecReceiver:
         # Create event
         now_ts = int(time.time())
         await self._db.add_event(
-            message_id=msg_id,
+            message_pk=message_pk,
             event_type=event_type,
             event_ts=now_ts,
             description=f"PEC {receipt_type}",
@@ -244,7 +245,7 @@ class PecReceiver:
         # For errors, mark the message accordingly
         if receipt_type in ("mancata_consegna", "non_accettazione"):
             # Clear PEC flag on error - it won't get delivered via PEC
-            await self._db.clear_pec_flag(msg_id)
+            await self._db.clear_pec_flag(message_pk)
 
     async def _check_pec_timeouts(self) -> None:
         """Check for PEC messages that timed out waiting for acceptance."""
@@ -256,20 +257,20 @@ class PecReceiver:
         timed_out_messages = await self._db.get_pec_messages_without_acceptance(cutoff_ts)
 
         for msg in timed_out_messages:
-            msg_id = msg["id"]
+            message_pk = msg["pk"]
 
             if self._logger:
                 self._logger.info(
-                    "PEC timeout: message %s sent over 30 min ago without acceptance, declassifying",
-                    msg_id,
+                    "PEC timeout: message pk=%s sent over 30 min ago without acceptance, declassifying",
+                    message_pk,
                 )
 
             # Clear the PEC flag
-            await self._db.clear_pec_flag(msg_id)
+            await self._db.clear_pec_flag(message_pk)
 
             # Create timeout event
             await self._db.add_event(
-                message_id=msg_id,
+                message_pk=message_pk,
                 event_type="pec_timeout",
                 event_ts=now_ts,
                 description="PEC acceptance timeout - message treated as normal email",

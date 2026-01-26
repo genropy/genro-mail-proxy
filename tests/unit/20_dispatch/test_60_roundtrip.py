@@ -201,8 +201,9 @@ async def test_full_roundtrip_single_tenant(tmp_path, smtp_server, smtp_handler)
     messages = await core.db.list_messages()
     assert len(messages) == 1
     assert messages[0]["smtp_ts"] is not None
+    pk = messages[0]["pk"]
     # Event should exist but not be reported yet
-    events = await core.db.get_events_for_message("acme-msg-001")
+    events = await core.db.get_events_for_message(pk)
     assert len(events) == 1
     assert events[0]["reported_ts"] is None
 
@@ -234,7 +235,7 @@ async def test_full_roundtrip_single_tenant(tmp_path, smtp_server, smtp_handler)
         assert report["sent_ts"] is not None
 
     # 6. Verify: Event is now marked as reported
-    events = await core.db.get_events_for_message("acme-msg-001")
+    events = await core.db.get_events_for_message(pk)
     assert len(events) == 1
     assert events[0]["reported_ts"] is not None
 
@@ -397,7 +398,8 @@ async def test_roundtrip_with_smtp_error(tmp_path, smtp_server, smtp_handler):
     assert messages[0]["smtp_ts"] is not None
 
     # Error event should be recorded
-    events = await core.db.get_events_for_message("error-msg-001")
+    pk = messages[0]["pk"]
+    events = await core.db.get_events_for_message(pk)
     error_events = [e for e in events if e["event_type"] == "error"]
     assert len(error_events) == 1
     assert "550" in error_events[0]["description"] or "User not found" in error_events[0]["description"]
@@ -465,7 +467,9 @@ async def test_roundtrip_tenant_sync_failure_retry(tmp_path, smtp_server, smtp_h
         await core._process_client_cycle()
 
     # Event should NOT be marked as reported (will retry)
-    events = await core.db.get_events_for_message("flaky-msg-001")
+    messages = await core.db.list_messages()
+    pk = messages[0]["pk"]
+    events = await core.db.get_events_for_message(pk)
     assert len(events) == 1
     assert events[0]["reported_ts"] is None  # Not reported due to error
 
@@ -476,7 +480,7 @@ async def test_roundtrip_tenant_sync_failure_retry(tmp_path, smtp_server, smtp_h
         await core._process_client_cycle()
 
     # Now event should be marked as reported
-    events = await core.db.get_events_for_message("flaky-msg-001")
+    events = await core.db.get_events_for_message(pk)
     assert events[0]["reported_ts"] is not None
 
 

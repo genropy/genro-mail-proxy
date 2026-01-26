@@ -214,20 +214,19 @@ class MailProxyDb(SqlDb):
         )
 
     async def set_deferred(
-        self, pk: str, msg_id: str, deferred_ts: int, reason: str | None = None
+        self, pk: str, deferred_ts: int, reason: str | None = None
     ) -> None:
         """Mark message as deferred for retry.
 
         Args:
             pk: Internal primary key for the update operation (UUID string).
-            msg_id: Message ID for event recording.
             deferred_ts: Timestamp when message can be retried.
             reason: Optional reason for deferral.
         """
         await self.messages.set_deferred(pk, deferred_ts)
         # Record deferred event for reporting
         await self.message_events.add_event(
-            message_id=msg_id,
+            message_pk=pk,
             event_type="deferred",
             event_ts=deferred_ts,
             description=reason,
@@ -241,33 +240,31 @@ class MailProxyDb(SqlDb):
         """
         await self.messages.clear_deferred(pk)
 
-    async def mark_sent(self, pk: str, msg_id: str, smtp_ts: int) -> None:
+    async def mark_sent(self, pk: str, smtp_ts: int) -> None:
         """Mark message as successfully sent.
 
         Args:
             pk: Internal primary key for the update operation (UUID string).
-            msg_id: Message ID for event recording.
             smtp_ts: Timestamp when SMTP send was attempted.
         """
         await self.messages.mark_sent(pk, smtp_ts)
         await self.message_events.add_event(
-            message_id=msg_id,
+            message_pk=pk,
             event_type="sent",
             event_ts=smtp_ts,
         )
 
-    async def mark_error(self, pk: str, msg_id: str, smtp_ts: int, error: str) -> None:
+    async def mark_error(self, pk: str, smtp_ts: int, error: str) -> None:
         """Mark message as failed with error.
 
         Args:
             pk: Internal primary key for the update operation (UUID string).
-            msg_id: Message ID for event recording.
             smtp_ts: Timestamp when SMTP send was attempted.
             error: Error description.
         """
         await self.messages.mark_error(pk, smtp_ts)
         await self.message_events.add_event(
-            message_id=msg_id,
+            message_pk=pk,
             event_type="error",
             event_ts=smtp_ts,
             description=error,
@@ -294,21 +291,30 @@ class MailProxyDb(SqlDb):
         """Get PEC messages sent before cutoff without acceptance receipt."""
         return await self.messages.get_pec_without_acceptance(cutoff_ts)
 
-    async def get_message(self, msg_id: str) -> dict[str, Any] | None:
-        return await self.messages.get(msg_id)
+    async def get_message(self, msg_id: str, tenant_id: str | None = None) -> dict[str, Any] | None:
+        return await self.messages.get(msg_id, tenant_id)
 
-    async def delete_message(self, msg_id: str) -> bool:
-        # First delete events for the message
-        await self.message_events.delete_for_message(msg_id)
-        return await self.messages.remove(msg_id)
+    async def delete_message(self, msg_id: str, tenant_id: str | None = None) -> bool:
+        """Delete a message and all its events.
+
+        Args:
+            msg_id: Client-provided message ID.
+            tenant_id: Optional tenant ID for multi-tenant deletion.
+        """
+        # Get the message to find its pk
+        msg = await self.messages.get(msg_id, tenant_id)
+        if msg:
+            await self.message_events.delete_for_message(msg["pk"])
+        return await self.messages.remove(msg_id, tenant_id)
 
     async def purge_messages_for_account(self, account_id: str) -> None:
-        # Get all message IDs for this account and delete their events
+        """Delete all messages and their events for an account."""
+        # Get all message pks for this account and delete their events
         messages = await self.messages.select(
-            columns=["id"], where={"account_id": account_id}
+            columns=["pk"], where={"account_id": account_id}
         )
         for msg in messages:
-            await self.message_events.delete_for_message(msg["id"])
+            await self.message_events.delete_for_message(msg["pk"])
         await self.messages.purge_for_account(account_id)
 
     async def existing_message_ids(self, ids: Iterable[str]) -> set[str]:
@@ -316,16 +322,24 @@ class MailProxyDb(SqlDb):
 
     async def mark_bounced(
         self,
-        msg_id: str,
+        pk: str,
         bounce_type: str,
         bounce_code: str | None = None,
         bounce_reason: str | None = None,
         bounce_ts: int | None = None,
     ) -> None:
-        """Record a bounce event for a message."""
+        """Record a bounce event for a message.
+
+        Args:
+            pk: Internal primary key of the message (UUID string).
+            bounce_type: Type of bounce (hard, soft).
+            bounce_code: SMTP error code (e.g., "550").
+            bounce_reason: Reason for the bounce.
+            bounce_ts: Timestamp of the bounce. Defaults to current time.
+        """
         event_ts = bounce_ts if bounce_ts is not None else int(time.time())
         await self.message_events.add_event(
-            message_id=msg_id,
+            message_pk=pk,
             event_type="bounce",
             event_ts=event_ts,
             description=bounce_reason,
@@ -380,15 +394,23 @@ class MailProxyDb(SqlDb):
     # -------------------------------------------------------------------------
     async def add_event(
         self,
-        message_id: str,
+        message_pk: str,
         event_type: str,
         event_ts: int,
         description: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> int:
-        """Record a message event (sent, error, deferred, bounce, pec_*)."""
+        """Record a message event (sent, error, deferred, bounce, pec_*).
+
+        Args:
+            message_pk: Internal primary key of the message (UUID string).
+            event_type: Type of event.
+            event_ts: Unix timestamp when the event occurred.
+            description: Optional description.
+            metadata: Optional extra data.
+        """
         return await self.message_events.add_event(
-            message_id, event_type, event_ts, description, metadata
+            message_pk, event_type, event_ts, description, metadata
         )
 
     async def fetch_unreported_events(self, limit: int) -> list[dict[str, Any]]:
@@ -399,13 +421,21 @@ class MailProxyDb(SqlDb):
         """Mark events as reported to client."""
         await self.message_events.mark_reported(event_ids, reported_ts)
 
-    async def get_events_for_message(self, message_id: str) -> list[dict[str, Any]]:
-        """Get all events for a specific message."""
-        return await self.message_events.get_events_for_message(message_id)
+    async def get_events_for_message(self, message_pk: str) -> list[dict[str, Any]]:
+        """Get all events for a specific message.
 
-    async def delete_events_for_message(self, message_id: str) -> int:
-        """Delete all events for a message. Returns deleted count."""
-        return await self.message_events.delete_for_message(message_id)
+        Args:
+            message_pk: Internal primary key of the message (UUID string).
+        """
+        return await self.message_events.get_events_for_message(message_pk)
+
+    async def delete_events_for_message(self, message_pk: str) -> int:
+        """Delete all events for a message. Returns deleted count.
+
+        Args:
+            message_pk: Internal primary key of the message (UUID string).
+        """
+        return await self.message_events.delete_for_message(message_pk)
 
     # -------------------------------------------------------------------------
     # Instance config

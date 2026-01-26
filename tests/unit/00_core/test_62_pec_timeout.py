@@ -45,7 +45,7 @@ async def test_get_pec_messages_without_acceptance(tmp_path):
 
     # Mark as sent 40 minutes ago
     old_ts = int(time.time()) - 40 * 60
-    await db.mark_sent(pk, "msg-pec-timeout", old_ts)
+    await db.mark_sent(pk, old_ts)
 
     # Check for timed out messages (cutoff 30 min ago)
     cutoff_ts = int(time.time()) - 30 * 60
@@ -53,6 +53,7 @@ async def test_get_pec_messages_without_acceptance(tmp_path):
 
     assert len(timed_out) == 1
     assert timed_out[0]["id"] == "msg-pec-timeout"
+    assert timed_out[0]["pk"] == pk
 
 
 @pytest.mark.asyncio
@@ -80,11 +81,11 @@ async def test_pec_message_with_acceptance_not_timed_out(tmp_path):
 
     # Mark as sent 40 minutes ago
     old_ts = int(time.time()) - 40 * 60
-    await db.mark_sent(pk, "msg-pec-accepted", old_ts)
+    await db.mark_sent(pk, old_ts)
 
-    # Add acceptance event
+    # Add acceptance event (using pk)
     await db.add_event(
-        message_id="msg-pec-accepted",
+        message_pk=pk,
         event_type="pec_acceptance",
         event_ts=old_ts + 60,  # Accepted 1 min after sending
         description="PEC accettazione",
@@ -123,7 +124,7 @@ async def test_recent_pec_message_not_timed_out(tmp_path):
 
     # Mark as sent 10 minutes ago (within timeout window)
     recent_ts = int(time.time()) - 10 * 60
-    await db.mark_sent(pk, "msg-pec-recent", recent_ts)
+    await db.mark_sent(pk, recent_ts)
 
     # Check for timed out messages (cutoff 30 min ago)
     cutoff_ts = int(time.time()) - 30 * 60
@@ -157,7 +158,7 @@ async def test_non_pec_message_not_in_timeout_list(tmp_path):
 
     # Mark as sent 40 minutes ago
     old_ts = int(time.time()) - 40 * 60
-    await db.mark_sent(pk, "msg-regular", old_ts)
+    await db.mark_sent(pk, old_ts)
 
     # Check for timed out messages
     cutoff_ts = int(time.time()) - 30 * 60

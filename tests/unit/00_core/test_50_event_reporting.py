@@ -180,31 +180,39 @@ class TestEventReportingCycle:
         assert result == 0
 
     @pytest.mark.asyncio
-    async def test_cycle_processes_events_with_callable(self, proxy: MailProxy):
-        """Cycle should process events and call report_delivery_callable."""
-        # Insert message without account_id so it uses global callable
-        await proxy.db.insert_messages([{
+    async def test_cycle_processes_events_and_marks_reported(self, proxy: MailProxy):
+        """Cycle should process events and mark them as reported."""
+        # Update tenant to have sync URL
+        await proxy.db.add_tenant({
+            "id": "test_tenant",
+            "name": "Test Tenant",
+            "client_base_url": "http://test.example.com",
+        })
+
+        inserted = await proxy.db.insert_messages([{
             "id": "msg-001",
             "tenant_id": "test_tenant",
             "account_id": None,
             "payload": {"from": "a@test.com", "to": ["b@test.com"], "subject": "Test"},
         }])
+        pk = inserted[0]["pk"]
 
-        # Create a sent event
-        await proxy.db.add_event("msg-001", "sent", 1700000000)
+        # Create a sent event (using pk)
+        await proxy.db.add_event(message_pk=pk, event_type="sent", event_ts=1700000000)
 
-        # Track reported payloads
+        # Track reported payloads via mock
         reported_payloads = []
 
-        async def track_reports(payload):
-            reported_payloads.append(payload)
+        async def mock_send_to_tenant(tenant, payloads):
+            reported_payloads.extend(payloads)
+            return [p["id"] for p in payloads], 0
 
-        proxy._report_delivery_callable = track_reports
+        proxy._send_reports_to_tenant = mock_send_to_tenant
         proxy._active = True
 
-        result = await proxy._process_client_cycle()
+        await proxy._process_client_cycle()
 
-        # Should have called the callable with the payload
+        # Should have sent the payload to tenant
         assert len(reported_payloads) == 1
         assert reported_payloads[0]["id"] == "msg-001"
         assert reported_payloads[0]["sent_ts"] == 1700000000
@@ -474,7 +482,7 @@ class TestProcessClientCycleWithTenants:
         })
 
         # Insert messages
-        await proxy.db.insert_messages([
+        inserted = await proxy.db.insert_messages([
             {
                 "id": "msg-a1",
                 "tenant_id": "tenant-a",
@@ -488,10 +496,11 @@ class TestProcessClientCycleWithTenants:
                 "payload": {"from": "x@test.com", "to": ["y@test.com"], "subject": "B1"},
             },
         ])
+        pk_map = {m["id"]: m["pk"] for m in inserted}
 
-        # Create events
-        await proxy.db.add_event("msg-a1", "sent", 1700000000)
-        await proxy.db.add_event("msg-b1", "sent", 1700000100)
+        # Create events (using pk)
+        await proxy.db.add_event(message_pk=pk_map["msg-a1"], event_type="sent", event_ts=1700000000)
+        await proxy.db.add_event(message_pk=pk_map["msg-b1"], event_type="sent", event_ts=1700000100)
 
         tenant_calls = {}
 
@@ -530,13 +539,14 @@ class TestProcessClientCycleWithTenants:
             "user": "test",
             "password": "test",
         })
-        await proxy.db.insert_messages([{
+        inserted = await proxy.db.insert_messages([{
             "id": "msg-no-url",
             "tenant_id": "tenant-no-url",
             "account_id": "account-no-url",
             "payload": {"from": "a@test.com", "to": ["b@test.com"], "subject": "Test"},
         }])
-        await proxy.db.add_event("msg-no-url", "sent", 1700000000)
+        pk = inserted[0]["pk"]
+        await proxy.db.add_event(message_pk=pk, event_type="sent", event_ts=1700000000)
 
         proxy._active = True
         proxy._client_sync_url = None  # No fallback

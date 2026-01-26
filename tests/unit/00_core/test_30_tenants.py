@@ -318,7 +318,7 @@ async def test_events_for_tenant_account(tmp_path):
 
     # Mark message as sent
     sent_ts = int(time.time())
-    await db.mark_sent(pk, "msg1", sent_ts)
+    await db.mark_sent(pk, sent_ts)
 
     # Fetch unreported events
     events = await db.fetch_unreported_events(limit=10)
@@ -359,7 +359,7 @@ async def test_events_multiple_tenants(tmp_path):
     # Mark all as sent
     sent_ts = int(time.time())
     for msg_id in ["msg1", "msg2", "msg3"]:
-        await db.mark_sent(pk_by_id[msg_id], msg_id, sent_ts)
+        await db.mark_sent(pk_by_id[msg_id], sent_ts)
 
     # Fetch unreported events
     events = await db.fetch_unreported_events(limit=10)
@@ -779,7 +779,7 @@ async def test_count_pending_for_tenant(tmp_path):
     assert count_nl02 == 1
 
     # Mark one as sent
-    await db.mark_sent(pk_by_id["msg-1"], "msg-1", now_ts)
+    await db.mark_sent(pk_by_id["msg-1"], now_ts)
 
     # Count updated
     count_nl01 = await db.count_pending_messages("acme", "NL-01")

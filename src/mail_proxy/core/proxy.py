@@ -606,7 +606,7 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
                     inserted_items = await self.db.insert_messages([entry])
                     if inserted_items:
                         pk = inserted_items[0]["pk"]
-                        await self.db.mark_error(pk, msg_id, now_ts, reason or "validation error")
+                        await self.db.mark_error(pk, now_ts, reason or "validation error")
                     rejected_for_sync.append({
                         "id": msg_id,
                         "status": "error",

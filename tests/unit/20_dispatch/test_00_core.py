@@ -250,7 +250,8 @@ async def test_add_messages_and_dispatch(tmp_path):
     # Retention removes the message after threshold (using event-based cleanup)
     # Mark events as reported with old timestamp
     past_ts = core._utc_now_epoch() - (core._report_retention_seconds + 10)
-    events = await core.db.get_events_for_message("msg1")
+    pk = messages[0]["pk"]
+    events = await core.db.get_events_for_message(pk)
     event_ids = [e["event_id"] for e in events]
     await core.db.mark_events_reported(event_ids, past_ts)
 
@@ -453,7 +454,8 @@ async def test_temporary_error_retry_exhaustion(tmp_path):
             assert messages[0]["smtp_ts"] is not None, "Should have smtp_ts after max retries (permanently failed)"
 
             # Verify error event was created
-            events = await core.db.get_events_for_message("msg-retry-exhausted")
+            pk = messages[0]["pk"]
+            events = await core.db.get_events_for_message(pk)
             error_events = [e for e in events if e["event_type"] == "error"]
             assert len(error_events) == 1, "Should have error event after max retries"
             assert "Max retries" in error_events[0]["description"], f"Error should mention max retries, got: {error_events[0]['description']}"
@@ -495,7 +497,8 @@ async def test_permanent_error_no_retry(tmp_path):
     assert messages[0]["deferred_ts"] is None
 
     # Verify error event was created with SMTP code
-    events = await core.db.get_events_for_message("msg-permanent")
+    pk = messages[0]["pk"]
+    events = await core.db.get_events_for_message(pk)
     error_events = [e for e in events if e["event_type"] == "error"]
     assert len(error_events) == 1
     assert "550" in error_events[0]["description"]
@@ -665,7 +668,9 @@ async def test_cleanup_messages_command(tmp_path):
 
     # Mark events as reported (artificially old)
     old_ts = core._utc_now_epoch() - 10000
-    events = await core.db.get_events_for_message("msg-cleanup")
+    messages = await core.db.list_messages()
+    pk = messages[0]["pk"]
+    events = await core.db.get_events_for_message(pk)
     event_ids = [e["event_id"] for e in events]
     await core.db.mark_events_reported(event_ids, old_ts)
 

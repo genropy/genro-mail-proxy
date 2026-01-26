@@ -49,13 +49,14 @@ class TestMessageEventTable:
     @pytest.mark.asyncio
     async def test_add_event_sent(self, db_with_message: MailProxyDb):
         """Test adding a 'sent' event."""
+        pk = db_with_message._test_pk
         await db_with_message.add_event(
-            message_id="msg-001",
+            message_pk=pk,
             event_type="sent",
             event_ts=1700000000,
         )
 
-        events = await db_with_message.get_events_for_message("msg-001")
+        events = await db_with_message.get_events_for_message(pk)
         assert len(events) == 1
         assert events[0]["event_type"] == "sent"
         assert events[0]["event_ts"] == 1700000000
@@ -64,14 +65,15 @@ class TestMessageEventTable:
     @pytest.mark.asyncio
     async def test_add_event_error_with_description(self, db_with_message: MailProxyDb):
         """Test adding an 'error' event with description."""
+        pk = db_with_message._test_pk
         await db_with_message.add_event(
-            message_id="msg-001",
+            message_pk=pk,
             event_type="error",
             event_ts=1700000100,
             description="Connection refused",
         )
 
-        events = await db_with_message.get_events_for_message("msg-001")
+        events = await db_with_message.get_events_for_message(pk)
         assert len(events) == 1
         assert events[0]["event_type"] == "error"
         assert events[0]["description"] == "Connection refused"
@@ -79,15 +81,16 @@ class TestMessageEventTable:
     @pytest.mark.asyncio
     async def test_add_event_bounce_with_metadata(self, db_with_message: MailProxyDb):
         """Test adding a 'bounce' event with metadata."""
+        pk = db_with_message._test_pk
         await db_with_message.add_event(
-            message_id="msg-001",
+            message_pk=pk,
             event_type="bounce",
             event_ts=1700000200,
             description="User unknown",
             metadata={"bounce_type": "hard", "bounce_code": "550"},
         )
 
-        events = await db_with_message.get_events_for_message("msg-001")
+        events = await db_with_message.get_events_for_message(pk)
         assert len(events) == 1
         assert events[0]["event_type"] == "bounce"
         assert events[0]["metadata"]["bounce_type"] == "hard"
@@ -96,14 +99,15 @@ class TestMessageEventTable:
     @pytest.mark.asyncio
     async def test_add_event_deferred(self, db_with_message: MailProxyDb):
         """Test adding a 'deferred' event."""
+        pk = db_with_message._test_pk
         await db_with_message.add_event(
-            message_id="msg-001",
+            message_pk=pk,
             event_type="deferred",
             event_ts=1700000300,
             description="Rate limit exceeded",
         )
 
-        events = await db_with_message.get_events_for_message("msg-001")
+        events = await db_with_message.get_events_for_message(pk)
         assert len(events) == 1
         assert events[0]["event_type"] == "deferred"
         assert events[0]["description"] == "Rate limit exceeded"
@@ -111,8 +115,9 @@ class TestMessageEventTable:
     @pytest.mark.asyncio
     async def test_fetch_unreported_events(self, db_with_message: MailProxyDb):
         """Test fetching unreported events with tenant info."""
-        await db_with_message.add_event("msg-001", "sent", 1700000000)
-        await db_with_message.add_event("msg-001", "bounce", 1700000100, "User unknown")
+        pk = db_with_message._test_pk
+        await db_with_message.add_event(pk, "sent", 1700000000)
+        await db_with_message.add_event(pk, "bounce", 1700000100, "User unknown")
 
         events = await db_with_message.fetch_unreported_events(limit=10)
         assert len(events) == 2
@@ -122,12 +127,15 @@ class TestMessageEventTable:
         # Should include tenant info from join
         assert events[0]["tenant_id"] == "test-tenant"
         assert events[0]["account_id"] == "test-account"
+        # Should include message_id (client-facing ID)
+        assert events[0]["message_id"] == "msg-001"
 
     @pytest.mark.asyncio
     async def test_mark_events_reported(self, db_with_message: MailProxyDb):
         """Test marking events as reported."""
-        await db_with_message.add_event("msg-001", "sent", 1700000000)
-        await db_with_message.add_event("msg-001", "bounce", 1700000100)
+        pk = db_with_message._test_pk
+        await db_with_message.add_event(pk, "sent", 1700000000)
+        await db_with_message.add_event(pk, "bounce", 1700000100)
 
         # Get event IDs from the database
         events = await db_with_message.fetch_unreported_events(limit=10)
@@ -145,30 +153,34 @@ class TestMessageEventTable:
     @pytest.mark.asyncio
     async def test_delete_events_for_message(self, db_with_message: MailProxyDb):
         """Test deleting all events for a message."""
-        await db_with_message.add_event("msg-001", "sent", 1700000000)
-        await db_with_message.add_event("msg-001", "bounce", 1700000100)
+        pk = db_with_message._test_pk
+        await db_with_message.add_event(pk, "sent", 1700000000)
+        await db_with_message.add_event(pk, "bounce", 1700000100)
 
-        deleted = await db_with_message.delete_events_for_message("msg-001")
+        deleted = await db_with_message.delete_events_for_message(pk)
         assert deleted == 2
 
-        events = await db_with_message.get_events_for_message("msg-001")
+        events = await db_with_message.get_events_for_message(pk)
         assert len(events) == 0
 
     @pytest.mark.asyncio
     async def test_multiple_messages_isolation(self, db_with_message: MailProxyDb):
         """Test that events are isolated per message."""
+        pk1 = db_with_message._test_pk
         # Add another message
-        await db_with_message.insert_messages([{
+        inserted = await db_with_message.insert_messages([{
             "id": "msg-002",
+            "tenant_id": "test-tenant",
             "account_id": "test-account",
             "payload": {"from": "a@test.com", "to": ["c@test.com"], "subject": "Test 2"},
         }])
+        pk2 = inserted[0]["pk"]
 
-        await db_with_message.add_event("msg-001", "sent", 1700000000)
-        await db_with_message.add_event("msg-002", "error", 1700000100, "Failed")
+        await db_with_message.add_event(pk1, "sent", 1700000000)
+        await db_with_message.add_event(pk2, "error", 1700000100, "Failed")
 
-        events_1 = await db_with_message.get_events_for_message("msg-001")
-        events_2 = await db_with_message.get_events_for_message("msg-002")
+        events_1 = await db_with_message.get_events_for_message(pk1)
+        events_2 = await db_with_message.get_events_for_message(pk2)
 
         assert len(events_1) == 1
         assert events_1[0]["event_type"] == "sent"
@@ -183,9 +195,9 @@ class TestDbMethodsCreateEvents:
     async def test_mark_sent_creates_event(self, db_with_message: MailProxyDb):
         """mark_sent should create a 'sent' event."""
         pk = db_with_message._test_pk
-        await db_with_message.mark_sent(pk, "msg-001", 1700000000)
+        await db_with_message.mark_sent(pk, 1700000000)
 
-        events = await db_with_message.get_events_for_message("msg-001")
+        events = await db_with_message.get_events_for_message(pk)
         assert len(events) == 1
         assert events[0]["event_type"] == "sent"
         assert events[0]["event_ts"] == 1700000000
@@ -194,9 +206,9 @@ class TestDbMethodsCreateEvents:
     async def test_mark_error_creates_event(self, db_with_message: MailProxyDb):
         """mark_error should create an 'error' event."""
         pk = db_with_message._test_pk
-        await db_with_message.mark_error(pk, "msg-001", 1700000000, "SMTP error 550")
+        await db_with_message.mark_error(pk, 1700000000, "SMTP error 550")
 
-        events = await db_with_message.get_events_for_message("msg-001")
+        events = await db_with_message.get_events_for_message(pk)
         assert len(events) == 1
         assert events[0]["event_type"] == "error"
         assert events[0]["description"] == "SMTP error 550"
@@ -205,9 +217,9 @@ class TestDbMethodsCreateEvents:
     async def test_set_deferred_creates_event(self, db_with_message: MailProxyDb):
         """set_deferred should create a 'deferred' event."""
         pk = db_with_message._test_pk
-        await db_with_message.set_deferred(pk, "msg-001", 1700000060, "Rate limit")
+        await db_with_message.set_deferred(pk, 1700000060, "Rate limit")
 
-        events = await db_with_message.get_events_for_message("msg-001")
+        events = await db_with_message.get_events_for_message(pk)
         assert len(events) == 1
         assert events[0]["event_type"] == "deferred"
         assert events[0]["description"] == "Rate limit"
@@ -215,15 +227,16 @@ class TestDbMethodsCreateEvents:
     @pytest.mark.asyncio
     async def test_mark_bounced_creates_event(self, db_with_message: MailProxyDb):
         """mark_bounced should create a 'bounce' event."""
+        pk = db_with_message._test_pk
         await db_with_message.mark_bounced(
-            "msg-001",
+            pk,
             bounce_type="hard",
             bounce_code="550",
             bounce_reason="User unknown",
             bounce_ts=1700000200,
         )
 
-        events = await db_with_message.get_events_for_message("msg-001")
+        events = await db_with_message.get_events_for_message(pk)
         assert len(events) == 1
         assert events[0]["event_type"] == "bounce"
         assert events[0]["description"] == "User unknown"

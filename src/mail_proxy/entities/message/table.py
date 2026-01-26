@@ -283,14 +283,14 @@ class MessagesTable(Table):
         """
         rows = await self.db.adapter.fetch_all(
             """
-            SELECT m.id, m.account_id, m.smtp_ts
+            SELECT m.pk, m.id, m.account_id, m.smtp_ts
             FROM messages m
             WHERE m.is_pec = 1
               AND m.smtp_ts IS NOT NULL
               AND m.smtp_ts < :cutoff_ts
               AND NOT EXISTS (
                   SELECT 1 FROM message_events e
-                  WHERE e.message_id = m.id
+                  WHERE e.message_pk = m.pk
                     AND e.event_type = 'pec_acceptance'
               )
             """,
@@ -428,16 +428,16 @@ class MessagesTable(Table):
             """
             DELETE FROM messages
             WHERE smtp_ts IS NOT NULL
-              AND id IN (
-                  SELECT m.id FROM messages m
+              AND pk IN (
+                  SELECT m.pk FROM messages m
                   WHERE m.smtp_ts IS NOT NULL
                     AND NOT EXISTS (
                         SELECT 1 FROM message_events e
-                        WHERE e.message_id = m.id AND e.reported_ts IS NULL
+                        WHERE e.message_pk = m.pk AND e.reported_ts IS NULL
                     )
                     AND (
                         SELECT MAX(e.reported_ts) FROM message_events e
-                        WHERE e.message_id = m.id
+                        WHERE e.message_pk = m.pk
                     ) < :threshold_ts
               )
             """,
@@ -455,18 +455,18 @@ class MessagesTable(Table):
         return await self.execute(
             """
             DELETE FROM messages
-            WHERE id IN (
-                SELECT m.id FROM messages m
+            WHERE pk IN (
+                SELECT m.pk FROM messages m
                 JOIN accounts a ON m.account_id = a.id
                 WHERE a.tenant_id = :tenant_id
                   AND m.smtp_ts IS NOT NULL
                   AND NOT EXISTS (
                       SELECT 1 FROM message_events e
-                      WHERE e.message_id = m.id AND e.reported_ts IS NULL
+                      WHERE e.message_pk = m.pk AND e.reported_ts IS NULL
                   )
                   AND (
                       SELECT MAX(e.reported_ts) FROM message_events e
-                      WHERE e.message_id = m.id
+                      WHERE e.message_pk = m.pk
                   ) < :threshold_ts
             )
             """,
@@ -498,12 +498,12 @@ class MessagesTable(Table):
 
         # Subquery to get the latest error event for each message
         error_subquery = """
-            SELECT message_id, event_ts as error_ts, description as error
+            SELECT message_pk, event_ts as error_ts, description as error
             FROM message_events
             WHERE event_type = 'error'
             AND id = (
                 SELECT MAX(id) FROM message_events e2
-                WHERE e2.message_id = message_events.message_id
+                WHERE e2.message_pk = message_events.message_pk
                 AND e2.event_type = 'error'
             )
         """
@@ -511,22 +511,22 @@ class MessagesTable(Table):
         if tenant_id:
             # Join with accounts to filter by tenant_id and with error events
             query = f"""
-                SELECT m.id, m.account_id, m.priority, m.payload, m.batch_code,
+                SELECT m.pk, m.id, m.tenant_id, m.account_id, m.priority, m.payload, m.batch_code,
                        m.deferred_ts, m.smtp_ts, m.created_at, m.updated_at, m.is_pec,
                        err.error_ts, err.error
                 FROM messages m
                 LEFT JOIN accounts a ON m.account_id = a.id
-                LEFT JOIN ({error_subquery}) err ON m.id = err.message_id
+                LEFT JOIN ({error_subquery}) err ON m.pk = err.message_pk
             """
             where_clauses.append("a.tenant_id = :tenant_id")
             params["tenant_id"] = tenant_id
         else:
             query = f"""
-                SELECT m.id, m.account_id, m.priority, m.payload, m.batch_code,
+                SELECT m.pk, m.id, m.tenant_id, m.account_id, m.priority, m.payload, m.batch_code,
                        m.deferred_ts, m.smtp_ts, m.created_at, m.updated_at, m.is_pec,
                        err.error_ts, err.error
                 FROM messages m
-                LEFT JOIN ({error_subquery}) err ON m.id = err.message_id
+                LEFT JOIN ({error_subquery}) err ON m.pk = err.message_pk
             """
 
         if active_only:
@@ -549,21 +549,21 @@ class MessagesTable(Table):
         self, messages: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
         """Add event history to each message in a single query."""
-        message_ids = [m["id"] for m in messages]
-        placeholders = ", ".join(f":id_{i}" for i in range(len(message_ids)))
-        params = {f"id_{i}": mid for i, mid in enumerate(message_ids)}
+        message_pks = [m["pk"] for m in messages]
+        placeholders = ", ".join(f":pk_{i}" for i in range(len(message_pks)))
+        params = {f"pk_{i}": pk for i, pk in enumerate(message_pks)}
 
         events_query = f"""
-            SELECT id as event_id, message_id, event_type, event_ts,
+            SELECT id as event_id, message_pk, event_type, event_ts,
                    description, metadata, reported_ts
             FROM message_events
-            WHERE message_id IN ({placeholders})
+            WHERE message_pk IN ({placeholders})
             ORDER BY event_ts ASC, id ASC
         """
         event_rows = await self.db.adapter.fetch_all(events_query, params)
 
-        # Group events by message_id
-        events_by_message: dict[str, list[dict[str, Any]]] = {m["id"]: [] for m in messages}
+        # Group events by message_pk
+        events_by_pk: dict[str, list[dict[str, Any]]] = {m["pk"]: [] for m in messages}
         for row in event_rows:
             event = dict(row)
             if event.get("metadata"):
@@ -571,13 +571,13 @@ class MessagesTable(Table):
                     event["metadata"] = json.loads(event["metadata"])
                 except (json.JSONDecodeError, TypeError):
                     event["metadata"] = None
-            msg_id = event.pop("message_id")
-            if msg_id in events_by_message:
-                events_by_message[msg_id].append(event)
+            msg_pk = event.pop("message_pk")
+            if msg_pk in events_by_pk:
+                events_by_pk[msg_pk].append(event)
 
         # Add history to each message
         for msg in messages:
-            msg["history"] = events_by_message.get(msg["id"], [])
+            msg["history"] = events_by_pk.get(msg["pk"], [])
 
         return messages
 

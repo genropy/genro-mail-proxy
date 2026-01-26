@@ -122,8 +122,9 @@ class BounceReceiver:
 
                 if bounce_info.original_message_id:
                     # Found a bounce with our tracking header
+                    # original_message_id contains the pk (UUID) from the Message-ID header
                     await self._db.mark_bounced(
-                        msg_id=bounce_info.original_message_id,
+                        pk=bounce_info.original_message_id,
                         bounce_type=bounce_info.bounce_type or "hard",
                         bounce_code=bounce_info.bounce_code,
                         bounce_reason=bounce_info.bounce_reason,
@@ -132,7 +133,7 @@ class BounceReceiver:
 
                     if self._logger:
                         self._logger.info(
-                            "Bounce detected: msg_id=%s type=%s code=%s",
+                            "Bounce detected: pk=%s type=%s code=%s",
                             bounce_info.original_message_id,
                             bounce_info.bounce_type,
                             bounce_info.bounce_code,

@@ -65,14 +65,14 @@ async def test_messages_lifecycle(tmp_path):
     assert ready[0]["pk"] == pk
 
     # Test deferral - use pk for internal operations
-    await p.set_deferred(pk, "msg1", now + 60)
+    await p.set_deferred(pk, now + 60)
     assert await p.fetch_ready_messages(limit=10, now_ts=now) == []
     await p.clear_deferred(pk)
     ready = await p.fetch_ready_messages(limit=10, now_ts=now)
     assert len(ready) == 1
 
     # Test error - marks message as processed with smtp_ts
-    await p.mark_error(pk, "msg1", now, "boom")
+    await p.mark_error(pk, now, "boom")
     # Message is no longer ready (smtp_ts is set)
     assert await p.fetch_ready_messages(limit=10, now_ts=now + 120) == []
 
@@ -83,7 +83,7 @@ async def test_messages_lifecycle(tmp_path):
     assert error_events[0]["description"] == "boom"
 
     # Test sent - updates smtp_ts
-    await p.mark_sent(pk, "msg1", now + 1)
+    await p.mark_sent(pk, now + 1)
 
     # Verify sent event was created
     events = await p.fetch_unreported_events(limit=10)

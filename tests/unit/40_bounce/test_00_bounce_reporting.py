@@ -38,20 +38,20 @@ async def test_mark_bounced_creates_event(tmp_path):
 
     # Mark as sent first
     sent_ts = 1700000000
-    await db.mark_sent(pk, "msg1", sent_ts)
+    await db.mark_sent(pk, sent_ts)
 
-    # Mark as bounced
+    # Mark as bounced (using pk)
     bounce_ts = 1700000100
     await db.mark_bounced(
-        "msg1",
+        pk,
         bounce_type="hard",
         bounce_code="550",
         bounce_reason="User unknown",
         bounce_ts=bounce_ts,
     )
 
-    # Verify bounce event was created
-    events = await db.get_events_for_message("msg1")
+    # Verify bounce event was created (using pk)
+    events = await db.get_events_for_message(pk)
     bounce_events = [e for e in events if e["event_type"] == "bounce"]
     assert len(bounce_events) == 1
 
@@ -79,16 +79,16 @@ async def test_bounce_event_in_unreported_events(tmp_path):
 
     # Mark as sent
     sent_ts = 1700000000
-    await db.mark_sent(pk, "msg1", sent_ts)
+    await db.mark_sent(pk, sent_ts)
 
     # Mark sent event as reported
     events = await db.fetch_unreported_events(limit=10)
     sent_event_ids = [e["event_id"] for e in events if e["event_type"] == "sent"]
     await db.mark_events_reported(sent_event_ids, sent_ts + 10)
 
-    # Mark as bounced
+    # Mark as bounced (using pk)
     await db.mark_bounced(
-        "msg1",
+        pk,
         bounce_type="hard",
         bounce_code="550",
         bounce_reason="User unknown",
@@ -119,15 +119,15 @@ async def test_mark_bounce_reported(tmp_path):
 
     # Mark as sent and reported
     sent_ts = 1700000000
-    await db.mark_sent(pk, "msg1", sent_ts)
+    await db.mark_sent(pk, sent_ts)
 
     events = await db.fetch_unreported_events(limit=10)
     sent_event_ids = [e["event_id"] for e in events if e["event_type"] == "sent"]
     await db.mark_events_reported(sent_event_ids, sent_ts + 10)
 
-    # Add bounce
+    # Add bounce (using pk)
     await db.mark_bounced(
-        "msg1",
+        pk,
         bounce_type="soft",
         bounce_code="421",
         bounce_reason="Try again later",
@@ -165,19 +165,19 @@ async def test_multiple_events_for_same_message(tmp_path):
 
     # Mark as sent
     sent_ts = 1700000000
-    await db.mark_sent(pk, "msg1", sent_ts)
+    await db.mark_sent(pk, sent_ts)
 
-    # Mark as bounced
+    # Mark as bounced (using pk)
     await db.mark_bounced(
-        "msg1",
+        pk,
         bounce_type="hard",
         bounce_code="550",
         bounce_reason="User unknown",
         bounce_ts=1700000200,
     )
 
-    # Should have 2 events for the message
-    events = await db.get_events_for_message("msg1")
+    # Should have 2 events for the message (using pk)
+    events = await db.get_events_for_message(pk)
     assert len(events) == 2
 
     event_types = {e["event_type"] for e in events}
@@ -210,19 +210,19 @@ async def test_fetch_unreported_includes_both_new_and_bounce(tmp_path):
     sent_ts = 1700000000
 
     # msg-new: just sent, not reported
-    await db.mark_sent(pk_map["msg-new"], "msg-new", sent_ts)
+    await db.mark_sent(pk_map["msg-new"], sent_ts)
 
     # msg-bounced: sent, reported, then bounced
-    await db.mark_sent(pk_map["msg-bounced"], "msg-bounced", sent_ts)
+    await db.mark_sent(pk_map["msg-bounced"], sent_ts)
 
     # Report only the sent event for msg-bounced
     events = await db.fetch_unreported_events(limit=10)
     bounced_sent_event = [e for e in events if e["message_id"] == "msg-bounced"][0]
     await db.mark_events_reported([bounced_sent_event["event_id"]], sent_ts + 10)
 
-    # Add bounce to msg-bounced
+    # Add bounce to msg-bounced (using pk)
     await db.mark_bounced(
-        "msg-bounced",
+        pk_map["msg-bounced"],
         bounce_type="hard",
         bounce_code="550",
         bounce_reason="User unknown",

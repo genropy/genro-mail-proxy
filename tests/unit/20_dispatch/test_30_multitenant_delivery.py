@@ -264,8 +264,8 @@ async def test_process_client_cycle_routes_to_tenants(tmp_path):
 
     # Mark messages as sent
     sent_ts = core._utc_now_epoch()
-    await core.db.mark_sent(pk_map["msg1"], "msg1", sent_ts)
-    await core.db.mark_sent(pk_map["msg2"], "msg2", sent_ts)
+    await core.db.mark_sent(pk_map["msg1"], sent_ts)
+    await core.db.mark_sent(pk_map["msg2"], sent_ts)
 
     with aioresponses() as m:
         # New protocol: response with sent/error/not_found lists
@@ -311,7 +311,7 @@ async def test_process_client_cycle_fallback_global(tmp_path):
     }])
 
     sent_ts = core._utc_now_epoch()
-    await core.db.mark_sent(inserted[0]["pk"], "msg-fallback", sent_ts)
+    await core.db.mark_sent(inserted[0]["pk"], sent_ts)
 
     with aioresponses() as m:
         m.post("https://global.fallback.com/sync", status=200, payload={"ok": True})
@@ -375,8 +375,8 @@ async def test_process_client_cycle_mixed_tenants(tmp_path):
     pk_map = {m["id"]: m["pk"] for m in inserted}
 
     sent_ts = core._utc_now_epoch()
-    await core.db.mark_sent(pk_map["msg-with-tenant"], "msg-with-tenant", sent_ts)
-    await core.db.mark_sent(pk_map["msg-no-url"], "msg-no-url", sent_ts)
+    await core.db.mark_sent(pk_map["msg-with-tenant"], sent_ts)
+    await core.db.mark_sent(pk_map["msg-no-url"], sent_ts)
 
     with aioresponses() as m:
         m.post("https://api.with-url.com/sync", status=200, payload={"ok": True})
@@ -440,8 +440,8 @@ async def test_process_client_cycle_partial_failure(tmp_path):
     pk_map = {m["id"]: m["pk"] for m in inserted}
 
     sent_ts = core._utc_now_epoch()
-    await core.db.mark_sent(pk_map["msg-success"], "msg-success", sent_ts)
-    await core.db.mark_sent(pk_map["msg-fail"], "msg-fail", sent_ts)
+    await core.db.mark_sent(pk_map["msg-success"], sent_ts)
+    await core.db.mark_sent(pk_map["msg-fail"], sent_ts)
 
     with aioresponses() as m:
         m.post("https://api.success.com/sync", status=200, payload={"ok": True})
@@ -450,11 +450,11 @@ async def test_process_client_cycle_partial_failure(tmp_path):
         await core._process_client_cycle()
 
         # Success tenant event should be marked as reported
-        success_events = await core.db.get_events_for_message("msg-success")
+        success_events = await core.db.get_events_for_message(pk_map["msg-success"])
         assert len(success_events) == 1
         assert success_events[0]["reported_ts"] is not None
 
         # Failed tenant event should NOT be marked (will retry next cycle)
-        fail_events = await core.db.get_events_for_message("msg-fail")
+        fail_events = await core.db.get_events_for_message(pk_map["msg-fail"])
         assert len(fail_events) == 1
         assert fail_events[0]["reported_ts"] is None
