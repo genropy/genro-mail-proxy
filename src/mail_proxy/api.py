@@ -835,7 +835,7 @@ def create_app(
         })
         return MessagesResponse.model_validate(result)
 
-    @api.get("/metrics", dependencies=[auth_dependency])
+    @api.get("/metrics")
     async def metrics():
         """Export Prometheus metrics in text exposition format.
 

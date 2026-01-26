@@ -160,10 +160,10 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
 
 
 def test_metrics_endpoint_uses_service_metrics():
+    """Test that /metrics endpoint works without authentication (for Prometheus scraping)."""
     svc = DummyService()
     client = TestClient(create_app(svc, api_token=API_TOKEN))
-    client.headers.update({API_TOKEN_HEADER_NAME: API_TOKEN})
-
+    # Do not set API token header - /metrics must be accessible without auth
     response = client.get("/metrics")
     assert response.status_code == 200
     assert response.text == "metrics-data"
