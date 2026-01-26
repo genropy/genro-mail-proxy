@@ -116,11 +116,15 @@ def get_msg_status(msg: dict[str, Any]) -> str:
 
     The API returns MessageRecord with timestamps, not a status field.
     This helper derives the logical status.
+
+    Priority: error > sent > deferred > pending
+    Error takes precedence because a message with both sent_ts and error
+    means the send was attempted but failed (e.g., rate limit rejection).
     """
-    if msg.get("sent_ts"):
-        return "sent"
     if msg.get("error_ts") or msg.get("error"):
         return "error"
+    if msg.get("sent_ts"):
+        return "sent"
     if msg.get("deferred_ts"):
         return "deferred"
     return "pending"

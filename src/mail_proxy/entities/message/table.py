@@ -386,40 +386,53 @@ class MessagesTable(Table):
             tenant_id: If provided, filter messages to those belonging to this tenant
                 (via the account's tenant_id).
             active_only: If True, only return messages pending delivery.
+
+        Returns:
+            List of message dicts including error info from message_events.
         """
         params: dict[str, Any] = {}
         where_clauses: list[str] = []
 
+        # Subquery to get the latest error event for each message
+        error_subquery = """
+            SELECT message_id, event_ts as error_ts, description as error
+            FROM message_events
+            WHERE event_type = 'error'
+            AND id = (
+                SELECT MAX(id) FROM message_events e2
+                WHERE e2.message_id = message_events.message_id
+                AND e2.event_type = 'error'
+            )
+        """
+
         if tenant_id:
-            # Join with accounts to filter by tenant_id
-            query = """
+            # Join with accounts to filter by tenant_id and with error events
+            query = f"""
                 SELECT m.id, m.account_id, m.priority, m.payload, m.batch_code,
-                       m.deferred_ts, m.smtp_ts, m.created_at, m.updated_at, m.is_pec
+                       m.deferred_ts, m.smtp_ts, m.created_at, m.updated_at, m.is_pec,
+                       err.error_ts, err.error
                 FROM messages m
                 LEFT JOIN accounts a ON m.account_id = a.id
+                LEFT JOIN ({error_subquery}) err ON m.id = err.message_id
             """
             where_clauses.append("a.tenant_id = :tenant_id")
             params["tenant_id"] = tenant_id
         else:
-            query = """
-                SELECT id, account_id, priority, payload, batch_code,
-                       deferred_ts, smtp_ts, created_at, updated_at, is_pec
-                FROM messages
+            query = f"""
+                SELECT m.id, m.account_id, m.priority, m.payload, m.batch_code,
+                       m.deferred_ts, m.smtp_ts, m.created_at, m.updated_at, m.is_pec,
+                       err.error_ts, err.error
+                FROM messages m
+                LEFT JOIN ({error_subquery}) err ON m.id = err.message_id
             """
 
         if active_only:
-            if tenant_id:
-                where_clauses.append("m.smtp_ts IS NULL")
-            else:
-                where_clauses.append("smtp_ts IS NULL")
+            where_clauses.append("m.smtp_ts IS NULL")
 
         if where_clauses:
             query += " WHERE " + " AND ".join(where_clauses)
 
-        if tenant_id:
-            query += " ORDER BY m.priority ASC, m.created_at ASC, m.id ASC"
-        else:
-            query += " ORDER BY priority ASC, created_at ASC, id ASC"
+        query += " ORDER BY m.priority ASC, m.created_at ASC, m.id ASC"
 
         rows = await self.db.adapter.fetch_all(query, params)
         return [self._decode_payload(row) for row in rows]
