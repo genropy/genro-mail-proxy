@@ -1,4 +1,4 @@
-# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: BSL-1.1
 """Large file storage backend using fsspec for multi-cloud support.
 
 This module provides storage capabilities for large email attachments,

@@ -1,4 +1,4 @@
-# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: BSL-1.1
 """Bounce message parser for DSN (RFC 3464) and heuristic detection."""
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: BSL-1.1
 """Tenants table manager with JSON field handling."""
 
 from __future__ import annotations

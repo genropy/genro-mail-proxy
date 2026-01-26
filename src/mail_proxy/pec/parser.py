@@ -1,4 +1,4 @@
-# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: BSL-1.1
 """PEC receipt parser for Italian certified email receipts.
 
 PEC receipts are standardized messages sent by PEC providers:

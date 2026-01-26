@@ -1,4 +1,4 @@
-# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: BSL-1.1
 """Two-tiered cache for attachment content.
 
 This module provides a TieredCache class that stores attachment content

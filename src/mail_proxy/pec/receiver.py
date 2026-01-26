@@ -1,4 +1,4 @@
-# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: BSL-1.1
 """PEC receipt receiver loop for polling IMAP and processing receipts.
 
 This module monitors PEC accounts for incoming receipts (ricevute) and:
