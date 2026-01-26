@@ -349,6 +349,12 @@ class TestBounceEndToEnd:
         """Messages sent via proxy include X-Genro-Mail-ID header."""
         await clear_mailhog(MAILHOG_TENANT1_API)
 
+        # Verify bounce-account exists
+        resp = await api_client.get("/accounts?tenant_id=bounce-tenant")
+        accounts = resp.json().get("accounts", [])
+        bounce_acc = next((a for a in accounts if a.get("id") == "bounce-account"), None)
+        assert bounce_acc is not None, f"bounce-account not found. Accounts: {accounts}"
+
         ts = int(time.time())
         msg_id = f"track-header-{ts}"
         message = {
@@ -365,6 +371,16 @@ class TestBounceEndToEnd:
         data = resp.json()
         assert data.get("queued", 0) >= 1, f"Message not queued: {data}"
 
+        # Verify message is in DB before dispatch
+        resp = await api_client.get(f"/messages?tenant_id=bounce-tenant")
+        pre_dispatch = resp.json().get("messages", [])
+        pre_msg = next((m for m in pre_dispatch if m.get("id") == msg_id), None)
+        assert pre_msg is not None, f"Message {msg_id} not in DB before dispatch"
+
+        await trigger_dispatch(api_client, "bounce-tenant")
+
+        # Wait a bit more and retry dispatch
+        await asyncio.sleep(3)
         await trigger_dispatch(api_client, "bounce-tenant")
 
         # Verify message was sent via API
@@ -372,7 +388,7 @@ class TestBounceEndToEnd:
         all_msgs = resp.json().get("messages", [])
         our_msg = next((m for m in all_msgs if m.get("id") == msg_id), None)
         assert our_msg is not None, f"Message {msg_id} not found in API response"
-        assert our_msg.get("sent_ts") is not None, f"Message not sent: {our_msg}"
+        assert our_msg.get("sent_ts") is not None, f"Message not sent. Account: {bounce_acc}. Message: {our_msg}"
 
         # Check MailHog for the sent email
         emails = await wait_for_messages(MAILHOG_TENANT1_API, 1, timeout=15)
@@ -398,6 +414,12 @@ class TestBounceEndToEnd:
         Note: This test simulates the database update that BounceReceiver would make.
         Full end-to-end testing requires BounceReceiver to be running and polling.
         """
+        # Verify bounce-account exists
+        resp = await api_client.get("/accounts?tenant_id=bounce-tenant")
+        accounts = resp.json().get("accounts", [])
+        bounce_acc = next((a for a in accounts if a.get("id") == "bounce-account"), None)
+        assert bounce_acc is not None, f"bounce-account not found. Accounts: {accounts}"
+
         ts = int(time.time())
         msg_id = f"bounce-update-{ts}"
 
@@ -416,14 +438,15 @@ class TestBounceEndToEnd:
         assert resp.status_code == 200
 
         await trigger_dispatch(api_client, "bounce-tenant")
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
+        await trigger_dispatch(api_client, "bounce-tenant")
 
         # 2. Verify message was sent
         resp = await api_client.get("/messages?tenant_id=bounce-tenant")
         messages = resp.json().get("messages", [])
         found = [m for m in messages if m.get("id") == msg_id]
         assert len(found) == 1
-        assert get_msg_status(found[0]) == "sent"
+        assert get_msg_status(found[0]) == "sent", f"Message not sent. Account: {bounce_acc}. Message: {found[0]}"
 
         # 3. Verify message has bounce fields available
         # (They should be None before bounce is detected)
