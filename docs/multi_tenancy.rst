@@ -298,32 +298,34 @@ The proxy sends delivery reports as HTTP POST requests:
    {
      "delivery_report": [
        {
+         "tenant_id": "acme",
          "id": "MSG-001",
-         "account_id": "smtp-acme",
-         "priority": 2,
-         "sent_ts": 1705750800,
-         "error_ts": null,
-         "error": null,
-         "deferred_ts": null
+         "pk": "550e8400-e29b-41d4-a716-446655440000",
+         "sent_ts": 1705750800
        },
        {
+         "tenant_id": "acme",
          "id": "MSG-002",
-         "account_id": "smtp-acme",
-         "priority": 2,
-         "sent_ts": null,
+         "pk": "550e8400-e29b-41d4-a716-446655440001",
          "error_ts": 1705750850,
-         "error": "550 User not found",
-         "deferred_ts": null
+         "error": "550 User not found"
        }
      ]
    }
 
-**Report status interpretation:**
+**Report fields:**
 
-- ``sent_ts`` set: Message was successfully delivered
-- ``error_ts`` set: Message delivery failed permanently
-- ``deferred_ts`` set: Message is scheduled for retry
-- All null: Message is still pending
+- ``tenant_id``: Tenant identifier
+- ``id``: Client-provided message identifier
+- ``pk``: Internal UUID primary key (useful for correlation)
+
+**Event-specific fields** (only relevant field is present):
+
+- ``sent_ts``: Unix timestamp when message was successfully delivered
+- ``error_ts`` + ``error``: Timestamp and description when delivery failed permanently
+- ``deferred_ts`` + ``deferred_reason``: Timestamp when message was deferred for retry
+- ``bounce_ts`` + ``bounce_type`` + ``bounce_code`` + ``bounce_reason``: Bounce notification details
+- ``pec_event`` + ``pec_ts`` + ``pec_details``: PEC receipt information (pec_acceptance, pec_delivery, pec_error)
 
 Expected Response
 -----------------

@@ -279,6 +279,8 @@ List all SMTP accounts for this tenant.
    # JSON output
    mail-proxy myserver acme accounts list --json
 
+Output includes: ``id``, ``tenant_id``, ``host``, ``port``, ``user``, and rate limit settings.
+
 ``mail-proxy <instance> <tenant> accounts show <account_id>``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -357,6 +359,15 @@ List queued messages.
 
    # Limit results
    mail-proxy myserver acme messages list --limit 50
+
+   # Export as CSV
+   mail-proxy myserver acme messages list --csv > messages.csv
+
+   # JSON output
+   mail-proxy myserver acme messages list --json
+
+Output includes: ``pk`` (internal UUID), ``id`` (client-provided), ``tenant_id``,
+``tenant_name``, ``account_id``, ``status``, ``priority``, and message details.
 
 ``mail-proxy <instance> <tenant> send <file.eml>``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
