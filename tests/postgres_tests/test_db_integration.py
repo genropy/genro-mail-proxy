@@ -186,7 +186,7 @@ class TestConcurrentAccess:
         now = int(time.time())
 
         async def mark_message_sent(msg_id: str):
-            await messages.mark_sent(pks[msg_id], msg_id, now)
+            await messages.mark_sent(pks[msg_id], now)
 
         await asyncio.gather(*[
             mark_message_sent(f"msg-status-{i}") for i in range(5)
