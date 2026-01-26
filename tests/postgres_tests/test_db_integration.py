@@ -135,6 +135,7 @@ class TestConcurrentAccess:
         async def insert_message(i: int):
             return await messages.insert_batch([{
                 "id": f"msg-concurrent-{i}",
+                "tenant_id": "concurrent",
                 "account_id": "concurrent-acc",
                 "priority": 2,
                 "payload": {"subject": f"Test {i}", "body": "Body"},
@@ -168,21 +169,24 @@ class TestConcurrentAccess:
             "port": 587,
         })
 
-        # Create multiple messages
+        # Create multiple messages and store pks
+        pks = {}
         for i in range(5):
-            await messages.insert_batch([{
+            inserted = await messages.insert_batch([{
                 "id": f"msg-status-{i}",
+                "tenant_id": "status",
                 "account_id": "status-acc",
                 "priority": 2,
                 "payload": {"subject": f"Test {i}", "body": "Body"},
             }])
+            pks[f"msg-status-{i}"] = inserted[0]["pk"]
 
         # Concurrent mark_sent operations
         import time
         now = int(time.time())
 
         async def mark_message_sent(msg_id: str):
-            await messages.mark_sent(msg_id, now)
+            await messages.mark_sent(pks[msg_id], msg_id, now)
 
         await asyncio.gather(*[
             mark_message_sent(f"msg-status-{i}") for i in range(5)
@@ -284,21 +288,24 @@ class TestUpsertBehavior:
         })
 
         # Insert message
-        await messages.insert_batch([{
+        inserted = await messages.insert_batch([{
             "id": "msg-to-preserve",
+            "tenant_id": "msg-upsert",
             "account_id": "msg-upsert-acc",
             "priority": 2,
             "payload": {"subject": "Original", "body": "Body"},
         }])
+        pk = inserted[0]["pk"]
 
         # Mark as sent
         import time
         sent_ts = int(time.time())
-        await messages.mark_sent("msg-to-preserve", sent_ts)
+        await messages.mark_sent(pk, "msg-to-preserve", sent_ts)
 
         # Try to upsert - should not overwrite
         result = await messages.insert_batch([{
             "id": "msg-to-preserve",
+            "tenant_id": "msg-upsert",
             "account_id": "msg-upsert-acc",
             "priority": 1,  # Different priority
             "payload": {"subject": "New", "body": "New Body"},
@@ -335,6 +342,7 @@ class TestQueryPatterns:
         for i in range(50):
             await messages.insert_batch([{
                 "id": f"in-msg-{i}",
+                "tenant_id": "in-clause",
                 "account_id": "in-clause-acc",
                 "priority": 2,
                 "payload": {"subject": f"Test {i}", "body": "Body"},
@@ -367,6 +375,7 @@ class TestQueryPatterns:
         for priority in [3, 1, 2]:
             await messages.insert_batch([{
                 "id": f"order-msg-{priority}",
+                "tenant_id": "order",
                 "account_id": "order-acc",
                 "priority": priority,
                 "payload": {"subject": f"Priority {priority}", "body": "Body"},
