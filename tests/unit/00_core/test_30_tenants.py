@@ -114,7 +114,7 @@ async def test_account_with_tenant(tmp_path):
 
 @pytest.mark.asyncio
 async def test_get_tenant_for_account(tmp_path):
-    """Test retrieving tenant configuration for an account."""
+    """Test retrieving tenant configuration using tenant_id from account."""
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
@@ -130,7 +130,9 @@ async def test_get_tenant_for_account(tmp_path):
         "port": 587,
     })
 
-    tenant = await db.get_tenant_for_account("acme-main")
+    # Get account and use its tenant_id to fetch tenant (correct approach)
+    account = await db.get_account("acme", "acme-main")
+    tenant = await db.get_tenant(account["tenant_id"])
     assert tenant is not None
     assert tenant["id"] == "acme"
     assert tenant["client_base_url"] == "https://api.acme.com/sync"
@@ -329,8 +331,8 @@ async def test_events_for_tenant_account(tmp_path):
     msg = await db.get_message("msg1", "acme")
     assert msg["account_id"] == "acme-main"
 
-    # Verify tenant can be retrieved from account
-    tenant = await db.get_tenant_for_account("acme-main")
+    # Verify tenant can be retrieved using tenant_id from message
+    tenant = await db.get_tenant(msg["tenant_id"])
     assert tenant["id"] == "acme"
 
 

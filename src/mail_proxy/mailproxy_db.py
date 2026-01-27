@@ -153,9 +153,6 @@ class MailProxyDb(SqlDb):
             await self.accounts.remove(tenant_id, account_id)
         return await self.tenants.remove(tenant_id)
 
-    async def get_tenant_for_account(self, account_id: str) -> dict[str, Any] | None:
-        return await self.tenants.get_for_account(account_id)
-
     # -------------------------------------------------------------------------
     # Accounts
     # -------------------------------------------------------------------------

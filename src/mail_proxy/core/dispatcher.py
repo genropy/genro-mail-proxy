@@ -696,16 +696,16 @@ class DispatcherMixin:
         """Get the large file configuration for a message's tenant.
 
         Args:
-            data: Message payload dictionary containing account_id.
+            data: Message payload dictionary containing tenant_id.
 
         Returns:
             Large file config dict or None if not configured.
         """
-        account_id = data.get("account_id")
-        if not account_id:
+        tenant_id = data.get("tenant_id")
+        if not tenant_id:
             return None
 
-        tenant = await self.db.get_tenant_for_account(account_id)
+        tenant = await self.db.get_tenant(tenant_id)
         if not tenant:
             return None
 
@@ -732,23 +732,23 @@ class DispatcherMixin:
     async def _get_attachment_manager_for_message(self: MailProxy, data: dict[str, Any]) -> AttachmentManager:
         """Get the appropriate AttachmentManager for a message.
 
-        If the message's account is associated with a tenant that has custom
-        attachment settings (client_base_url + client_attachment_path, client_auth),
+        If the message's tenant has custom attachment settings
+        (client_base_url + client_attachment_path, client_auth),
         creates a temporary AttachmentManager with that config.
         Otherwise returns the global AttachmentManager.
 
         Args:
-            data: Message payload dictionary containing account_id.
+            data: Message payload dictionary containing tenant_id.
 
         Returns:
             AttachmentManager configured for the message's tenant or the global one.
         """
-        account_id = data.get("account_id")
-        if not account_id:
+        tenant_id = data.get("tenant_id")
+        if not tenant_id:
             return self.attachments
 
-        # Try to get tenant config for this account
-        tenant = await self.db.get_tenant_for_account(account_id)
+        # Get tenant config directly from tenant_id
+        tenant = await self.db.get_tenant(tenant_id)
         if not tenant:
             return self.attachments
 

@@ -152,20 +152,6 @@ class TenantsTable(Table):
         rowcount = await self.delete(where={"id": tenant_id})
         return rowcount > 0
 
-    async def get_for_account(self, account_id: str) -> dict[str, Any] | None:
-        """Get the tenant configuration for a given account."""
-        tenant = await self.fetch_one(
-            """
-            SELECT t.* FROM tenants t
-            JOIN accounts a ON a.tenant_id = t.id
-            WHERE a.id = :account_id
-            """,
-            {"account_id": account_id},
-        )
-        if not tenant:
-            return None
-        return self._decode_active(tenant)
-
     def _decode_active(self, tenant: dict[str, Any]) -> dict[str, Any]:
         """Convert active INTEGER to bool."""
         tenant["active"] = bool(tenant.get("active", 1))
