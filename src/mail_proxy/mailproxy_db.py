@@ -104,9 +104,20 @@ class MailProxyDb(SqlDb):
         After creating tables, sync_schema() is called on each table to add
         any columns that may be missing from older database versions. This
         enables automatic schema migration when new columns are added.
+
+        Special migrations (like messages pk change from INTEGER to UUID)
+        are handled separately before sync_schema.
         """
         await self.connect()
         await self.check_structure()
+
+        # Run legacy schema migrations before sync_schema
+        # This handles the messages.pk INTEGER->UUID migration for pre-0.6.5 databases
+        if await self.messages.migrate_from_legacy_schema():
+            import logging
+            logging.getLogger("mail_proxy").info(
+                "Migrated messages table from legacy schema (INTEGER pk -> UUID pk)"
+            )
 
         # Sync schema for all tables - adds any missing columns automatically
         await self.tenants.sync_schema()

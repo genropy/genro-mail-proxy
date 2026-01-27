@@ -53,6 +53,74 @@ class MessagesTable(Table):
         c.column("smtp_ts", Integer)  # When SMTP send was attempted (NULL = pending)
         c.column("is_pec", Integer, default=0)  # PEC flag (1=awaiting receipts)
 
+    async def migrate_from_legacy_schema(self) -> bool:
+        """Migrate from legacy schema (INTEGER pk) to new schema (UUID pk).
+
+        This migration is needed for databases created before v0.6.5 where
+        the messages table used an INTEGER autoincrement primary key.
+
+        Returns:
+            True if migration was performed, False if not needed.
+        """
+        # Check if migration is needed by looking for pk column
+        try:
+            await self.db.adapter.fetch_one(
+                "SELECT pk FROM messages LIMIT 1"
+            )
+            return False  # pk column exists, no migration needed
+        except Exception:
+            pass  # pk column doesn't exist, need migration
+
+        # Check if old table exists at all
+        try:
+            await self.db.adapter.fetch_one(
+                "SELECT id FROM messages LIMIT 1"
+            )
+        except Exception:
+            return False  # Table doesn't exist, will be created fresh
+
+        # Migration: create new table, copy data with generated UUIDs, swap
+        await self.db.adapter.execute("""
+            CREATE TABLE messages_new (
+                pk TEXT PRIMARY KEY,
+                id TEXT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                account_id TEXT,
+                priority INTEGER NOT NULL DEFAULT 2,
+                payload TEXT NOT NULL,
+                batch_code TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                deferred_ts INTEGER,
+                smtp_ts INTEGER,
+                is_pec INTEGER DEFAULT 0,
+                UNIQUE (tenant_id, id)
+            )
+        """)
+
+        # Copy data, generating UUIDs for pk
+        rows = await self.db.adapter.fetch_all(
+            "SELECT id, tenant_id, account_id, priority, payload, batch_code, "
+            "created_at, updated_at, deferred_ts, smtp_ts, is_pec FROM messages"
+        )
+        for row in rows:
+            pk = get_uuid()
+            await self.db.adapter.execute(
+                """INSERT INTO messages_new
+                   (pk, id, tenant_id, account_id, priority, payload, batch_code,
+                    created_at, updated_at, deferred_ts, smtp_ts, is_pec)
+                   VALUES (:pk, :id, :tenant_id, :account_id, :priority, :payload,
+                           :batch_code, :created_at, :updated_at, :deferred_ts,
+                           :smtp_ts, :is_pec)""",
+                {"pk": pk, **dict(row)}
+            )
+
+        # Swap tables
+        await self.db.adapter.execute("DROP TABLE messages")
+        await self.db.adapter.execute("ALTER TABLE messages_new RENAME TO messages")
+
+        return True
+
     async def insert_batch(
         self,
         entries: Sequence[dict[str, Any]],

@@ -986,13 +986,20 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
         been incremented at least once. This method ensures metrics appear in
         /metrics output even before any email activity by initializing all
         counters for each configured SMTP account.
+
+        Always initializes at least the "default" account to ensure basic
+        metrics are visible even when no accounts are configured.
         """
         try:
+            # Always initialize "default" account for basic metrics visibility
+            self.metrics.init_account("default")
+            # Also initialize pending gauge to 0
+            self.metrics.set_pending(0)
+
             accounts = await self.db.list_accounts()
             for account in accounts:
                 account_id = account.get("id", "default")
                 self.metrics.init_account(account_id)
-            if accounts:
-                self.logger.debug("Initialized metrics for %d accounts", len(accounts))
+            self.logger.debug("Initialized metrics for %d accounts", len(accounts) + 1)
         except Exception:  # pragma: no cover - defensive
             self.logger.exception("Failed to initialize account metrics")

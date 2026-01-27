@@ -178,3 +178,72 @@ def test_mail_metrics_init_multiple_accounts():
     for account in accounts:
         assert f'gmp_sent_total{{account_id="{account}"}} 0.0' in output
         assert f'gmp_errors_total{{account_id="{account}"}} 0.0' in output
+
+
+# -----------------------------------------------------------------------------
+# Integration tests with MailProxy
+# -----------------------------------------------------------------------------
+
+import pytest
+from mail_proxy.core import MailProxy
+
+
+@pytest.mark.asyncio
+async def test_proxy_init_initializes_default_metrics(tmp_path):
+    """Test that MailProxy.init() always initializes default account metrics.
+
+    Even when no accounts are configured, /metrics should return counter values
+    for the 'default' account and the pending gauge. This ensures metrics are
+    visible immediately after startup.
+    """
+    db_path = tmp_path / "test.db"
+
+    proxy = MailProxy(db_path=str(db_path), test_mode=True)
+    await proxy.init()
+
+    try:
+        output = proxy.metrics.generate_latest().decode()
+
+        # Default account should always be initialized
+        assert 'gmp_sent_total{account_id="default"} 0.0' in output
+        assert 'gmp_errors_total{account_id="default"} 0.0' in output
+        assert 'gmp_deferred_total{account_id="default"} 0.0' in output
+        assert 'gmp_rate_limited_total{account_id="default"} 0.0' in output
+
+        # Pending gauge should be present
+        assert "gmp_pending_messages 0.0" in output
+    finally:
+        await proxy.stop()
+
+
+@pytest.mark.asyncio
+async def test_proxy_init_initializes_configured_account_metrics(tmp_path):
+    """Test that MailProxy.init() initializes metrics for configured accounts."""
+    db_path = tmp_path / "test.db"
+
+    proxy = MailProxy(db_path=str(db_path), test_mode=True)
+    await proxy.init()
+
+    try:
+        # Add tenant and account
+        await proxy.db.add_tenant({"id": "t1", "name": "Test"})
+        await proxy.db.add_account({
+            "id": "smtp1",
+            "tenant_id": "t1",
+            "host": "smtp.example.com",
+            "port": 587,
+            "user": "user",
+            "password": "pass",
+        })
+
+        # Re-init metrics
+        await proxy._init_account_metrics()
+
+        output = proxy.metrics.generate_latest().decode()
+
+        # Both default and smtp1 should be present
+        assert 'gmp_sent_total{account_id="default"} 0.0' in output
+        assert 'gmp_sent_total{account_id="smtp1"} 0.0' in output
+        assert 'gmp_errors_total{account_id="smtp1"} 0.0' in output
+    finally:
+        await proxy.stop()
