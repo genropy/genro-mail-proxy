@@ -313,6 +313,10 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
         await self.db.init_db()
         await self._refresh_queue_gauge()
 
+        # Initialize metrics for all existing accounts so they appear in /metrics
+        # even before any email activity occurs
+        await self._init_account_metrics()
+
         # Load cache configuration from environment or config file
         self._cache_config = load_cache_config(self._config_path)
 
@@ -974,3 +978,21 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
             self.logger.exception("Failed to refresh queue gauge")
             return
         self.metrics.set_pending(count)
+
+    async def _init_account_metrics(self) -> None:
+        """Initialize Prometheus counters for all existing accounts.
+
+        Prometheus counters with labels only appear in output after they have
+        been incremented at least once. This method ensures metrics appear in
+        /metrics output even before any email activity by initializing all
+        counters for each configured SMTP account.
+        """
+        try:
+            accounts = await self.db.list_accounts()
+            for account in accounts:
+                account_id = account.get("id", "default")
+                self.metrics.init_account(account_id)
+            if accounts:
+                self.logger.debug("Initialized metrics for %d accounts", len(accounts))
+        except Exception:  # pragma: no cover - defensive
+            self.logger.exception("Failed to initialize account metrics")

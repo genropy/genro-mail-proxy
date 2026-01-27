@@ -129,3 +129,52 @@ def test_mail_metrics_output_is_bytes():
 
     output = metrics.generate_latest()
     assert isinstance(output, bytes)
+
+
+def test_mail_metrics_init_account():
+    """Test that init_account initializes all counters for an account.
+
+    This is critical for Issue #8: Prometheus counters with labels only appear
+    in output after being incremented. init_account ensures metrics appear
+    even before any email activity.
+    """
+    metrics = MailMetrics()
+
+    # Before init_account, counters for 'smtp1' should not appear
+    output_before = metrics.generate_latest().decode()
+    assert 'account_id="smtp1"' not in output_before
+
+    # Initialize account
+    metrics.init_account("smtp1")
+
+    # After init_account, all counters should appear with value 0
+    output_after = metrics.generate_latest().decode()
+    assert 'gmp_sent_total{account_id="smtp1"} 0.0' in output_after
+    assert 'gmp_errors_total{account_id="smtp1"} 0.0' in output_after
+    assert 'gmp_deferred_total{account_id="smtp1"} 0.0' in output_after
+    assert 'gmp_rate_limited_total{account_id="smtp1"} 0.0' in output_after
+
+
+def test_mail_metrics_init_account_empty_uses_default():
+    """Test that init_account with empty string uses 'default' account."""
+    metrics = MailMetrics()
+
+    metrics.init_account("")
+
+    output = metrics.generate_latest().decode()
+    assert 'gmp_sent_total{account_id="default"} 0.0' in output
+
+
+def test_mail_metrics_init_multiple_accounts():
+    """Test initializing metrics for multiple accounts."""
+    metrics = MailMetrics()
+
+    accounts = ["smtp1", "smtp2", "pec-account"]
+    for account in accounts:
+        metrics.init_account(account)
+
+    output = metrics.generate_latest().decode()
+
+    for account in accounts:
+        assert f'gmp_sent_total{{account_id="{account}"}} 0.0' in output
+        assert f'gmp_errors_total{{account_id="{account}"}} 0.0' in output

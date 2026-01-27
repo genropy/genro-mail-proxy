@@ -121,6 +121,24 @@ class MailMetrics:
         """
         self.pending.set(value)
 
+    def init_account(self, account_id: str) -> None:
+        """Initialize all counters for an account with zero values.
+
+        This ensures metrics appear in Prometheus output even before any
+        actual email activity occurs. Prometheus counters with labels only
+        appear in output after being incremented, so this method explicitly
+        creates the label combinations with initial value 0.
+
+        Args:
+            account_id: The SMTP account identifier to initialize.
+        """
+        label = account_id or "default"
+        # Access labels to initialize the metric series (counter starts at 0)
+        self.sent.labels(account_id=label)
+        self.errors.labels(account_id=label)
+        self.deferred.labels(account_id=label)
+        self.rate_limited.labels(account_id=label)
+
     def generate_latest(self) -> bytes:
         """Export all metrics in Prometheus text exposition format.
 
