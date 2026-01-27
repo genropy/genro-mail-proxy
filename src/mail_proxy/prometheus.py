@@ -19,7 +19,16 @@ Example:
     Returns Prometheus text format suitable for scraping.
 """
 
-from prometheus_client import CollectorRegistry, Counter, Gauge, generate_latest
+from prometheus_client import (
+    CollectorRegistry,
+    Counter,
+    Gauge,
+    disable_created_metrics,
+    generate_latest,
+)
+
+# Disable OpenMetrics _created timestamp gauges for cleaner output
+disable_created_metrics()
 
 
 class MailMetrics:
