@@ -146,6 +146,9 @@ Import or create a dashboard with these panels:
    sum by(account_id) (rate(gmp_sent_total[5m]))
 
 
+You can find an example dashboard inside examples/grafana_dashboard.
+
+   
 Alerting Rules
 --------------
 
