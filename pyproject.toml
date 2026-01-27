@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genro-mail-proxy"
-version = "0.6.6"
+version = "0.6.7"
 description = "Asynchronous email dispatcher microservice with scheduling, rate limiting, attachments, and a FastAPI REST API."
 readme = "README.md"
 license = "Apache-2.0"
