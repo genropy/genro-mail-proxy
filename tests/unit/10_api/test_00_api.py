@@ -133,7 +133,7 @@ def test_basic_endpoints_dispatch_to_service(client_and_service):
     assert client.get("/messages?tenant_id=test-tenant").json()["ok"] is True
 
     expected_calls = [
-        ("run now", {}),
+        ("run now", {"tenant_id": None}),
         ("suspend", {"tenant_id": "test-tenant", "batch_code": None}),
         ("activate", {"tenant_id": "test-tenant", "batch_code": None}),
         (

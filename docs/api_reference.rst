@@ -20,16 +20,34 @@ Core endpoints
 
 ``POST /commands/run-now``
    Wake the dispatcher and reporting loops so they execute a cycle immediately
-   instead of waiting for the next scheduled interval. The dispatcher processes
-   all pending messages across all tenants. Useful for maintenance scripts and
-   for ``test_mode`` instances where the interval is effectively infinite.
+   instead of waiting for the next scheduled interval.
 
-   Example:
+   **Behavior depends on authentication token:**
+
+   - **Admin token**: Processes all pending messages across all tenants. Does not
+     override any tenant's "Do Not Disturb" (DND) settings.
+
+   - **Tenant token**: Only processes that specific tenant. Additionally, resets
+     the tenant's DND setting, forcing an immediate sync call even if the tenant
+     had previously requested to not be disturbed until a future time.
+
+   **Use cases:**
+
+   - **Admin token**: Maintenance scripts, test_mode instances where interval is infinite
+   - **Tenant token**: Tenant has urgent messages and needs immediate sync, even
+     if they previously set a DND period (e.g., during night hours)
+
+   Examples:
 
    .. code-block:: bash
 
+      # Admin: wake all tenants (respects DND)
       curl -X POST "http://localhost:8000/commands/run-now" \
-        -H "X-API-Token: your-token"
+        -H "X-API-Token: $ADMIN_TOKEN"
+
+      # Tenant: force immediate sync for this tenant only (overrides DND)
+      curl -X POST "http://localhost:8000/commands/run-now" \
+        -H "X-API-Token: $TENANT_TOKEN"
 
 ``POST /commands/suspend`` / ``POST /commands/activate``
    Toggle the scheduler.
@@ -161,6 +179,47 @@ See :doc:`multi_tenancy` for full architecture details.
           }
         ]
       }
+
+``GET /tenants/sync-status``
+   Retrieve synchronization status for all tenants (admin only).
+
+   Returns the last sync timestamp and Do Not Disturb status for each tenant.
+   Useful for monitoring tenant synchronization health.
+
+   Response:
+
+   .. code-block:: json
+
+      {
+        "ok": true,
+        "sync_interval_seconds": 300,
+        "tenants": [
+          {
+            "id": "tenant-acme",
+            "name": "ACME Corporation",
+            "active": true,
+            "client_base_url": "https://api.acme.com",
+            "last_sync_ts": 1706450400,
+            "next_sync_due": false,
+            "in_dnd": false
+          },
+          {
+            "id": "tenant-idle",
+            "name": "Idle Corp",
+            "active": true,
+            "client_base_url": "https://idle.example.com",
+            "last_sync_ts": 1706500800,
+            "next_sync_due": false,
+            "in_dnd": true
+          }
+        ]
+      }
+
+   **Response fields per tenant:**
+
+   - ``last_sync_ts``: Unix timestamp of last sync call (or future timestamp if DND)
+   - ``next_sync_due``: ``true`` if sync interval has expired and tenant should be called
+   - ``in_dnd``: ``true`` if tenant is in "Do Not Disturb" mode (future ``last_sync_ts``)
 
 ``GET /tenant/{tenant_id}``
    Get a specific tenant configuration.
@@ -360,6 +419,12 @@ protocol that allows you to both receive reports AND signal pending messages.
      - Number of messages your application has ready to send. **Important**: When
        ``queued > 0``, the proxy immediately re-calls sync instead of waiting
        for the normal interval (5 minutes). This enables efficient batch submission.
+   * - ``next_sync_after``
+     - int
+     - No
+     - Unix timestamp. Proxy will not sync this tenant until this time ("Do Not
+       Disturb"). Useful for serverless databases to avoid cold-start costs during
+       idle hours. Tenant can override by calling ``/commands/run-now`` with their token.
    * - ``error``
      - list[str]
      - No

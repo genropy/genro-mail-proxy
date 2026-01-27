@@ -256,7 +256,7 @@ Delivery reports endpoint
        }
      }
 
-     res.json({ sent, error });
+     res.json({ ok: true, queued: 0 });
    });
 
    // Serve attachments to the mail proxy

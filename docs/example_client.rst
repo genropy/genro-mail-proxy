@@ -692,15 +692,23 @@ The proxy sends delivery reports with this payload structure:
      ]
    }
 
-Your endpoint should respond with a summary:
+Your endpoint should respond with a JSON object:
 
 .. code-block:: json
 
    {
-     "sent": 1,
-     "error": 0,
-     "deferred": 0
+     "ok": true,
+     "queued": 0,
+     "next_sync_after": null
    }
+
+**Response fields:**
+
+- ``ok`` (bool, required): ``true`` if reports processed successfully
+- ``queued`` (int, optional): Pending messages count. When > 0, triggers immediate resync.
+- ``next_sync_after`` (int, optional): Unix timestamp for "Do Not Disturb" feature.
+
+See :doc:`protocol` for full response specification.
 
 See Also
 --------

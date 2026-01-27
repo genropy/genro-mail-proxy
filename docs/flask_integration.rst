@@ -275,7 +275,7 @@ instance. The proxy sends the token configured in the tenant's ``auth_token`` fi
                # Log the error
                # mark_email_failed(message_id, report.get("error"))
 
-       return jsonify({"sent": sent, "error": error})
+       return jsonify({"ok": True, "queued": 0})
 
 
    @app.route("/mail/attachments", methods=["POST"])
@@ -352,7 +352,7 @@ For larger applications, organize the mail functionality as a blueprint:
    def delivery_report():
        data = request.get_json()
        # Process reports...
-       return jsonify({"ok": True})
+       return jsonify({"ok": True, "queued": 0})
 
    # app.py
    from blueprints.mail import mail_bp

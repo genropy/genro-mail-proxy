@@ -314,6 +314,10 @@ Response fields:
      - int
      - No
      - Number of messages the client has ready to send
+   * - ``next_sync_after``
+     - int
+     - No
+     - Unix timestamp. Proxy will not sync this tenant until this time (Do Not Disturb).
    * - ``error``
      - list[str]
      - No
@@ -322,6 +326,68 @@ Response fields:
      - list[str]
      - No
      - Message IDs not found in client database
+
+Do Not Disturb (Sync Scheduling)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Tenants can control when the proxy calls them by including a ``next_sync_after``
+field in their sync response:
+
+.. code-block:: json
+
+   {
+     "ok": true,
+     "queued": 0,
+     "next_sync_after": 1706450400
+   }
+
+When ``next_sync_after`` is provided:
+
+- The proxy will not call this tenant until the specified Unix timestamp
+- Useful for serverless databases (Neon, PlanetScale) to avoid cold-start costs during idle hours
+- If the tenant has pending events to report, the proxy will still call them regardless of DND
+- The tenant can override DND by calling ``POST /commands/run-now`` with their tenant token
+
+If ``next_sync_after`` is omitted, the proxy uses the current time, meaning
+the tenant will be called again after the normal sync interval (5 minutes).
+
+**Example: Night-time DND**
+
+A tenant with a serverless database wants to avoid cold-starts between 11 PM and 7 AM:
+
+.. code-block:: python
+
+   from datetime import datetime, time as dtime
+
+   def calculate_next_sync():
+       now = datetime.now()
+       # If between 23:00 and 07:00, set next_sync to 07:00
+       if now.time() >= dtime(23, 0) or now.time() < dtime(7, 0):
+           tomorrow_7am = now.replace(hour=7, minute=0, second=0, microsecond=0)
+           if now.time() >= dtime(23, 0):
+               tomorrow_7am += timedelta(days=1)
+           return int(tomorrow_7am.timestamp())
+       return None  # Use default interval
+
+   @app.post("/proxy_sync")
+   async def proxy_sync(request: Request):
+       # ... process reports ...
+       return {
+           "ok": True,
+           "queued": pending_count,
+           "next_sync_after": calculate_next_sync()
+       }
+
+Tenant Starvation Prevention
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The proxy ensures all tenants are contacted periodically, even those without
+pending events to report. Every 5 minutes (default sync interval), the proxy
+calls each tenant's sync endpoint regardless of whether there are delivery
+reports to send.
+
+This prevents "starvation" where a tenant without events is never called while
+other tenants with constant activity monopolize the sync cycles.
 
 Accelerated sync loop
 ~~~~~~~~~~~~~~~~~~~~~

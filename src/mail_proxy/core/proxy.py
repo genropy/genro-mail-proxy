@@ -46,6 +46,7 @@ Attributes:
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable, Iterable
 from datetime import datetime, timezone
 from typing import Any
@@ -61,7 +62,7 @@ from ..retry import DEFAULT_MAX_RETRIES, DEFAULT_RETRY_DELAYS, RetryStrategy
 from ..smtp_pool import SMTPPool
 from .bounce_mixin import BounceReceiverMixin
 from .dispatcher import DispatcherMixin
-from .reporting import ReporterMixin
+from .reporting import DEFAULT_SYNC_INTERVAL, ReporterMixin
 
 PRIORITY_LABELS = {
     0: "immediate",
@@ -216,6 +217,7 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
         self._wake_client_event = asyncio.Event()  # Wake event for client report loop
         self._wake_cleanup_event = asyncio.Event()  # Wake event for cleanup loop
         self._run_now_tenant_id: str | None = None  # Tenant to sync on run-now (None = all)
+        self._last_sync: dict[str, float] = {}  # tenant_id → last sync timestamp (or future for DND)
         self._result_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=result_queue_size)
         self._task_smtp: asyncio.Task | None = None
         self._task_client: asyncio.Task | None = None
@@ -462,6 +464,11 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
         """Internal command dispatcher."""
         match cmd:
             case "run now":
+                tenant_id = payload.get("tenant_id") if isinstance(payload, dict) else None
+                if tenant_id:
+                    # Tenant-specific: reset last_sync to force immediate call
+                    self._last_sync[tenant_id] = 0
+                    self._run_now_tenant_id = tenant_id
                 # Global wake-up - processes all pending messages
                 self._wake_event.set()  # Wake SMTP dispatch loop (process messages)
                 self._wake_client_event.set()  # Wake client report loop
@@ -567,6 +574,39 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
                 active_only = bool(payload.get("active_only", False)) if isinstance(payload, dict) else False
                 tenants = await self.db.list_tenants(active_only=active_only)
                 return {"ok": True, "tenants": tenants}
+            case "listTenantsSyncStatus":
+                tenants = await self.db.list_tenants()
+                now = time.time()
+                result_tenants = []
+                for tenant in tenants:
+                    tenant_id = tenant.get("id")
+                    last_sync_ts = self._last_sync.get(tenant_id)
+                    # Determine if sync is due or if tenant is in DND
+                    next_sync_due = False
+                    in_dnd = False
+                    if last_sync_ts is not None:
+                        if last_sync_ts > now:
+                            # Future timestamp means DND mode
+                            in_dnd = True
+                        elif (now - last_sync_ts) >= DEFAULT_SYNC_INTERVAL:
+                            next_sync_due = True
+                    else:
+                        # Never synced - due now
+                        next_sync_due = True
+                    result_tenants.append({
+                        "id": tenant_id,
+                        "name": tenant.get("name"),
+                        "active": tenant.get("active", True),
+                        "client_base_url": tenant.get("client_base_url"),
+                        "last_sync_ts": last_sync_ts,
+                        "next_sync_due": next_sync_due,
+                        "in_dnd": in_dnd,
+                    })
+                return {
+                    "ok": True,
+                    "tenants": result_tenants,
+                    "sync_interval_seconds": DEFAULT_SYNC_INTERVAL,
+                }
             case "updateTenant":
                 tenant_id = payload.pop("id", None)
                 if not tenant_id:

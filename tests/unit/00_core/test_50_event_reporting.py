@@ -9,8 +9,6 @@ import pytest
 import pytest_asyncio
 
 from src.mail_proxy.core import MailProxy
-# Import mixin directly to ensure coverage tracks it
-from src.mail_proxy.core.event_reporting import EventReporterMixin  # noqa: F401
 
 
 @pytest_asyncio.fixture
@@ -205,7 +203,7 @@ class TestEventReportingCycle:
 
         async def mock_send_to_tenant(tenant, payloads):
             reported_payloads.extend(payloads)
-            return [p["id"] for p in payloads], 0
+            return [p["id"] for p in payloads], 0, None  # acked, queued, next_sync_after
 
         proxy._send_reports_to_tenant = mock_send_to_tenant
         proxy._active = True
@@ -310,87 +308,6 @@ class TestWaitForClientWakeup:
         elapsed = asyncio.get_event_loop().time() - start
         # Should have waited approximately 0.1 seconds
         assert 0.08 < elapsed < 0.3
-
-
-class TestSyncTenantsWithoutReports:
-    """Test _sync_tenants_without_reports method."""
-
-    @pytest.mark.asyncio
-    async def test_sync_specific_tenant(self, proxy: MailProxy):
-        """Should sync specific tenant when target_tenant_id provided."""
-        # Add tenant with client_base_url (used by get_tenant_sync_url)
-        await proxy.db.add_tenant({
-            "id": "tenant-1",
-            "name": "Test Tenant",
-            "active": True,
-            "client_base_url": "http://example.com",
-        })
-
-        # Track calls
-        sync_calls = []
-
-        async def mock_send_reports(tenant, payloads):
-            sync_calls.append((tenant["id"], payloads))
-            return [], 0
-
-        proxy._send_reports_to_tenant = mock_send_reports
-
-        result = await proxy._sync_tenants_without_reports("tenant-1")
-
-        assert result == 0
-        assert len(sync_calls) == 1
-        assert sync_calls[0][0] == "tenant-1"
-        assert sync_calls[0][1] == []  # Empty payloads
-
-    @pytest.mark.asyncio
-    async def test_sync_all_tenants(self, proxy: MailProxy):
-        """Should sync all active tenants when no target specified."""
-        # Add multiple tenants with client_base_url
-        await proxy.db.add_tenant({
-            "id": "tenant-1",
-            "name": "Tenant 1",
-            "active": True,
-            "client_base_url": "http://example1.com",
-        })
-        await proxy.db.add_tenant({
-            "id": "tenant-2",
-            "name": "Tenant 2",
-            "active": True,
-            "client_base_url": "http://example2.com",
-        })
-
-        sync_calls = []
-
-        async def mock_send_reports(tenant, payloads):
-            sync_calls.append((tenant["id"], payloads))
-            return [], 5  # Return 5 queued messages
-
-        proxy._send_reports_to_tenant = mock_send_reports
-        proxy._client_sync_url = None  # No global URL
-
-        result = await proxy._sync_tenants_without_reports(None)
-
-        assert result == 10  # 5 + 5 from two tenants
-        assert len(sync_calls) == 2
-
-    @pytest.mark.asyncio
-    async def test_sync_with_global_url(self, proxy: MailProxy):
-        """Should sync global URL when no tenants."""
-        sync_calls = []
-
-        async def mock_send_delivery_reports(payloads):
-            sync_calls.append(payloads)
-            return [], 3
-
-        proxy._send_delivery_reports = mock_send_delivery_reports
-        proxy._client_sync_url = "http://global.example.com/sync"
-        proxy._report_delivery_callable = None
-
-        result = await proxy._sync_tenants_without_reports(None)
-
-        assert result == 3
-        assert len(sync_calls) == 1
-
 
 class TestEventsToPayloadsEdgeCases:
     """Test edge cases for _events_to_payloads."""
@@ -506,7 +423,7 @@ class TestProcessClientCycleWithTenants:
 
         async def mock_send_to_tenant(tenant, payloads):
             tenant_calls[tenant["id"]] = payloads
-            return [p["id"] for p in payloads], 0
+            return [p["id"] for p in payloads], 0, None  # acked, queued, next_sync_after
 
         proxy._send_reports_to_tenant = mock_send_to_tenant
         proxy._active = True

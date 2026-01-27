@@ -519,23 +519,78 @@ The proxy sends delivery reports as HTTP POST requests:
 Expected Response
 -----------------
 
-The tenant should respond with a summary:
+The tenant should respond with a JSON object containing at minimum an ``ok`` field:
 
 .. code-block:: json
 
    {
-     "sent": 5,
-     "error": 1,
-     "deferred": 0
+     "ok": true,
+     "queued": 15,
+     "next_sync_after": null
    }
+
+**Response fields:**
+
+.. list-table::
+   :header-rows: 1
+
+   * - Field
+     - Type
+     - Required
+     - Description
+   * - ``ok``
+     - bool
+     - Yes
+     - ``true`` if reports were processed successfully
+   * - ``queued``
+     - int
+     - No
+     - Number of messages ready to send. When > 0, triggers immediate resync.
+   * - ``next_sync_after``
+     - int
+     - No
+     - Unix timestamp for "Do Not Disturb". Proxy won't call until this time.
+   * - ``error``
+     - list[str]
+     - No
+     - Message IDs that failed to process
+   * - ``not_found``
+     - list[str]
+     - No
+     - Message IDs not found in tenant's database
 
 The proxy uses this response to:
 
 1. Mark reports as acknowledged (``reported_ts`` timestamp)
-2. Eventually clean up old reports based on retention policy
+2. Schedule next sync based on ``next_sync_after`` (or default 5-minute interval)
+3. Trigger immediate resync if ``queued > 0``
+4. Eventually clean up old reports based on retention policy
 
 If the tenant returns an error (HTTP 4xx/5xx), the reports remain unacknowledged
 and will be retried on the next sync cycle.
+
+Do Not Disturb Feature
+~~~~~~~~~~~~~~~~~~~~~~
+
+Tenants with serverless databases (Neon, PlanetScale) may want to avoid cold-start
+costs during idle hours. By returning ``next_sync_after`` with a future timestamp,
+the tenant tells the proxy: "don't call me until this time".
+
+.. code-block:: json
+
+   {
+     "ok": true,
+     "queued": 0,
+     "next_sync_after": 1706500800
+   }
+
+**Important**: If the tenant has pending events to report (sent, error, bounce, etc.),
+the proxy will still call them regardless of the DND setting. DND only affects
+the periodic "heartbeat" sync calls when there are no events.
+
+**Overriding DND**: If a tenant needs immediate sync while in DND mode, they can
+call ``POST /commands/run-now`` with their tenant token. This resets their DND
+and triggers an immediate sync cycle for that tenant only.
 
 Implementing the Tenant Endpoint
 --------------------------------

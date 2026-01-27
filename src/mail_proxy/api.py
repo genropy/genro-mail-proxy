@@ -465,6 +465,23 @@ class TenantsResponse(CommandStatus):
     tenants: list[TenantInfo]
 
 
+class TenantSyncStatusEntry(BaseModel):
+    """Sync status for a single tenant."""
+    id: str
+    name: str | None = None
+    active: bool = True
+    client_base_url: str | None = None
+    last_sync_ts: float | None = Field(None, description="Unix timestamp of last sync (or future for DND)")
+    next_sync_due: bool = Field(False, description="True if sync interval has expired")
+    in_dnd: bool = Field(False, description="True if tenant is in Do Not Disturb mode")
+
+
+class TenantsSyncStatusResponse(CommandStatus):
+    """Response with sync status for all tenants."""
+    tenants: list[TenantSyncStatusEntry]
+    sync_interval_seconds: int = Field(300, description="Default sync interval")
+
+
 class ApiKeyResponse(CommandStatus):
     """Response with generated API key (shown once)."""
     api_key: str
@@ -609,11 +626,12 @@ def create_app(
         return StatusResponse(ok=True, active=service._active)
 
     @router.post("/run-now", response_model=BasicOkResponse, response_model_exclude_none=True)
-    async def run_now():
+    async def run_now(request: Request):
         """Trigger an immediate dispatch cycle without waiting for the scheduler.
 
-        Wakes up the dispatcher to process all pending messages across all tenants.
-        This is a simple "wake up" signal - the dispatcher always processes everything.
+        If called with a tenant token, only that tenant's _last_sync is reset,
+        allowing immediate sync even if in "do not disturb" mode.
+        If called with admin token, all tenants are processed normally.
 
         Returns:
             BasicOkResponse: Confirmation with ``ok=True`` after the cycle completes.
@@ -623,7 +641,11 @@ def create_app(
         """
         if not service:
             raise HTTPException(500, "Service not initialized")
-        result = await service.handle_command("run now", {})
+
+        # Deduce tenant_id from token (no validation needed)
+        tenant_id = getattr(request.state, "token_tenant_id", None)
+
+        result = await service.handle_command("run now", {"tenant_id": tenant_id})
         if not result.get("ok"):
             raise HTTPException(400, result.get("error", "Unknown error"))
         return BasicOkResponse.model_validate(result)
@@ -963,6 +985,27 @@ def create_app(
             raise HTTPException(500, "Service not initialized")
         result = await service.handle_command("listTenants", {"active_only": active_only})
         return TenantsResponse.model_validate(result)
+
+    @api.get("/tenants/sync-status", response_model=TenantsSyncStatusResponse, response_model_exclude_none=True, dependencies=[admin_dependency])
+    async def list_tenants_sync_status():
+        """Retrieve sync status for all tenants (admin only).
+
+        Returns the last sync timestamp and Do Not Disturb status for each tenant.
+        Useful for monitoring tenant synchronization health.
+
+        Returns:
+            TenantsSyncStatusResponse: Sync status for all tenants including:
+            - last_sync_ts: Unix timestamp of last sync (or future timestamp for DND)
+            - next_sync_due: True if sync interval has expired
+            - in_dnd: True if tenant is in Do Not Disturb mode
+
+        Raises:
+            HTTPException: 500 if the service is not initialized.
+        """
+        if not service:
+            raise HTTPException(500, "Service not initialized")
+        result = await service.handle_command("listTenantsSyncStatus", {})
+        return TenantsSyncStatusResponse.model_validate(result)
 
     @api.get("/tenant/{tenant_id}", response_model=TenantInfo, response_model_exclude_none=True, dependencies=[auth_dependency])
     async def get_tenant(request: Request, tenant_id: str):

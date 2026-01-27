@@ -152,7 +152,7 @@ async def make_core(tmp_path, max_retries=5) -> MailProxy:
 
     # Mock _send_reports_to_tenant to avoid real HTTP calls
     async def mock_send_reports(tenant, payloads):
-        return [p["id"] for p in payloads], 0  # acked, queued
+        return [p["id"] for p in payloads], 0, None  # acked, queued, next_sync_after
 
     core._send_reports_to_tenant = mock_send_reports
 

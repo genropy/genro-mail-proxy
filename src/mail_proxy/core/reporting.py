@@ -12,12 +12,15 @@ from __future__ import annotations
 
 import asyncio
 import math
+import time
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
 from ..entities.tenant.schema import get_tenant_sync_url
+
+DEFAULT_SYNC_INTERVAL = 300  # 5 minutes
 
 if TYPE_CHECKING:
     from .proxy import MailProxy
@@ -50,6 +53,7 @@ class ReporterMixin:
         _client_sync_password: str | None
         _report_delivery_callable: Any
         _log_delivery_activity: bool
+        _last_sync: dict[str, float]
 
     async def _client_report_loop(self: MailProxy) -> None:
         """Background coroutine that pushes delivery reports.
@@ -88,8 +92,11 @@ class ReporterMixin:
     async def _process_client_cycle(self: MailProxy) -> int:
         """Process one delivery report cycle using message_events table.
 
-        Each event (sent, error, deferred, bounce, pec_*) is reported
-        individually to per-tenant endpoints.
+        Logic:
+        1. Fetch unreported events and group by tenant
+        2. Call tenants WITH events (always)
+        3. Call tenants WITHOUT events if sync interval exceeded
+        4. Parse next_sync_after from responses to support "do not disturb"
 
         Returns:
             Total number of messages queued by all clients.
@@ -100,15 +107,11 @@ class ReporterMixin:
         target_tenant_id = self._run_now_tenant_id
         self._run_now_tenant_id = None
         total_queued = 0
+        now = time.time()
+        sync_interval = DEFAULT_SYNC_INTERVAL
 
-        # Fetch unreported events instead of messages with status fields
+        # Fetch unreported events
         events = await self.db.fetch_unreported_events(self._smtp_batch_size)
-
-        if not events:
-            # Sync tenants even without events (allows them to send new messages)
-            total_queued = await self._sync_tenants_without_reports(target_tenant_id)
-            await self._apply_retention()
-            return total_queued
 
         # Group events by tenant_id
         events_by_tenant: dict[str | None, list[dict[str, Any]]] = defaultdict(list)
@@ -116,57 +119,81 @@ class ReporterMixin:
             tenant_id = event.get("tenant_id")
             events_by_tenant[tenant_id].append(event)
 
-        # Track acknowledged event IDs
+        # Track acknowledged event IDs and called tenants
         acked_event_ids: list[int] = []
+        called_tenant_ids: set[str] = set()
 
-        # Send events to each tenant's endpoint
+        # 1. Call tenants WITH events
         for tenant_id, tenant_events in events_by_tenant.items():
-            # Convert events to delivery report payloads
             payloads = self._events_to_payloads(tenant_events)
 
+            if tenant_id is None:
+                # Handle global sync URL case
+                if self._client_sync_url or self._report_delivery_callable:
+                    try:
+                        acked, queued, next_sync = await self._send_delivery_reports(payloads)
+                        total_queued += queued
+                        acked_event_ids.extend(
+                            e["event_id"] for e in tenant_events
+                            if e.get("message_id") in acked
+                        )
+                    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                        self.logger.warning("Client sync failed: %s", exc)
+                continue
+
+            called_tenant_ids.add(tenant_id)
+            tenant = await self.db.get_tenant(tenant_id)
+            if not tenant:
+                continue
+
             try:
-                if tenant_id:
-                    tenant = await self.db.get_tenant(tenant_id)
-                    if tenant and get_tenant_sync_url(tenant):
-                        acked, queued = await self._send_reports_to_tenant(tenant, payloads)
-                        total_queued += queued
-                        # Map acked message IDs back to event IDs
-                        acked_event_ids.extend(
-                            e["event_id"] for e in tenant_events
-                            if e.get("message_id") in acked
-                        )
-                    elif self._client_sync_url:
-                        acked, queued = await self._send_delivery_reports(payloads)
-                        total_queued += queued
-                        acked_event_ids.extend(
-                            e["event_id"] for e in tenant_events
-                            if e.get("message_id") in acked
-                        )
-                    else:
-                        self.logger.warning(
-                            "No sync URL for tenant %s, skipping %d events",
-                            tenant_id, len(tenant_events)
-                        )
-                        continue
-                else:
-                    if self._client_sync_url or self._report_delivery_callable:
-                        acked, queued = await self._send_delivery_reports(payloads)
-                        total_queued += queued
-                        acked_event_ids.extend(
-                            e["event_id"] for e in tenant_events
-                            if e.get("message_id") in acked
-                        )
-                    else:
-                        self.logger.warning(
-                            "No tenant and no global sync URL, skipping %d events",
-                            len(tenant_events)
-                        )
-                        continue
+                if get_tenant_sync_url(tenant):
+                    acked, queued, next_sync = await self._send_reports_to_tenant(tenant, payloads)
+                    total_queued += queued
+                    self._last_sync[tenant_id] = next_sync if next_sync else now
+                    acked_event_ids.extend(
+                        e["event_id"] for e in tenant_events
+                        if e.get("message_id") in acked
+                    )
+                elif self._client_sync_url:
+                    acked, queued, next_sync = await self._send_delivery_reports(payloads)
+                    total_queued += queued
+                    self._last_sync[tenant_id] = next_sync if next_sync else now
+                    acked_event_ids.extend(
+                        e["event_id"] for e in tenant_events
+                        if e.get("message_id") in acked
+                    )
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                target = tenant_id or "global"
-                self.logger.warning(
-                    "Client sync failed for tenant %s: %s", target, exc
-                )
+                self.logger.warning("Client sync failed for tenant %s: %s", tenant_id, exc)
+
+        # 2. Call tenants WITHOUT events if sync interval exceeded
+        tenants = await self.db.list_tenants()
+        for tenant in tenants:
+            tenant_id = tenant.get("id")
+            if not tenant_id or not tenant.get("active"):
+                continue
+            if tenant_id in called_tenant_ids:
+                continue  # Already called above
+
+            # Check if target_tenant_id filter applies
+            if target_tenant_id and tenant_id != target_tenant_id:
+                continue
+
+            # Check sync interval (also handles DND with future timestamp)
+            last = self._last_sync.get(tenant_id, 0)
+            if (now - last) < sync_interval:
+                continue  # Not time yet
+
+            sync_url = get_tenant_sync_url(tenant)
+            if not sync_url:
+                continue
+
+            try:
+                _, queued, next_sync = await self._send_reports_to_tenant(tenant, [])
+                total_queued += queued
+                self._last_sync[tenant_id] = next_sync if next_sync else now
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                self.logger.warning("Client sync for tenant %s not reachable: %s", tenant_id, exc)
 
         # Mark acknowledged events as reported
         if acked_event_ids:
@@ -219,50 +246,6 @@ class ReporterMixin:
 
         return payloads
 
-    async def _sync_tenants_without_reports(
-        self: MailProxy, target_tenant_id: str | None
-    ) -> int:
-        """Sync tenants even when there are no reports to send.
-
-        This allows tenant servers to push new messages to enqueue.
-        """
-        total_queued = 0
-
-        if target_tenant_id:
-            tenant = await self.db.get_tenant(target_tenant_id)
-            if tenant and tenant.get("active") and get_tenant_sync_url(tenant):
-                try:
-                    _, queued = await self._send_reports_to_tenant(tenant, [])
-                    total_queued += queued
-                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                    self.logger.warning(
-                        "Client sync for tenant %s not reachable: %s",
-                        target_tenant_id, exc,
-                    )
-        else:
-            tenants = await self.db.list_tenants()
-            for tenant in tenants:
-                if tenant.get("active") and get_tenant_sync_url(tenant):
-                    try:
-                        _, queued = await self._send_reports_to_tenant(tenant, [])
-                        total_queued += queued
-                    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                        self.logger.warning(
-                            "Client sync for tenant %s not reachable: %s",
-                            tenant.get("id"), exc,
-                        )
-            if self._client_sync_url and self._report_delivery_callable is None:
-                try:
-                    _, queued = await self._send_delivery_reports([])
-                    total_queued += queued
-                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                    self.logger.warning(
-                        "Client sync endpoint %s not reachable: %s",
-                        self._client_sync_url, exc,
-                    )
-
-        return total_queued
-
     async def _apply_retention(self: MailProxy) -> None:
         """Remove messages with all events reported older than retention period.
 
@@ -303,11 +286,11 @@ class ReporterMixin:
             return
         self._wake_client_event.clear()
 
-    async def _send_delivery_reports(self: MailProxy, payloads: list[dict[str, Any]]) -> tuple[list[str], int]:
+    async def _send_delivery_reports(self: MailProxy, payloads: list[dict[str, Any]]) -> tuple[list[str], int, float | None]:
         """Send delivery report payloads to the configured proxy or callback.
 
         Returns:
-            Tuple of (message IDs that were processed, queued message count from client).
+            Tuple of (message IDs processed, queued count, next_sync_after timestamp or None).
         """
         if self._report_delivery_callable is not None:
             if self._log_delivery_activity:
@@ -324,12 +307,12 @@ class ReporterMixin:
                 )
             for payload in payloads:
                 await self._report_delivery_callable(payload)
-            # When using callable, assume all IDs are processed, no queued info available
-            return [p["id"] for p in payloads if p.get("id")], 0
+            # When using callable, assume all IDs are processed, no queued/next_sync info
+            return [p["id"] for p in payloads if p.get("id")], 0, None
         if not self._client_sync_url:
             if payloads:
                 raise RuntimeError("Client sync URL is not configured")
-            return [], 0
+            return [], 0, None
         headers: dict[str, str] = {}
         auth = None
         if self._client_sync_token:
@@ -367,12 +350,17 @@ class ReporterMixin:
             not_found_ids: list[str] = []
             is_ok = False
             queued_count = 0
+            next_sync_after: float | None = None
             try:
                 response_data = await resp.json()
                 is_ok = response_data.get("ok", False)
                 error_ids = response_data.get("error", [])
                 not_found_ids = response_data.get("not_found", [])
                 queued_count = response_data.get("queued", 0)
+                # Parse next_sync_after for "do not disturb" feature
+                raw_next_sync = response_data.get("next_sync_after")
+                if raw_next_sync is not None:
+                    next_sync_after = float(raw_next_sync)
             except Exception:
                 # No valid JSON response - still mark all as reported to avoid infinite loops
                 self.logger.warning(
@@ -401,11 +389,11 @@ class ReporterMixin:
                 batch_size,
                 queued_count,
             )
-        return processed_ids, queued_count
+        return processed_ids, queued_count, next_sync_after
 
     async def _send_reports_to_tenant(
         self: MailProxy, tenant: dict[str, Any], payloads: list[dict[str, Any]]
-    ) -> tuple[list[str], int]:
+    ) -> tuple[list[str], int, float | None]:
         """Send delivery report payloads to a tenant-specific endpoint.
 
         Args:
@@ -413,7 +401,9 @@ class ReporterMixin:
             payloads: List of delivery report payloads to send.
 
         Returns:
-            Tuple of (message IDs acknowledged by client, queued message count from client).
+            Tuple of (message IDs acknowledged, queued count, next_sync_after timestamp or None).
+            If next_sync_after is provided by client, it indicates when the proxy should
+            next contact this tenant (supports "do not disturb" feature).
 
         Raises:
             aiohttp.ClientError: If the HTTP request fails.
@@ -474,12 +464,17 @@ class ReporterMixin:
             not_found_ids: list[str] = []
             is_ok = False
             queued_count = 0
+            next_sync_after: float | None = None
             try:
                 response_data = await resp.json()
                 is_ok = response_data.get("ok", False)
                 error_ids = response_data.get("error", [])
                 not_found_ids = response_data.get("not_found", [])
                 queued_count = response_data.get("queued", 0)
+                # Parse next_sync_after for "do not disturb" feature
+                raw_next_sync = response_data.get("next_sync_after")
+                if raw_next_sync is not None:
+                    next_sync_after = float(raw_next_sync)
             except Exception as e:
                 # No valid JSON response - still mark all as reported to avoid infinite loops
                 response_text = await resp.text()
@@ -516,4 +511,4 @@ class ReporterMixin:
                 batch_size,
                 queued_count,
             )
-        return processed_ids, queued_count
+        return processed_ids, queued_count, next_sync_after

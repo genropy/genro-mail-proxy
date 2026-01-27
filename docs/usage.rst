@@ -270,7 +270,14 @@ response from your application is:
 
 .. code-block:: json
 
-   {"sent": 12, "error": 1, "deferred": 0}
+   {"ok": true, "queued": 15, "next_sync_after": null}
+
+**Response fields:**
+
+- ``ok`` (bool, required): ``true`` if reports were processed successfully
+- ``queued`` (int, optional): Pending messages count. When > 0, triggers immediate resync.
+- ``next_sync_after`` (int, optional): Unix timestamp for "Do Not Disturb" feature.
+  The proxy won't call again until this time (unless there are events to report).
 
 Your application will subsequently push new messages through ``/commands/add-messages``.
 For automated deployments the background SMTP and reporting loops poll the queue

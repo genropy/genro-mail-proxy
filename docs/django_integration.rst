@@ -299,7 +299,7 @@ to ensure it comes from your mail proxy instance.
                deferred += 1
                # Message was rate-limited, will be retried
 
-       return JsonResponse({"sent": sent, "error": error, "deferred": deferred})
+       return JsonResponse({"ok": True, "queued": 0})
 
 Serving attachments
 -------------------
