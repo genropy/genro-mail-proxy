@@ -58,3 +58,28 @@ class TestPostgresPlaceholderConversion:
         assert convert("a::text") == "a::text"
         assert convert("a::int WHERE x = :x") == "a::int WHERE x = %(x)s"
         assert convert(":p::jsonb") == "%(p)s::jsonb"
+
+
+class TestPostgresPoolConfiguration:
+    """Test PostgreSQL connection pool configuration."""
+
+    def test_connect_sets_search_path_to_public(self):
+        """Verify that connection pool configures search_path to 'public'.
+
+        This ensures tables are created in a valid schema even when
+        the connection default search_path is empty/unset.
+        """
+        from mail_proxy.sql.adapters.postgresql import PostgresAdapter
+
+        try:
+            adapter = PostgresAdapter("postgresql://test:test@localhost/test")
+        except ImportError:
+            pytest.skip("psycopg not installed")
+
+        # Verify the connect method includes a configure callback
+        import inspect
+        source = inspect.getsource(adapter.connect)
+
+        # Check that search_path is set to public in the configure function
+        assert "SET search_path TO public" in source
+        assert "configure" in source

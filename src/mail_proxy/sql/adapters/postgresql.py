@@ -46,14 +46,23 @@ class PostgresAdapter(DbAdapter):
         return re.sub(r"(?<!:):([a-zA-Z_][a-zA-Z0-9_]*)", r"%(\1)s", query)
 
     async def connect(self) -> None:
-        """Establish connection pool."""
+        """Establish connection pool.
+
+        Sets search_path to 'public' schema to ensure tables are created
+        in a valid schema even when the connection default is unset.
+        """
         from psycopg_pool import AsyncConnectionPool
+
+        # Configure connection to use 'public' schema by default
+        async def configure(conn):
+            await conn.execute("SET search_path TO public")
 
         self._pool = AsyncConnectionPool(
             self.dsn,
             min_size=1,
             max_size=self.pool_size,
             open=False,
+            configure=configure,
         )
         await self._pool.open()
 
