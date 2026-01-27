@@ -56,6 +56,7 @@ class PostgresAdapter(DbAdapter):
         # Configure connection to use 'public' schema by default
         async def configure(conn):
             await conn.execute("SET search_path TO public")
+            await conn.commit()
 
         self._pool = AsyncConnectionPool(
             self.dsn,

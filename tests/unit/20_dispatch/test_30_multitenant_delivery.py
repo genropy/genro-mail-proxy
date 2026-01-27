@@ -45,16 +45,16 @@ class DummyMetrics:
     def set_pending(self, value: int):
         pass
 
-    def inc_sent(self, account_id: str):
+    def inc_sent(self, tenant_id=None, tenant_name=None, account_id=None, account_name=None):
         pass
 
-    def inc_error(self, account_id: str):
+    def inc_error(self, tenant_id=None, tenant_name=None, account_id=None, account_name=None):
         pass
 
-    def inc_deferred(self, account_id: str):
+    def inc_deferred(self, tenant_id=None, tenant_name=None, account_id=None, account_name=None):
         pass
 
-    def inc_rate_limited(self, account_id: str):
+    def inc_rate_limited(self, tenant_id=None, tenant_name=None, account_id=None, account_name=None):
         pass
 
 

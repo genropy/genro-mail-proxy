@@ -992,14 +992,24 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
         """
         try:
             # Always initialize "default" account for basic metrics visibility
-            self.metrics.init_account("default")
+            self.metrics.init_account()  # Uses defaults for all labels
             # Also initialize pending gauge to 0
             self.metrics.set_pending(0)
 
+            # Get all tenants to map tenant_id -> tenant_name
+            tenants = await self.db.list_tenants()
+            tenant_names = {t["id"]: t.get("name", t["id"]) for t in tenants}
+
             accounts = await self.db.list_accounts()
             for account in accounts:
+                tenant_id = account.get("tenant_id", "default")
                 account_id = account.get("id", "default")
-                self.metrics.init_account(account_id)
+                self.metrics.init_account(
+                    tenant_id=tenant_id,
+                    tenant_name=tenant_names.get(tenant_id, tenant_id),
+                    account_id=account_id,
+                    account_name=account_id,  # No separate name field for accounts
+                )
             self.logger.debug("Initialized metrics for %d accounts", len(accounts) + 1)
         except Exception:  # pragma: no cover - defensive
             self.logger.exception("Failed to initialize account metrics")

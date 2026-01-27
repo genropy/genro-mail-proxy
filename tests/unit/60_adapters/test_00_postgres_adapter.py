@@ -83,3 +83,5 @@ class TestPostgresPoolConfiguration:
         # Check that search_path is set to public in the configure function
         assert "SET search_path TO public" in source
         assert "configure" in source
+        # Verify commit is called after SET to avoid INTRANS state
+        assert "conn.commit()" in source

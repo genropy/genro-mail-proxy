@@ -11,6 +11,12 @@ Metrics exposed:
     - ``gmp_rate_limited_total``: Counter of rate limit hits per account.
     - ``gmp_pending_messages``: Gauge of messages currently in queue.
 
+All counters are labeled by:
+    - ``tenant_id``: Tenant identifier
+    - ``tenant_name``: Human-readable tenant name
+    - ``account_id``: SMTP account identifier
+    - ``account_name``: Human-readable account name (defaults to account_id)
+
 Example:
     Accessing metrics via the REST API::
 
@@ -30,13 +36,16 @@ from prometheus_client import (
 # Disable OpenMetrics _created timestamp gauges for cleaner output
 disable_created_metrics()
 
+# Label names for all counters
+LABEL_NAMES = ["tenant_id", "tenant_name", "account_id", "account_name"]
+
 
 class MailMetrics:
     """Prometheus metrics collector for the mail dispatcher.
 
     Encapsulates all Prometheus counters and gauges used to monitor email
-    dispatch operations. Each metric is labeled by ``account_id`` to enable
-    per-account monitoring and alerting.
+    dispatch operations. Each metric is labeled by tenant and account info
+    to enable per-tenant and per-account monitoring and alerting.
 
     Attributes:
         registry: The Prometheus CollectorRegistry holding all metrics.
@@ -59,25 +68,25 @@ class MailMetrics:
         self.sent = Counter(
             "gmp_sent_total",
             "Total sent emails",
-            ["account_id"],
+            LABEL_NAMES,
             registry=self.registry,
         )
         self.errors = Counter(
             "gmp_errors_total",
             "Total send errors",
-            ["account_id"],
+            LABEL_NAMES,
             registry=self.registry,
         )
         self.deferred = Counter(
             "gmp_deferred_total",
             "Total deferred emails",
-            ["account_id"],
+            LABEL_NAMES,
             registry=self.registry,
         )
         self.rate_limited = Counter(
             "gmp_rate_limited_total",
             "Total rate limited occurrences",
-            ["account_id"],
+            LABEL_NAMES,
             registry=self.registry,
         )
         self.pending = Gauge(
@@ -86,41 +95,62 @@ class MailMetrics:
             registry=self.registry,
         )
 
-    def inc_sent(self, account_id: str) -> None:
-        """Increment the sent counter for an account.
+    def _labels(
+        self,
+        tenant_id: str | None = None,
+        tenant_name: str | None = None,
+        account_id: str | None = None,
+        account_name: str | None = None,
+    ) -> dict[str, str]:
+        """Build label dict with defaults."""
+        tid = tenant_id or "default"
+        aid = account_id or "default"
+        return {
+            "tenant_id": tid,
+            "tenant_name": tenant_name or tid,
+            "account_id": aid,
+            "account_name": account_name or aid,
+        }
 
-        Args:
-            account_id: The SMTP account identifier. Falls back to "default"
-                if empty or None.
-        """
-        self.sent.labels(account_id=account_id or "default").inc()
+    def inc_sent(
+        self,
+        tenant_id: str | None = None,
+        tenant_name: str | None = None,
+        account_id: str | None = None,
+        account_name: str | None = None,
+    ) -> None:
+        """Increment the sent counter."""
+        self.sent.labels(**self._labels(tenant_id, tenant_name, account_id, account_name)).inc()
 
-    def inc_error(self, account_id: str) -> None:
-        """Increment the error counter for an account.
+    def inc_error(
+        self,
+        tenant_id: str | None = None,
+        tenant_name: str | None = None,
+        account_id: str | None = None,
+        account_name: str | None = None,
+    ) -> None:
+        """Increment the error counter."""
+        self.errors.labels(**self._labels(tenant_id, tenant_name, account_id, account_name)).inc()
 
-        Args:
-            account_id: The SMTP account identifier. Falls back to "default"
-                if empty or None.
-        """
-        self.errors.labels(account_id=account_id or "default").inc()
+    def inc_deferred(
+        self,
+        tenant_id: str | None = None,
+        tenant_name: str | None = None,
+        account_id: str | None = None,
+        account_name: str | None = None,
+    ) -> None:
+        """Increment the deferred counter."""
+        self.deferred.labels(**self._labels(tenant_id, tenant_name, account_id, account_name)).inc()
 
-    def inc_deferred(self, account_id: str) -> None:
-        """Increment the deferred counter for an account.
-
-        Args:
-            account_id: The SMTP account identifier. Falls back to "default"
-                if empty or None.
-        """
-        self.deferred.labels(account_id=account_id or "default").inc()
-
-    def inc_rate_limited(self, account_id: str) -> None:
-        """Increment the rate-limited counter for an account.
-
-        Args:
-            account_id: The SMTP account identifier. Falls back to "default"
-                if empty or None.
-        """
-        self.rate_limited.labels(account_id=account_id or "default").inc()
+    def inc_rate_limited(
+        self,
+        tenant_id: str | None = None,
+        tenant_name: str | None = None,
+        account_id: str | None = None,
+        account_name: str | None = None,
+    ) -> None:
+        """Increment the rate-limited counter."""
+        self.rate_limited.labels(**self._labels(tenant_id, tenant_name, account_id, account_name)).inc()
 
     def set_pending(self, value: int) -> None:
         """Set the pending messages gauge to a specific value.
@@ -130,23 +160,25 @@ class MailMetrics:
         """
         self.pending.set(value)
 
-    def init_account(self, account_id: str) -> None:
+    def init_account(
+        self,
+        tenant_id: str | None = None,
+        tenant_name: str | None = None,
+        account_id: str | None = None,
+        account_name: str | None = None,
+    ) -> None:
         """Initialize all counters for an account with zero values.
 
         This ensures metrics appear in Prometheus output even before any
         actual email activity occurs. Prometheus counters with labels only
         appear in output after being incremented, so this method explicitly
         creates the label combinations with initial value 0.
-
-        Args:
-            account_id: The SMTP account identifier to initialize.
         """
-        label = account_id or "default"
-        # Access labels to initialize the metric series (counter starts at 0)
-        self.sent.labels(account_id=label)
-        self.errors.labels(account_id=label)
-        self.deferred.labels(account_id=label)
-        self.rate_limited.labels(account_id=label)
+        labels = self._labels(tenant_id, tenant_name, account_id, account_name)
+        self.sent.labels(**labels)
+        self.errors.labels(**labels)
+        self.deferred.labels(**labels)
+        self.rate_limited.labels(**labels)
 
     def generate_latest(self) -> bytes:
         """Export all metrics in Prometheus text exposition format.

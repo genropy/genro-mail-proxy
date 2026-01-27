@@ -292,6 +292,14 @@ class DispatcherMixin:
 
         tenant_id = payload.get("tenant_id") or ""
         account_id = payload.get("account_id")
+
+        # Fetch tenant name for metrics (best effort, fallback to tenant_id)
+        tenant_name = tenant_id
+        if tenant_id:
+            tenant = await self.db.get_tenant(tenant_id)
+            if tenant:
+                tenant_name = tenant.get("name") or tenant_id
+
         try:
             host, port, user, password, acc = await self._resolve_account(tenant_id, account_id)
         except AccountConfigurationError as exc:
@@ -311,9 +319,17 @@ class DispatcherMixin:
         use_tls = int(port) == 465 if use_tls is None else bool(use_tls)
         resolved_account_id = account_id or acc.get("id") or "default"
 
+        # Prepare metrics labels
+        metric_labels = {
+            "tenant_id": tenant_id,
+            "tenant_name": tenant_name,
+            "account_id": resolved_account_id,
+            "account_name": resolved_account_id,  # Account has no separate name field
+        }
+
         deferred_until, should_reject = await self.rate_limiter.check_and_plan(acc)
         if deferred_until:
-            self.metrics.inc_rate_limited(resolved_account_id)
+            self.metrics.inc_rate_limited(**metric_labels)
 
             if should_reject:
                 # Rate limit exceeded with reject behavior - mark as error
@@ -338,7 +354,7 @@ class DispatcherMixin:
             # This is flow control, not an error, so it won't be reported to client.
             if pk:
                 await self.db.set_deferred(pk, deferred_until)
-            self.metrics.inc_deferred(resolved_account_id)
+            self.metrics.inc_deferred(**metric_labels)
             self.logger.debug(
                 "Message %s rate-limited for account %s, deferred until %s",
                 msg_id,
@@ -377,7 +393,7 @@ class DispatcherMixin:
                     await self.db.update_message_payload(pk, updated_payload)
                 if pk:
                     await self.db.set_deferred(pk, deferred_until)
-                self.metrics.inc_deferred(resolved_account_id)
+                self.metrics.inc_deferred(**metric_labels)
 
                 # Log the retry attempt
                 error_info = f"{exc} (SMTP {smtp_code})" if smtp_code else str(exc)
@@ -423,7 +439,7 @@ class DispatcherMixin:
 
                 if pk:
                     await self.db.mark_error(pk, error_ts, error_info)
-                self.metrics.inc_error(resolved_account_id)
+                self.metrics.inc_error(**metric_labels)
 
                 return {
                     "id": msg_id,
@@ -439,7 +455,7 @@ class DispatcherMixin:
         if pk:
             await self.db.mark_sent(pk, sent_ts)
         await self.rate_limiter.log_send(resolved_account_id)
-        self.metrics.inc_sent(resolved_account_id)
+        self.metrics.inc_sent(**metric_labels)
         return {
             "id": msg_id,
             "status": "sent",
