@@ -1,0 +1,342 @@
+# Pressure Test Infrastructure for genro-mail-proxy
+#
+# Designed for realistic load testing with full sync protocol simulation.
+# Easy migration to Kubernetes - all services are stateless or use external volumes.
+#
+# Architecture:
+#   - mailproxy: The service under test (scalable)
+#   - PostgreSQL: Shared database
+#   - MailHog: SMTP sink (accepts all, sends nothing)
+#   - Simulated Clients: Realistic tenant applications that:
+#     * Receive delivery reports via POST /sync
+#     * Return new messages to send
+#     * Serve attachments via POST /attachments
+#     * Support MD5-based caching
+#   - Prometheus + Grafana: Real-time monitoring
+#
+# Usage:
+#   1. Start: docker compose -f docker-compose.pressure.yml up -d
+#   2. Open Grafana: http://localhost:3000 (admin/admin)
+#   3. Check client stats: curl http://localhost:8081/stats
+#   4. Monitor in Grafana dashboard
+#
+# The proxy will automatically sync with simulated clients,
+# which generate new messages and serve attachments on demand.
+#
+# Kubernetes migration:
+#   - Each service maps to a Deployment
+#   - Use ConfigMaps for configuration
+#   - Use PersistentVolumeClaims for data
+#   - Use Services for internal networking
+
+services:
+  # ============================================
+  # DATABASE (PostgreSQL)
+  # ============================================
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mailproxy
+      POSTGRES_PASSWORD: pressure-test-pwd
+      POSTGRES_DB: mailproxy
+      # Performance tuning for load testing
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=200"
+      - "-c"
+      - "shared_buffers=256MB"
+      - "-c"
+      - "work_mem=16MB"
+      - "-c"
+      - "maintenance_work_mem=128MB"
+      - "-c"
+      - "effective_cache_size=512MB"
+      - "-c"
+      - "synchronous_commit=off"  # Faster writes for testing
+    volumes:
+      - pressure-pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mailproxy"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pressure-net
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "2"
+
+  # ============================================
+  # MAIL PROXY SERVICE (under test)
+  # Scale with: docker compose up -d --scale mailproxy=3
+  # ============================================
+  mailproxy:
+    image: ghcr.io/genropy/genro-mail-proxy:latest
+    # Or build locally:
+    # build:
+    #   context: ../..
+    #   dockerfile: Dockerfile
+    environment:
+      GMP_DB_PATH: postgresql://mailproxy:pressure-test-pwd@db:5432/mailproxy
+      GMP_API_TOKEN: pressure-test-token
+      GMP_SEND_LOOP_INTERVAL: "1"        # Fast dispatch loop
+      GMP_BATCH_SIZE_PER_ACCOUNT: "50"   # Larger batches
+      GMP_POOL_SIZE: "20"                # More SMTP connections
+      GMP_LOG_LEVEL: "WARNING"           # Reduce log noise
+      # Disable sync callbacks for pure pressure test
+      # GMP_CLIENT_SYNC_URL: http://echo-server:8080/sync
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - pressure-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1"
+
+  # ============================================
+  # SMTP SINK (MailHog - accepts all, sends nothing)
+  # ============================================
+  mailhog:
+    image: mailhog/mailhog:latest
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI / API
+    environment:
+      # Increase storage for pressure test
+      MH_STORAGE: memory
+      MH_MAILDIR_PATH: /maildir
+    networks:
+      - pressure-net
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1"
+
+  # ============================================
+  # PROMETHEUS (metrics collection)
+  # ============================================
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=1d'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - pressure-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
+  # ============================================
+  # GRAFANA (dashboards)
+  # ============================================
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - pressure-net
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+
+  # ============================================
+  # SIMULATED TENANT CLIENTS
+  # These receive delivery reports, generate new messages,
+  # and serve attachments with cache support.
+  # Scale with: docker compose up -d --scale client-high-volume=3
+  # ============================================
+
+  # High-volume transactional tenant (many small messages)
+  client-high-volume:
+    build:
+      context: ./simulated-client
+    ports:
+      - "8081:8080"
+    environment:
+      CLIENT_ID: high-volume-1
+      TENANT_ID: tenant-high-volume
+      MSG_RATE_PER_SYNC: "20"
+      ATTACHMENT_CACHE_HIT_RATE: "0.1"
+      DND_PROBABILITY: "0.02"
+      LARGE_ATTACHMENT_RATE: "0.05"
+    networks:
+      - pressure-net
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+
+  # Standard usage tenant
+  client-standard:
+    build:
+      context: ./simulated-client
+    ports:
+      - "8082:8080"
+    environment:
+      CLIENT_ID: standard-1
+      TENANT_ID: tenant-standard
+      MSG_RATE_PER_SYNC: "5"
+      ATTACHMENT_CACHE_HIT_RATE: "0.3"
+      DND_PROBABILITY: "0.05"
+      LARGE_ATTACHMENT_RATE: "0.1"
+    networks:
+      - pressure-net
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+
+  # Newsletter/marketing tenant (large batches, medium attachments)
+  client-newsletter:
+    build:
+      context: ./simulated-client
+    ports:
+      - "8084:8080"
+    environment:
+      CLIENT_ID: newsletter-1
+      TENANT_ID: tenant-newsletter
+      MSG_RATE_PER_SYNC: "50"
+      ATTACHMENT_CACHE_HIT_RATE: "0.5"  # Often reuse same images
+      DND_PROBABILITY: "0.1"  # Serverless, more DND
+      LARGE_ATTACHMENT_RATE: "0.15"
+    networks:
+      - pressure-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
+  # Document delivery tenant (few messages, large attachments)
+  client-documents:
+    build:
+      context: ./simulated-client
+    ports:
+      - "8085:8080"
+    environment:
+      CLIENT_ID: documents-1
+      TENANT_ID: tenant-documents
+      MSG_RATE_PER_SYNC: "2"
+      ATTACHMENT_CACHE_HIT_RATE: "0.2"
+      DND_PROBABILITY: "0.05"
+      LARGE_ATTACHMENT_RATE: "0.5"  # 50% large attachments
+    networks:
+      - pressure-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
+  # ============================================
+  # SETUP SERVICE (initializes tenants and accounts)
+  # Runs once at startup to configure the proxy
+  # ============================================
+  setup:
+    image: curlimages/curl:latest
+    depends_on:
+      mailproxy:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Setting up tenants and accounts..."
+
+        # Create high-volume tenant
+        curl -s -X POST http://mailproxy:8000/tenant \
+          -H "X-API-Token: pressure-test-token" \
+          -H "Content-Type: application/json" \
+          -d '{"id":"tenant-high-volume","name":"High Volume Tenant","active":true,"client_base_url":"http://client-high-volume:8080","client_sync_path":"/sync","client_attachment_path":"/attachments"}'
+
+        curl -s -X POST http://mailproxy:8000/account \
+          -H "X-API-Token: pressure-test-token" \
+          -H "Content-Type: application/json" \
+          -d '{"id":"smtp-high-volume","tenant_id":"tenant-high-volume","smtp_host":"mailhog","smtp_port":1025,"smtp_user":"test","smtp_password":"test","sender_email":"noreply@high-volume.test","use_tls":false,"use_ssl":false}'
+
+        # Create standard tenant
+        curl -s -X POST http://mailproxy:8000/tenant \
+          -H "X-API-Token: pressure-test-token" \
+          -H "Content-Type: application/json" \
+          -d '{"id":"tenant-standard","name":"Standard Tenant","active":true,"client_base_url":"http://client-standard:8080","client_sync_path":"/sync","client_attachment_path":"/attachments"}'
+
+        curl -s -X POST http://mailproxy:8000/account \
+          -H "X-API-Token: pressure-test-token" \
+          -H "Content-Type: application/json" \
+          -d '{"id":"smtp-standard","tenant_id":"tenant-standard","smtp_host":"mailhog","smtp_port":1025,"smtp_user":"test","smtp_password":"test","sender_email":"noreply@standard.test","use_tls":false,"use_ssl":false}'
+
+        # Create newsletter tenant
+        curl -s -X POST http://mailproxy:8000/tenant \
+          -H "X-API-Token: pressure-test-token" \
+          -H "Content-Type: application/json" \
+          -d '{"id":"tenant-newsletter","name":"Newsletter Tenant","active":true,"client_base_url":"http://client-newsletter:8080","client_sync_path":"/sync","client_attachment_path":"/attachments"}'
+
+        curl -s -X POST http://mailproxy:8000/account \
+          -H "X-API-Token: pressure-test-token" \
+          -H "Content-Type: application/json" \
+          -d '{"id":"smtp-newsletter","tenant_id":"tenant-newsletter","smtp_host":"mailhog","smtp_port":1025,"smtp_user":"test","smtp_password":"test","sender_email":"noreply@newsletter.test","use_tls":false,"use_ssl":false}'
+
+        # Create documents tenant
+        curl -s -X POST http://mailproxy:8000/tenant \
+          -H "X-API-Token: pressure-test-token" \
+          -H "Content-Type: application/json" \
+          -d '{"id":"tenant-documents","name":"Documents Tenant","active":true,"client_base_url":"http://client-documents:8080","client_sync_path":"/sync","client_attachment_path":"/attachments"}'
+
+        curl -s -X POST http://mailproxy:8000/account \
+          -H "X-API-Token: pressure-test-token" \
+          -H "Content-Type: application/json" \
+          -d '{"id":"smtp-documents","tenant_id":"tenant-documents","smtp_host":"mailhog","smtp_port":1025,"smtp_user":"test","smtp_password":"test","sender_email":"noreply@documents.test","use_tls":false,"use_ssl":false}'
+
+        echo "Setup complete!"
+    networks:
+      - pressure-net
+
+networks:
+  pressure-net:
+    driver: bridge
+
+volumes:
+  pressure-pgdata:
+  prometheus-data:
+  grafana-data:
