@@ -148,6 +148,7 @@ with separate databases.
    pec
    api_reference
    faq
+   appendix_endpoints
    modules
    contributing
    fullstack_testing
