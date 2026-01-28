@@ -102,8 +102,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (account_name, tenant_name) (rate(gmp_sent_total{account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval]))",
-          "legendFormat": "{{account_name}} / {{tenant_name}}",
+          "expr": "sum by (service, account_name, tenant_name) (rate(gmp_sent_total{service=~\"$service\", account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval]))",
+          "legendFormat": "[{{service}}] {{account_name}} / {{tenant_name}}",
           "range": true,
           "refId": "A"
         }
@@ -195,8 +195,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (account_name, tenant_name) (rate(gmp_errors_total{account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval]))",
-          "legendFormat": "{{account_name}} / {{tenant_name}}",
+          "expr": "sum by (service, account_name, tenant_name) (rate(gmp_errors_total{service=~\"$service\", account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval]))",
+          "legendFormat": "[{{service}}] {{account_name}} / {{tenant_name}}",
           "range": true,
           "refId": "A"
         }
@@ -261,7 +261,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "100 * sum(rate(gmp_sent_total{account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval])) / (sum(rate(gmp_sent_total{account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval])) + sum(rate(gmp_errors_total{account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval])))",
+          "expr": "100 * sum(rate(gmp_sent_total{service=~\"$service\", account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval])) / (sum(rate(gmp_sent_total{service=~\"$service\", account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval])) + sum(rate(gmp_errors_total{service=~\"$service\", account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval])))",
           "legendFormat": "Success Rate",
           "range": true,
           "refId": "A"
@@ -327,7 +327,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "gmp_pending_messages",
+          "expr": "gmp_pending_messages{service=~\"$service\"}",
           "legendFormat": "Pending",
           "range": true,
           "refId": "A"
@@ -387,7 +387,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(gmp_sent_total{account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"})",
+          "expr": "sum(gmp_sent_total{service=~\"$service\", account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"})",
           "legendFormat": "Total Sent",
           "range": true,
           "refId": "A"
@@ -451,7 +451,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(gmp_errors_total{account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"})",
+          "expr": "sum(gmp_errors_total{service=~\"$service\", account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"})",
           "legendFormat": "Total Errors",
           "range": true,
           "refId": "A"
@@ -540,8 +540,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (account_name, tenant_name) (rate(gmp_deferred_total{account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval]))",
-          "legendFormat": "{{account_name}} / {{tenant_name}}",
+          "expr": "sum by (service, account_name, tenant_name) (rate(gmp_deferred_total{service=~\"$service\", account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval]))",
+          "legendFormat": "[{{service}}] {{account_name}} / {{tenant_name}}",
           "range": true,
           "refId": "A"
         }
@@ -637,8 +637,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (account_name, tenant_name) (rate(gmp_rate_limited_total{account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval]))",
-          "legendFormat": "{{account_name}} / {{tenant_name}}",
+          "expr": "sum by (service, account_name, tenant_name) (rate(gmp_rate_limited_total{service=~\"$service\", account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval]))",
+          "legendFormat": "[{{service}}] {{account_name}} / {{tenant_name}}",
           "range": true,
           "refId": "A"
         }
@@ -694,8 +694,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (account_name) (increase(gmp_sent_total{account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__range]))",
-          "legendFormat": "{{account_name}}",
+          "expr": "sum by (service, account_name) (increase(gmp_sent_total{service=~\"$service\", account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__range]))",
+          "legendFormat": "[{{service}}] {{account_name}}",
           "range": true,
           "refId": "A"
         }
@@ -751,8 +751,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (tenant_name) (increase(gmp_sent_total{account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__range]))",
-          "legendFormat": "{{tenant_name}}",
+          "expr": "sum by (service, tenant_name) (increase(gmp_sent_total{service=~\"$service\", account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__range]))",
+          "legendFormat": "[{{service}}] {{tenant_name}}",
           "range": true,
           "refId": "A"
         }
@@ -927,7 +927,7 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "sum by (account_name, tenant_name) (rate(gmp_sent_total{account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval]))",
+          "expr": "sum by (service, account_name, tenant_name) (rate(gmp_sent_total{service=~\"$service\", account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval]))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -941,7 +941,7 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "sum by (account_name, tenant_name) (rate(gmp_errors_total{account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval]))",
+          "expr": "sum by (service, account_name, tenant_name) (rate(gmp_errors_total{service=~\"$service\", account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval]))",
           "format": "table",
           "hide": false,
           "instant": true,
@@ -956,7 +956,7 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "100 * sum by (account_name, tenant_name) (rate(gmp_sent_total{account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval])) / (sum by (account_name, tenant_name) (rate(gmp_sent_total{account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval])) + sum by (account_name, tenant_name) (rate(gmp_errors_total{account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval])))",
+          "expr": "100 * sum by (service, account_name, tenant_name) (rate(gmp_sent_total{service=~\"$service\", account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval])) / (sum by (service, account_name, tenant_name) (rate(gmp_sent_total{service=~\"$service\", account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval])) + sum by (service, account_name, tenant_name) (rate(gmp_errors_total{service=~\"$service\", account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"}[$__rate_interval])))",
           "format": "table",
           "hide": false,
           "instant": true,
@@ -971,7 +971,7 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "sum by (account_name, tenant_name) (gmp_sent_total{account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"})",
+          "expr": "sum by (service, account_name, tenant_name) (gmp_sent_total{service=~\"$service\", account_name=~\"$account_name\", tenant_name=~\"$tenant_name\"})",
           "format": "table",
           "hide": false,
           "instant": true,
@@ -980,7 +980,7 @@
           "refId": "D"
         }
       ],
-      "title": "Summary by Account and Tenant",
+      "title": "Summary by Service, Account and Tenant",
       "transformations": [
         {
           "id": "merge",
@@ -994,18 +994,20 @@
             },
             "indexByName": {
               "Time": 0,
-              "Value #A": 4,
-              "Value #B": 5,
-              "Value #C": 6,
-              "Value #D": 3,
-              "account_name": 1,
-              "tenant_name": 2
+              "Value #A": 5,
+              "Value #B": 6,
+              "Value #C": 7,
+              "Value #D": 4,
+              "service": 1,
+              "account_name": 2,
+              "tenant_name": 3
             },
             "renameByName": {
               "Value #A": "Sent Rate",
               "Value #B": "Error Rate",
               "Value #C": "Success Rate",
               "Value #D": "Total Sent",
+              "service": "Service",
               "account_name": "Account",
               "tenant_name": "Tenant"
             }
@@ -1087,6 +1089,34 @@
         "options": [],
         "query": {
           "query": "label_values(gmp_sent_total{account_name=~\"$account_name\"}, tenant_name)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": ["All"],
+          "value": ["$__all"]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(gmp_sent_total, service)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Service",
+        "multi": true,
+        "name": "service",
+        "options": [],
+        "query": {
+          "query": "label_values(gmp_sent_total, service)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
