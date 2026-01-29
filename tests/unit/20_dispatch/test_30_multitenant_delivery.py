@@ -230,13 +230,13 @@ async def test_process_client_cycle_routes_to_tenants(tmp_path):
     })
 
     # Create accounts for each tenant
-    await core.db.add_account({
+    await core.db.table('accounts').add({
         "id": "acc1",
         "tenant_id": "tenant1",
         "host": "smtp1.com",
         "port": 587,
     })
-    await core.db.add_account({
+    await core.db.table('accounts').add({
         "id": "acc2",
         "tenant_id": "tenant2",
         "host": "smtp2.com",
@@ -295,7 +295,7 @@ async def test_process_client_cycle_fallback_global(tmp_path):
         "client_base_url": None,
         "active": True,
     })
-    await core.db.add_account({
+    await core.db.table('accounts').add({
         "id": "acc-no-url",
         "tenant_id": "no-url-tenant",
         "host": "smtp.com",
@@ -335,7 +335,7 @@ async def test_process_client_cycle_mixed_tenants(tmp_path):
         "client_sync_path": "/sync",
         "active": True,
     })
-    await core.db.add_account({
+    await core.db.table('accounts').add({
         "id": "acc-with",
         "tenant_id": "with-url",
         "host": "smtp.com",
@@ -348,7 +348,7 @@ async def test_process_client_cycle_mixed_tenants(tmp_path):
         "client_base_url": None,
         "active": True,
     })
-    await core.db.add_account({
+    await core.db.table('accounts').add({
         "id": "acc-no-url",
         "tenant_id": "no-url-tenant",
         "host": "smtp.com",
@@ -408,13 +408,13 @@ async def test_process_client_cycle_partial_failure(tmp_path):
         "client_sync_path": "/sync",
         "active": True,
     })
-    await core.db.add_account({
+    await core.db.table('accounts').add({
         "id": "acc-success",
         "tenant_id": "success-tenant",
         "host": "smtp.com",
         "port": 587,
     })
-    await core.db.add_account({
+    await core.db.table('accounts').add({
         "id": "acc-fail",
         "tenant_id": "fail-tenant",
         "host": "smtp.com",

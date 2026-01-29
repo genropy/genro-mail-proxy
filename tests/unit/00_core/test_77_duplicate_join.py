@@ -26,13 +26,13 @@ async def test_fetch_ready_no_duplicate_with_same_account_id(tmp_path):
 
     # Create accounts with SAME id but different tenant_id
     shared_account_id = "shared-smtp-account"
-    await db.add_account({
+    await db.table('accounts').add({
         "id": shared_account_id,
         "tenant_id": "tenant_a",
         "host": "smtp.a.com",
         "port": 587,
     })
-    await db.add_account({
+    await db.table('accounts').add({
         "id": shared_account_id,
         "tenant_id": "tenant_b",
         "host": "smtp.b.com",
@@ -70,13 +70,13 @@ async def test_fetch_ready_multiple_messages_no_cross_tenant_leak(tmp_path):
 
     # Create accounts with SAME id
     shared_account_id = "shared-smtp"
-    await db.add_account({
+    await db.table('accounts').add({
         "id": shared_account_id,
         "tenant_id": "tenant_a",
         "host": "smtp.a.com",
         "port": 587,
     })
-    await db.add_account({
+    await db.table('accounts').add({
         "id": shared_account_id,
         "tenant_id": "tenant_b",
         "host": "smtp.b.com",
@@ -130,13 +130,13 @@ async def test_count_pending_for_tenant_no_inflation(tmp_path):
 
     # Create accounts with SAME id
     shared_account_id = "shared-smtp"
-    await db.add_account({
+    await db.table('accounts').add({
         "id": shared_account_id,
         "tenant_id": "tenant_a",
         "host": "smtp.a.com",
         "port": 587,
     })
-    await db.add_account({
+    await db.table('accounts').add({
         "id": shared_account_id,
         "tenant_id": "tenant_b",
         "host": "smtp.b.com",
@@ -175,13 +175,13 @@ async def test_get_ids_for_tenant_no_duplication(tmp_path):
 
     # Create accounts with SAME id
     shared_account_id = "shared-smtp"
-    await db.add_account({
+    await db.table('accounts').add({
         "id": shared_account_id,
         "tenant_id": "tenant_a",
         "host": "smtp.a.com",
         "port": 587,
     })
-    await db.add_account({
+    await db.table('accounts').add({
         "id": shared_account_id,
         "tenant_id": "tenant_b",
         "host": "smtp.b.com",

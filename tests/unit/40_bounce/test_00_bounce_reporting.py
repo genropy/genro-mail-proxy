@@ -20,7 +20,7 @@ async def test_mark_bounced_creates_event(tmp_path):
     db = await make_db_with_tenant(tmp_path)
 
     # Create account
-    await db.add_account({
+    await db.table('accounts').add({
         "id": "acc1",
         "tenant_id": "test_tenant",
         "host": "smtp.example.com",
@@ -68,7 +68,7 @@ async def test_bounce_event_in_unreported_events(tmp_path):
     db = await make_db_with_tenant(tmp_path)
 
     # Create account and message
-    await db.add_account({"id": "acc1", "tenant_id": "test_tenant", "host": "smtp.example.com", "port": 587})
+    await db.table('accounts').add({"id": "acc1", "tenant_id": "test_tenant", "host": "smtp.example.com", "port": 587})
     inserted = await db.insert_messages([{
         "id": "msg1",
         "tenant_id": "test_tenant",
@@ -108,7 +108,7 @@ async def test_mark_bounce_reported(tmp_path):
     db = await make_db_with_tenant(tmp_path)
 
     # Setup
-    await db.add_account({"id": "acc1", "tenant_id": "test_tenant", "host": "smtp.example.com", "port": 587})
+    await db.table('accounts').add({"id": "acc1", "tenant_id": "test_tenant", "host": "smtp.example.com", "port": 587})
     inserted = await db.insert_messages([{
         "id": "msg1",
         "tenant_id": "test_tenant",
@@ -154,7 +154,7 @@ async def test_multiple_events_for_same_message(tmp_path):
     db = await make_db_with_tenant(tmp_path)
 
     # Setup
-    await db.add_account({"id": "acc1", "tenant_id": "test_tenant", "host": "smtp.example.com", "port": 587})
+    await db.table('accounts').add({"id": "acc1", "tenant_id": "test_tenant", "host": "smtp.example.com", "port": 587})
     inserted = await db.insert_messages([{
         "id": "msg1",
         "tenant_id": "test_tenant",
@@ -190,7 +190,7 @@ async def test_fetch_unreported_includes_both_new_and_bounce(tmp_path):
     db = await make_db_with_tenant(tmp_path)
 
     # Setup
-    await db.add_account({"id": "acc1", "tenant_id": "test_tenant", "host": "smtp.example.com", "port": 587})
+    await db.table('accounts').add({"id": "acc1", "tenant_id": "test_tenant", "host": "smtp.example.com", "port": 587})
     inserted = await db.insert_messages([
         {
             "id": "msg-new",

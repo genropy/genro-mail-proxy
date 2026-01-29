@@ -23,7 +23,7 @@ async def test_add_pec_account(tmp_path):
     """Test creating a PEC account with IMAP configuration."""
     db = await make_db_with_tenant(tmp_path)
 
-    await db.add_pec_account({
+    await db.table('accounts').add_pec_account({
         "id": "pec-account",
         "tenant_id": "test_tenant",
         "host": "smtp.pec.example.com",
@@ -34,7 +34,7 @@ async def test_add_pec_account(tmp_path):
         "imap_port": 993,
     })
 
-    account = await db.get_account("test_tenant", "pec-account")
+    account = await db.table('accounts').get("test_tenant", "pec-account")
     assert account["id"] == "pec-account"
     assert account["host"] == "smtp.pec.example.com"
     assert account["is_pec_account"] == 1
@@ -51,7 +51,7 @@ async def test_add_pec_account_with_separate_imap_credentials(tmp_path):
     """Test PEC account with different IMAP credentials."""
     db = await make_db_with_tenant(tmp_path)
 
-    await db.add_pec_account({
+    await db.table('accounts').add_pec_account({
         "id": "pec-separate",
         "tenant_id": "test_tenant",
         "host": "smtp.pec.example.com",
@@ -64,7 +64,7 @@ async def test_add_pec_account_with_separate_imap_credentials(tmp_path):
         "imap_folder": "PEC",
     })
 
-    account = await db.get_account("test_tenant", "pec-separate")
+    account = await db.table('accounts').get("test_tenant", "pec-separate")
     assert account["imap_user"] == "imap-user@pec.example.com"
     assert account["imap_password"] == "imap-secret"
     assert account["imap_folder"] == "PEC"
@@ -76,7 +76,7 @@ async def test_list_pec_accounts(tmp_path):
     db = await make_db_with_tenant(tmp_path)
 
     # Add regular account
-    await db.add_account({
+    await db.table('accounts').add({
         "id": "regular-account",
         "tenant_id": "test_tenant",
         "host": "smtp.example.com",
@@ -84,14 +84,14 @@ async def test_list_pec_accounts(tmp_path):
     })
 
     # Add PEC accounts
-    await db.add_pec_account({
+    await db.table('accounts').add_pec_account({
         "id": "pec-1",
         "tenant_id": "test_tenant",
         "host": "smtp.pec1.example.com",
         "port": 465,
         "imap_host": "imap.pec1.example.com",
     })
-    await db.add_pec_account({
+    await db.table('accounts').add_pec_account({
         "id": "pec-2",
         "tenant_id": "test_tenant",
         "host": "smtp.pec2.example.com",
@@ -100,11 +100,11 @@ async def test_list_pec_accounts(tmp_path):
     })
 
     # list_accounts returns all
-    all_accounts = await db.list_accounts()
+    all_accounts = await db.table('accounts').list_all()
     assert len(all_accounts) == 3
 
     # list_pec_accounts returns only PEC
-    pec_accounts = await db.list_pec_accounts()
+    pec_accounts = await db.table('accounts').list_pec_accounts()
     assert len(pec_accounts) == 2
     assert {acc["id"] for acc in pec_accounts} == {"pec-1", "pec-2"}
 
@@ -114,7 +114,7 @@ async def test_update_imap_sync_state(tmp_path):
     """Test updating IMAP sync state after processing receipts."""
     db = await make_db_with_tenant(tmp_path)
 
-    await db.add_pec_account({
+    await db.table('accounts').add_pec_account({
         "id": "pec-sync",
         "tenant_id": "test_tenant",
         "host": "smtp.pec.example.com",
@@ -123,22 +123,22 @@ async def test_update_imap_sync_state(tmp_path):
     })
 
     # Initial state
-    account = await db.get_account("test_tenant", "pec-sync")
+    account = await db.table('accounts').get("test_tenant", "pec-sync")
     assert account["imap_last_uid"] is None
     assert account["imap_uidvalidity"] is None
 
     # Update sync state
-    await db.update_imap_sync_state("test_tenant", "pec-sync", last_uid=100, uidvalidity=12345)
+    await db.table('accounts').update_imap_sync_state("test_tenant", "pec-sync", last_uid=100, uidvalidity=12345)
 
-    account = await db.get_account("test_tenant", "pec-sync")
+    account = await db.table('accounts').get("test_tenant", "pec-sync")
     assert account["imap_last_uid"] == 100
     assert account["imap_uidvalidity"] == 12345
     assert account["imap_last_sync"] is not None
 
     # Update only last_uid
-    await db.update_imap_sync_state("test_tenant", "pec-sync", last_uid=150)
+    await db.table('accounts').update_imap_sync_state("test_tenant", "pec-sync", last_uid=150)
 
-    account = await db.get_account("test_tenant", "pec-sync")
+    account = await db.table('accounts').get("test_tenant", "pec-sync")
     assert account["imap_last_uid"] == 150
     assert account["imap_uidvalidity"] == 12345  # unchanged
 
@@ -154,7 +154,7 @@ async def test_pec_account_with_tenant(tmp_path):
         "client_base_url": "https://api.acme.com/sync",
     })
 
-    await db.add_pec_account({
+    await db.table('accounts').add_pec_account({
         "id": "acme-pec",
         "tenant_id": "acme",
         "host": "smtp.pec.example.com",
@@ -162,12 +162,12 @@ async def test_pec_account_with_tenant(tmp_path):
         "imap_host": "imap.pec.example.com",
     })
 
-    account = await db.get_account("acme", "acme-pec")
+    account = await db.table('accounts').get("acme", "acme-pec")
     assert account["tenant_id"] == "acme"
     assert account["is_pec_account"] == 1
 
     # Should appear in tenant's account list
-    tenant_accounts = await db.list_accounts(tenant_id="acme")
+    tenant_accounts = await db.table('accounts').list_all(tenant_id="acme")
     assert len(tenant_accounts) == 1
     assert tenant_accounts[0]["id"] == "acme-pec"
 
@@ -178,20 +178,20 @@ async def test_get_pec_account_ids(tmp_path):
     db = await make_db_with_tenant(tmp_path)
 
     # Add regular and PEC accounts
-    await db.add_account({
+    await db.table('accounts').add({
         "id": "regular",
         "tenant_id": "test_tenant",
         "host": "smtp.example.com",
         "port": 587,
     })
-    await db.add_pec_account({
+    await db.table('accounts').add_pec_account({
         "id": "pec-1",
         "tenant_id": "test_tenant",
         "host": "smtp.pec.example.com",
         "port": 465,
         "imap_host": "imap.pec.example.com",
     })
-    await db.add_pec_account({
+    await db.table('accounts').add_pec_account({
         "id": "pec-2",
         "tenant_id": "test_tenant",
         "host": "smtp.pec2.example.com",
@@ -199,7 +199,7 @@ async def test_get_pec_account_ids(tmp_path):
         "imap_host": "imap.pec2.example.com",
     })
 
-    pec_ids = await db.get_pec_account_ids()
+    pec_ids = await db.table('accounts').get_pec_account_ids()
     assert pec_ids == {"pec-1", "pec-2"}
 
 
@@ -209,7 +209,7 @@ async def test_insert_messages_auto_sets_is_pec(tmp_path):
     db = await make_db_with_tenant(tmp_path)
 
     # Create PEC account
-    await db.add_pec_account({
+    await db.table('accounts').add_pec_account({
         "id": "pec-account",
         "tenant_id": "test_tenant",
         "host": "smtp.pec.example.com",
@@ -218,7 +218,7 @@ async def test_insert_messages_auto_sets_is_pec(tmp_path):
     })
 
     # Create regular account
-    await db.add_account({
+    await db.table('accounts').add({
         "id": "regular-account",
         "tenant_id": "test_tenant",
         "host": "smtp.example.com",
@@ -258,7 +258,7 @@ async def test_clear_pec_flag(tmp_path):
     db = await make_db_with_tenant(tmp_path)
 
     # Create PEC account
-    await db.add_pec_account({
+    await db.table('accounts').add_pec_account({
         "id": "pec-account",
         "tenant_id": "test_tenant",
         "host": "smtp.pec.example.com",
@@ -294,7 +294,7 @@ async def test_insert_messages_without_auto_pec(tmp_path):
     db = await make_db_with_tenant(tmp_path)
 
     # Create PEC account
-    await db.add_pec_account({
+    await db.table('accounts').add_pec_account({
         "id": "pec-account",
         "tenant_id": "test_tenant",
         "host": "smtp.pec.example.com",

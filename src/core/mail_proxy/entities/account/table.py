@@ -275,6 +275,11 @@ class AccountsTable(Table):
         )
         return [self._decode_use_tls(dict(row)) for row in rows]
 
+    async def get_pec_account_ids(self) -> set[str]:
+        """Get the set of account IDs that are PEC accounts."""
+        accounts = await self.list_pec_accounts()
+        return {acc["id"] for acc in accounts}
+
     async def update_imap_sync_state(
         self,
         tenant_id: str,

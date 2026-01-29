@@ -381,7 +381,7 @@ class TestProcessClientCycleWithTenants:
         })
 
         # Create accounts for each tenant
-        await proxy.db.add_account({
+        await proxy.db.table('accounts').add({
             "id": "account-a",
             "tenant_id": "tenant-a",
             "host": "smtp.a.com",
@@ -389,7 +389,7 @@ class TestProcessClientCycleWithTenants:
             "user": "test",
             "password": "test",
         })
-        await proxy.db.add_account({
+        await proxy.db.table('accounts').add({
             "id": "account-b",
             "tenant_id": "tenant-b",
             "host": "smtp.b.com",
@@ -448,7 +448,7 @@ class TestProcessClientCycleWithTenants:
             "active": True,
             "client_base_url": None,
         })
-        await proxy.db.add_account({
+        await proxy.db.table('accounts').add({
             "id": "account-no-url",
             "tenant_id": "tenant-no-url",
             "host": "smtp.test.com",

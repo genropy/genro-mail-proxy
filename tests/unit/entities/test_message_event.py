@@ -24,7 +24,7 @@ async def db(tmp_path):
 async def db_with_message(db: MailProxyDb):
     """Database with a tenant, account, and message for event testing."""
     await db.table('tenants').add({"id": "test-tenant", "name": "Test Tenant", "active": True})
-    await db.add_account({
+    await db.table('accounts').add({
         "id": "test-account",
         "tenant_id": "test-tenant",
         "host": "smtp.test.com",

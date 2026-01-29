@@ -85,7 +85,7 @@ class PecReceiver:
 
     async def _process_all_pec_accounts(self) -> None:
         """Process receipts for all PEC accounts."""
-        pec_accounts = await self._db.list_pec_accounts()
+        pec_accounts = await self._db.table('accounts').list_pec_accounts()
 
         if not pec_accounts:
             return
@@ -105,6 +105,7 @@ class PecReceiver:
         """Process receipts for a single PEC account."""
         from ..imap import IMAPClient
 
+        tenant_id = account["tenant_id"]
         account_id = account["id"]
         imap_host = account.get("imap_host")
         imap_port = account.get("imap_port", 993)
@@ -152,7 +153,8 @@ class PecReceiver:
             if not messages:
                 # Update uidvalidity even if no messages
                 if uidvalidity != stored_uidvalidity:
-                    await self._db.update_imap_sync_state(
+                    await self._db.table('accounts').update_imap_sync_state(
+                        tenant_id,
                         account_id,
                         last_uid=last_uid,
                         uidvalidity=uidvalidity,
@@ -189,7 +191,8 @@ class PecReceiver:
                     max_uid = msg.uid
 
             # Update sync state
-            await self._db.update_imap_sync_state(
+            await self._db.table('accounts').update_imap_sync_state(
+                tenant_id,
                 account_id,
                 last_uid=max_uid,
                 uidvalidity=uidvalidity,

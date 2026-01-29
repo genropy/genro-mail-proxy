@@ -26,7 +26,7 @@ async def test_get_pec_messages_without_acceptance(tmp_path):
     db = await make_db_with_tenant(tmp_path)
 
     # Create PEC account
-    await db.add_pec_account({
+    await db.table('accounts').add_pec_account({
         "id": "pec-account",
         "tenant_id": "test_tenant",
         "host": "smtp.pec.example.com",
@@ -62,7 +62,7 @@ async def test_pec_message_with_acceptance_not_timed_out(tmp_path):
     db = await make_db_with_tenant(tmp_path)
 
     # Create PEC account
-    await db.add_pec_account({
+    await db.table('accounts').add_pec_account({
         "id": "pec-account",
         "tenant_id": "test_tenant",
         "host": "smtp.pec.example.com",
@@ -105,7 +105,7 @@ async def test_recent_pec_message_not_timed_out(tmp_path):
     db = await make_db_with_tenant(tmp_path)
 
     # Create PEC account
-    await db.add_pec_account({
+    await db.table('accounts').add_pec_account({
         "id": "pec-account",
         "tenant_id": "test_tenant",
         "host": "smtp.pec.example.com",
@@ -140,7 +140,7 @@ async def test_non_pec_message_not_in_timeout_list(tmp_path):
     db = await make_db_with_tenant(tmp_path)
 
     # Create regular account
-    await db.add_account({
+    await db.table('accounts').add({
         "id": "regular-account",
         "tenant_id": "test_tenant",
         "host": "smtp.example.com",

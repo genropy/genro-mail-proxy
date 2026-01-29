@@ -253,7 +253,7 @@ async def test_proxy_init_initializes_configured_account_metrics(tmp_path):
     try:
         # Add tenant and account
         await proxy.db.table('tenants').add({"id": "t1", "name": "Test Tenant"})
-        await proxy.db.add_account({
+        await proxy.db.table('accounts').add({
             "id": "smtp1",
             "tenant_id": "t1",
             "host": "smtp.example.com",

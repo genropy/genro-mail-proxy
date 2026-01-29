@@ -517,13 +517,13 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
                     "pending_messages": pending,
                 }
             case "addAccount":
-                await self.db.add_account(payload)
+                await self.db.table('accounts').add(payload)
                 return {"ok": True}
             case "listAccounts":
                 tenant_id = payload.get("tenant_id") if isinstance(payload, dict) else None
                 if not tenant_id:
                     return {"ok": False, "error": "tenant_id is required"}
-                accounts = await self.db.list_accounts(tenant_id=tenant_id)
+                accounts = await self.db.table('accounts').list_all(tenant_id=tenant_id)
                 return {"ok": True, "accounts": accounts}
             case "deleteAccount":
                 tenant_id = payload.get("tenant_id") if isinstance(payload, dict) else None
@@ -532,10 +532,10 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
                 account_id = payload.get("id")
                 # Verify account belongs to tenant before deletion
                 try:
-                    await self.db.get_account(tenant_id, account_id)
+                    await self.db.table('accounts').get(tenant_id, account_id)
                 except ValueError:
                     return {"ok": False, "error": "account not found or not owned by tenant"}
-                await self.db.delete_account(tenant_id, account_id)
+                await self.db.table('accounts').remove(tenant_id, account_id)
                 await self._refresh_queue_gauge()
                 return {"ok": True}
             case "deleteMessages":
@@ -850,7 +850,7 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
             return False, "missing subject"
         # Verify account exists and belongs to tenant
         try:
-            await self.db.get_account(tenant_id, account_id)
+            await self.db.table('accounts').get(tenant_id, account_id)
         except Exception:
             return False, "account not found for tenant"
         return True, None
@@ -1005,7 +1005,7 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
             tenants = await self.db.table('tenants').list_all()
             tenant_names = {t["id"]: t.get("name", t["id"]) for t in tenants}
 
-            accounts = await self.db.list_accounts()
+            accounts = await self.db.table('accounts').list_all()
             for account in accounts:
                 tenant_id = account.get("tenant_id", "default")
                 account_id = account.get("id", "default")

@@ -221,47 +221,6 @@ class MailProxyDb(SqlDb):
     # ----------------------------------------------------------------- Convenience Methods
     # These delegate to table methods for backward compatibility
 
-    async def add_account(self, account: dict[str, Any]) -> str:
-        """Add or update an account. Returns the account pk."""
-        return await self.table('accounts').add(account)  # type: ignore[union-attr]
-
-    async def list_accounts(self, tenant_id: str | None = None) -> list[dict[str, Any]]:
-        """List accounts, optionally filtered by tenant."""
-        return await self.table('accounts').list_all(tenant_id)  # type: ignore[union-attr]
-
-    async def get_account(self, tenant_id: str, account_id: str) -> dict[str, Any]:
-        """Get a single account by tenant and account id."""
-        return await self.table('accounts').get(tenant_id, account_id)  # type: ignore[union-attr]
-
-    async def delete_account(self, tenant_id: str, account_id: str) -> None:
-        """Delete an account by tenant and account id."""
-        await self.table('accounts').remove(tenant_id, account_id)  # type: ignore[union-attr]
-
-    async def add_pec_account(self, account: dict[str, Any]) -> str:
-        """Add or update a PEC account with IMAP config."""
-        return await self.table('accounts').add_pec_account(account)  # type: ignore[union-attr]
-
-    async def list_pec_accounts(self) -> list[dict[str, Any]]:
-        """List all PEC accounts."""
-        return await self.table('accounts').list_pec_accounts()  # type: ignore[union-attr]
-
-    async def get_pec_account_ids(self) -> set[str]:
-        """Get the set of account IDs that are PEC accounts."""
-        accounts = await self.table('accounts').list_pec_accounts()  # type: ignore[union-attr]
-        return {acc["id"] for acc in accounts}
-
-    async def update_imap_sync_state(
-        self,
-        tenant_id: str,
-        account_id: str,
-        last_uid: int,
-        uidvalidity: int | None = None,
-    ) -> None:
-        """Update IMAP sync state for a PEC account."""
-        await self.table('accounts').update_imap_sync_state(  # type: ignore[union-attr]
-            tenant_id, account_id, last_uid, uidvalidity
-        )
-
     async def insert_messages(
         self,
         entries: list[dict[str, Any]],
@@ -272,7 +231,7 @@ class MailProxyDb(SqlDb):
         """Insert messages into the queue."""
         # Auto-fetch PEC account IDs if not provided and auto_pec is True
         if pec_account_ids is None and auto_pec:
-            pec_account_ids = await self.get_pec_account_ids()
+            pec_account_ids = await self.table('accounts').get_pec_account_ids()  # type: ignore[union-attr]
         return await self.table('messages').insert_batch(entries, pec_account_ids, tenant_id)  # type: ignore[union-attr]
 
     async def fetch_ready_messages(

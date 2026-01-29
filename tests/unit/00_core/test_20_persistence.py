@@ -12,7 +12,7 @@ async def test_account_crud(tmp_path):
     await p.init_db()
     # Create a tenant first - accounts require tenant_id
     await p.table('tenants').add({"id": "test_tenant", "name": "Test"})
-    await p.add_account(
+    await p.table('accounts').add(
         {
             "id": "gmail",
             "tenant_id": "test_tenant",
@@ -24,13 +24,13 @@ async def test_account_crud(tmp_path):
             "use_tls": False,
         }
     )
-    lst = await p.list_accounts()
+    lst = await p.table('accounts').list_all()
     assert len(lst) == 1
     assert lst[0]["use_tls"] is False
-    acc = await p.get_account("test_tenant", "gmail")
+    acc = await p.table('accounts').get("test_tenant", "gmail")
     assert acc["use_tls"] is False
-    await p.delete_account("test_tenant", "gmail")
-    lst = await p.list_accounts()
+    await p.table('accounts').remove("test_tenant", "gmail")
+    lst = await p.table('accounts').list_all()
     assert len(lst) == 0
 
 
@@ -142,7 +142,7 @@ async def test_get_account_missing_raises(tmp_path):
     await p.init_db()
     await p.table('tenants').add({"id": "test_tenant", "name": "Test"})
     with pytest.raises(ValueError):
-        await p.get_account("test_tenant", "unknown")
+        await p.table('accounts').get("test_tenant", "unknown")
 
 
 @pytest.mark.asyncio

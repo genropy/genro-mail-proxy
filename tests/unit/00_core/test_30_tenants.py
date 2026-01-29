@@ -93,7 +93,7 @@ async def test_account_with_tenant(tmp_path):
     await db.table('tenants').add({"id": "acme", "name": "ACME"})
 
     # Create account for tenant
-    await db.add_account({
+    await db.table('accounts').add({
         "id": "acme-main",
         "tenant_id": "acme",
         "host": "smtp.acme.com",
@@ -104,13 +104,13 @@ async def test_account_with_tenant(tmp_path):
     })
 
     # Verify account has tenant_id
-    accounts = await db.list_accounts(tenant_id="acme")
+    accounts = await db.table('accounts').list_all(tenant_id="acme")
     assert len(accounts) == 1
     assert accounts[0]["id"] == "acme-main"
     assert accounts[0]["tenant_id"] == "acme"
 
     # List all accounts (no filter)
-    all_accounts = await db.list_accounts()
+    all_accounts = await db.table('accounts').list_all()
     assert len(all_accounts) == 1
 
 
@@ -125,7 +125,7 @@ async def test_get_tenant_for_account(tmp_path):
         "name": "ACME",
         "client_base_url": "https://api.acme.com/sync",
     })
-    await db.add_account({
+    await db.table('accounts').add({
         "id": "acme-main",
         "tenant_id": "acme",
         "host": "smtp.acme.com",
@@ -133,7 +133,7 @@ async def test_get_tenant_for_account(tmp_path):
     })
 
     # Get account and use its tenant_id to fetch tenant (correct approach)
-    account = await db.get_account("acme", "acme-main")
+    account = await db.table('accounts').get("acme", "acme-main")
     tenant = await db.table('tenants').get(account["tenant_id"])
     assert tenant is not None
     assert tenant["id"] == "acme"
@@ -148,7 +148,7 @@ async def test_account_requires_tenant_id(tmp_path):
 
     # Accounts now require tenant_id
     with pytest.raises(KeyError):
-        await db.add_account({
+        await db.table('accounts').add({
             "id": "standalone",
             "host": "smtp.example.com",
             "port": 587,
@@ -163,7 +163,7 @@ async def test_delete_tenant_cascades(tmp_path):
 
     # Create tenant with accounts and messages
     await db.table('tenants').add({"id": "acme", "name": "ACME"})
-    await db.add_account({
+    await db.table('accounts').add({
         "id": "acme-main",
         "tenant_id": "acme",
         "host": "smtp.acme.com",
@@ -178,7 +178,7 @@ async def test_delete_tenant_cascades(tmp_path):
     }])
 
     # Verify data exists
-    assert len(await db.list_accounts(tenant_id="acme")) == 1
+    assert len(await db.table('accounts').list_all(tenant_id="acme")) == 1
     assert len(await db.list_messages("acme")) == 1
 
     # Delete tenant
@@ -186,7 +186,7 @@ async def test_delete_tenant_cascades(tmp_path):
 
     # Verify cascade
     assert await db.table('tenants').get("acme") is None
-    assert len(await db.list_accounts(tenant_id="acme")) == 0
+    assert len(await db.table('accounts').list_all(tenant_id="acme")) == 0
     assert len(await db.list_messages("acme")) == 0
 
 
@@ -201,13 +201,13 @@ async def test_multiple_tenants_isolation(tmp_path):
     await db.table('tenants').add({"id": "tenant2", "name": "Tenant 2"})
 
     # Create accounts for each tenant
-    await db.add_account({"id": "acc1", "tenant_id": "tenant1", "host": "smtp1.com", "port": 587})
-    await db.add_account({"id": "acc2", "tenant_id": "tenant1", "host": "smtp1b.com", "port": 587})
-    await db.add_account({"id": "acc3", "tenant_id": "tenant2", "host": "smtp2.com", "port": 587})
+    await db.table('accounts').add({"id": "acc1", "tenant_id": "tenant1", "host": "smtp1.com", "port": 587})
+    await db.table('accounts').add({"id": "acc2", "tenant_id": "tenant1", "host": "smtp1b.com", "port": 587})
+    await db.table('accounts').add({"id": "acc3", "tenant_id": "tenant2", "host": "smtp2.com", "port": 587})
 
     # Verify isolation
-    tenant1_accounts = await db.list_accounts(tenant_id="tenant1")
-    tenant2_accounts = await db.list_accounts(tenant_id="tenant2")
+    tenant1_accounts = await db.table('accounts').list_all(tenant_id="tenant1")
+    tenant2_accounts = await db.table('accounts').list_all(tenant_id="tenant2")
 
     assert len(tenant1_accounts) == 2
     assert len(tenant2_accounts) == 1
@@ -303,7 +303,7 @@ async def test_events_for_tenant_account(tmp_path):
         "id": "acme",
         "client_base_url": "https://api.acme.com/sync",
     })
-    await db.add_account({
+    await db.table('accounts').add({
         "id": "acme-main",
         "tenant_id": "acme",
         "host": "smtp.acme.com",
@@ -349,8 +349,8 @@ async def test_events_multiple_tenants(tmp_path):
     # Create two tenants with accounts
     await db.table('tenants').add({"id": "tenant1", "client_base_url": "https://api1.com/sync"})
     await db.table('tenants').add({"id": "tenant2", "client_base_url": "https://api2.com/sync"})
-    await db.add_account({"id": "acc1", "tenant_id": "tenant1", "host": "smtp1.com", "port": 587})
-    await db.add_account({"id": "acc2", "tenant_id": "tenant2", "host": "smtp2.com", "port": 587})
+    await db.table('accounts').add({"id": "acc1", "tenant_id": "tenant1", "host": "smtp1.com", "port": 587})
+    await db.table('accounts').add({"id": "acc2", "tenant_id": "tenant2", "host": "smtp2.com", "port": 587})
 
     # Insert messages for each tenant
     inserted = await db.insert_messages([
@@ -702,7 +702,7 @@ async def test_fetch_ready_excludes_suspended_batches(tmp_path):
 
     # Setup tenant and account
     await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
-    await db.add_account({
+    await db.table('accounts').add({
         "id": "acme-smtp",
         "tenant_id": "acme",
         "host": "smtp.acme.com",
@@ -751,7 +751,7 @@ async def test_count_pending_for_tenant(tmp_path):
 
     # Setup tenant and account
     await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
-    await db.add_account({
+    await db.table('accounts').add({
         "id": "acme-smtp",
         "tenant_id": "acme",
         "host": "smtp.acme.com",
