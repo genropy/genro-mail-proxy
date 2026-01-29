@@ -152,3 +152,8 @@ temp/*
 # Project specific
 WARP.md
 docs/html
+*.db
+.lsp.json
+UNIQUE_VALUE.md
+files/
+files.zip
