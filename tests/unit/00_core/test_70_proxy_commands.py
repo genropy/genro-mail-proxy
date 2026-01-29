@@ -34,7 +34,7 @@ class TestGetTenantCommand:
     async def test_get_existing_tenant(self, proxy: MailProxy):
         """Should return tenant data when found."""
         # Setup: create tenant via DB
-        await proxy.db.add_tenant({
+        await proxy.db.table('tenants').add({
             "id": "acme",
             "name": "ACME Corp",
             "active": True,
@@ -61,8 +61,8 @@ class TestListTenantsCommand:
     @pytest.mark.asyncio
     async def test_list_all_tenants(self, proxy: MailProxy):
         """Should return all tenants."""
-        await proxy.db.add_tenant({"id": "t1", "name": "Tenant 1", "active": True})
-        await proxy.db.add_tenant({"id": "t2", "name": "Tenant 2", "active": False})
+        await proxy.db.table('tenants').add({"id": "t1", "name": "Tenant 1", "active": True})
+        await proxy.db.table('tenants').add({"id": "t2", "name": "Tenant 2", "active": False})
 
         result = await proxy.handle_command("listTenants", {})
 
@@ -72,8 +72,8 @@ class TestListTenantsCommand:
     @pytest.mark.asyncio
     async def test_list_active_only(self, proxy: MailProxy):
         """Should filter by active status."""
-        await proxy.db.add_tenant({"id": "t1", "name": "Tenant 1", "active": True})
-        await proxy.db.add_tenant({"id": "t2", "name": "Tenant 2", "active": False})
+        await proxy.db.table('tenants').add({"id": "t1", "name": "Tenant 1", "active": True})
+        await proxy.db.table('tenants').add({"id": "t2", "name": "Tenant 2", "active": False})
 
         result = await proxy.handle_command("listTenants", {"active_only": True})
 
@@ -96,7 +96,7 @@ class TestUpdateTenantCommand:
     @pytest.mark.asyncio
     async def test_update_existing_tenant(self, proxy: MailProxy):
         """Should update tenant and return ok."""
-        await proxy.db.add_tenant({"id": "acme", "name": "Old Name"})
+        await proxy.db.table('tenants').add({"id": "acme", "name": "Old Name"})
 
         result = await proxy.handle_command("updateTenant", {
             "id": "acme",
@@ -106,7 +106,7 @@ class TestUpdateTenantCommand:
         assert result["ok"] is True
 
         # Verify update
-        tenant = await proxy.db.get_tenant("acme")
+        tenant = await proxy.db.table('tenants').get("acme")
         assert tenant["name"] == "New Name"
 
     @pytest.mark.asyncio
@@ -135,14 +135,14 @@ class TestDeleteTenantCommand:
     @pytest.mark.asyncio
     async def test_delete_existing_tenant(self, proxy: MailProxy):
         """Should delete tenant and return ok."""
-        await proxy.db.add_tenant({"id": "acme", "name": "ACME"})
+        await proxy.db.table('tenants').add({"id": "acme", "name": "ACME"})
 
         result = await proxy.handle_command("deleteTenant", {"id": "acme"})
 
         assert result["ok"] is True
 
         # Verify deletion
-        tenant = await proxy.db.get_tenant("acme")
+        tenant = await proxy.db.table('tenants').get("acme")
         assert tenant is None
 
     @pytest.mark.asyncio

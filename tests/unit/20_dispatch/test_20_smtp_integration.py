@@ -386,13 +386,13 @@ async def test_multitenant_smtp_dispatch(tmp_path, smtp_handler):
         )
 
         # Create two tenants with different SMTP accounts
-        await core.db.add_tenant({
+        await core.db.table('tenants').add({
             "id": "tenant1",
             "client_base_url": "https://tenant1.com",
             "client_sync_path": "/sync",
             "active": True,
         })
-        await core.db.add_tenant({
+        await core.db.table('tenants').add({
             "id": "tenant2",
             "client_base_url": "https://tenant2.com",
             "client_sync_path": "/sync",

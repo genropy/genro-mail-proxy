@@ -12,7 +12,7 @@ async def test_tenant_crud(tmp_path):
     await db.init_db()
 
     # Create
-    await db.add_tenant({
+    await db.table('tenants').add({
         "id": "acme",
         "name": "ACME Corp",
         "client_auth": {"method": "bearer", "token": "secret"},
@@ -22,7 +22,7 @@ async def test_tenant_crud(tmp_path):
     })
 
     # Read
-    tenant = await db.get_tenant("acme")
+    tenant = await db.table('tenants').get("acme")
     assert tenant is not None
     assert tenant["id"] == "acme"
     assert tenant["name"] == "ACME Corp"
@@ -33,16 +33,16 @@ async def test_tenant_crud(tmp_path):
     assert tenant["active"] is True
 
     # Update
-    success = await db.update_tenant("acme", {"name": "ACME Corporation", "active": False})
+    success = await db.table('tenants').update_fields("acme", {"name": "ACME Corporation", "active": False})
     assert success is True
-    updated = await db.get_tenant("acme")
+    updated = await db.table('tenants').get("acme")
     assert updated["name"] == "ACME Corporation"
     assert updated["active"] is False
 
     # Delete
-    deleted = await db.delete_tenant("acme")
+    deleted = await db.table('tenants').remove("acme")
     assert deleted is True
-    assert await db.get_tenant("acme") is None
+    assert await db.table('tenants').get("acme") is None
 
 
 @pytest.mark.asyncio
@@ -53,16 +53,16 @@ async def test_tenant_list(tmp_path):
 
     # With HAS_ENTERPRISE=True, init_db sets edition="ee" and does NOT create "default" tenant
     # This is the expected behavior for fresh EE installs
-    await db.add_tenant({"id": "tenant1", "name": "Tenant 1", "active": True})
-    await db.add_tenant({"id": "tenant2", "name": "Tenant 2", "active": False})
-    await db.add_tenant({"id": "tenant3", "name": "Tenant 3", "active": True})
+    await db.table('tenants').add({"id": "tenant1", "name": "Tenant 1", "active": True})
+    await db.table('tenants').add({"id": "tenant2", "name": "Tenant 2", "active": False})
+    await db.table('tenants').add({"id": "tenant3", "name": "Tenant 3", "active": True})
 
     # List all tenants
-    all_tenants = await db.list_tenants()
+    all_tenants = await db.table('tenants').list_all()
     assert len(all_tenants) == 3
 
     # List active only (tenant2 is not active)
-    active_tenants = await db.list_tenants(active_only=True)
+    active_tenants = await db.table('tenants').list_all(active_only=True)
     assert len(active_tenants) == 2  # tenant1, tenant3
     assert all(t["active"] for t in active_tenants)
 
@@ -73,13 +73,13 @@ async def test_tenant_not_found(tmp_path):
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
-    tenant = await db.get_tenant("nonexistent")
+    tenant = await db.table('tenants').get("nonexistent")
     assert tenant is None
 
-    success = await db.update_tenant("nonexistent", {"name": "Updated"})
+    success = await db.table('tenants').update_fields("nonexistent", {"name": "Updated"})
     assert success is False
 
-    deleted = await db.delete_tenant("nonexistent")
+    deleted = await db.table('tenants').remove("nonexistent")
     assert deleted is False
 
 
@@ -90,7 +90,7 @@ async def test_account_with_tenant(tmp_path):
     await db.init_db()
 
     # Create tenant first
-    await db.add_tenant({"id": "acme", "name": "ACME"})
+    await db.table('tenants').add({"id": "acme", "name": "ACME"})
 
     # Create account for tenant
     await db.add_account({
@@ -120,7 +120,7 @@ async def test_get_tenant_for_account(tmp_path):
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
-    await db.add_tenant({
+    await db.table('tenants').add({
         "id": "acme",
         "name": "ACME",
         "client_base_url": "https://api.acme.com/sync",
@@ -134,7 +134,7 @@ async def test_get_tenant_for_account(tmp_path):
 
     # Get account and use its tenant_id to fetch tenant (correct approach)
     account = await db.get_account("acme", "acme-main")
-    tenant = await db.get_tenant(account["tenant_id"])
+    tenant = await db.table('tenants').get(account["tenant_id"])
     assert tenant is not None
     assert tenant["id"] == "acme"
     assert tenant["client_base_url"] == "https://api.acme.com/sync"
@@ -162,7 +162,7 @@ async def test_delete_tenant_cascades(tmp_path):
     await db.init_db()
 
     # Create tenant with accounts and messages
-    await db.add_tenant({"id": "acme", "name": "ACME"})
+    await db.table('tenants').add({"id": "acme", "name": "ACME"})
     await db.add_account({
         "id": "acme-main",
         "tenant_id": "acme",
@@ -182,10 +182,10 @@ async def test_delete_tenant_cascades(tmp_path):
     assert len(await db.list_messages("acme")) == 1
 
     # Delete tenant
-    await db.delete_tenant("acme")
+    await db.table('tenants').remove("acme")
 
     # Verify cascade
-    assert await db.get_tenant("acme") is None
+    assert await db.table('tenants').get("acme") is None
     assert len(await db.list_accounts(tenant_id="acme")) == 0
     assert len(await db.list_messages("acme")) == 0
 
@@ -197,8 +197,8 @@ async def test_multiple_tenants_isolation(tmp_path):
     await db.init_db()
 
     # Create two tenants
-    await db.add_tenant({"id": "tenant1", "name": "Tenant 1"})
-    await db.add_tenant({"id": "tenant2", "name": "Tenant 2"})
+    await db.table('tenants').add({"id": "tenant1", "name": "Tenant 1"})
+    await db.table('tenants').add({"id": "tenant2", "name": "Tenant 2"})
 
     # Create accounts for each tenant
     await db.add_account({"id": "acc1", "tenant_id": "tenant1", "host": "smtp1.com", "port": 587})
@@ -221,7 +221,7 @@ async def test_tenant_json_fields(tmp_path):
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
-    await db.add_tenant({
+    await db.table('tenants').add({
         "id": "acme",
         "client_auth": {
             "method": "basic",
@@ -235,7 +235,7 @@ async def test_tenant_json_fields(tmp_path):
         },
     })
 
-    tenant = await db.get_tenant("acme")
+    tenant = await db.table('tenants').get("acme")
 
     # Verify JSON fields are dicts, not strings
     assert isinstance(tenant["client_auth"], dict)
@@ -254,7 +254,7 @@ async def test_tenant_update_partial(tmp_path):
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
-    await db.add_tenant({
+    await db.table('tenants').add({
         "id": "acme",
         "name": "ACME Corp",
         "client_base_url": "https://old.url.com",
@@ -262,9 +262,9 @@ async def test_tenant_update_partial(tmp_path):
     })
 
     # Update only URL
-    await db.update_tenant("acme", {"client_base_url": "https://new.url.com"})
+    await db.table('tenants').update_fields("acme", {"client_base_url": "https://new.url.com"})
 
-    tenant = await db.get_tenant("acme")
+    tenant = await db.table('tenants').get("acme")
     assert tenant["name"] == "ACME Corp"  # Unchanged
     assert tenant["client_base_url"] == "https://new.url.com"  # Changed
     assert tenant["active"] is True  # Unchanged
@@ -276,16 +276,16 @@ async def test_tenant_update_json_fields(tmp_path):
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
-    await db.add_tenant({
+    await db.table('tenants').add({
         "id": "acme",
         "rate_limits": {"hourly": 100, "daily": 1000},
     })
 
-    await db.update_tenant("acme", {
+    await db.table('tenants').update_fields("acme", {
         "rate_limits": {"hourly": 200, "daily": 2000},
     })
 
-    tenant = await db.get_tenant("acme")
+    tenant = await db.table('tenants').get("acme")
     assert tenant["rate_limits"]["hourly"] == 200
     assert tenant["rate_limits"]["daily"] == 2000
 
@@ -299,7 +299,7 @@ async def test_events_for_tenant_account(tmp_path):
     await db.init_db()
 
     # Create tenant and account
-    await db.add_tenant({
+    await db.table('tenants').add({
         "id": "acme",
         "client_base_url": "https://api.acme.com/sync",
     })
@@ -334,7 +334,7 @@ async def test_events_for_tenant_account(tmp_path):
     assert msg["account_id"] == "acme-main"
 
     # Verify tenant can be retrieved using tenant_id from message
-    tenant = await db.get_tenant(msg["tenant_id"])
+    tenant = await db.table('tenants').get(msg["tenant_id"])
     assert tenant["id"] == "acme"
 
 
@@ -347,8 +347,8 @@ async def test_events_multiple_tenants(tmp_path):
     await db.init_db()
 
     # Create two tenants with accounts
-    await db.add_tenant({"id": "tenant1", "client_base_url": "https://api1.com/sync"})
-    await db.add_tenant({"id": "tenant2", "client_base_url": "https://api2.com/sync"})
+    await db.table('tenants').add({"id": "tenant1", "client_base_url": "https://api1.com/sync"})
+    await db.table('tenants').add({"id": "tenant2", "client_base_url": "https://api2.com/sync"})
     await db.add_account({"id": "acc1", "tenant_id": "tenant1", "host": "smtp1.com", "port": 587})
     await db.add_account({"id": "acc2", "tenant_id": "tenant2", "host": "smtp2.com", "port": 587})
 
@@ -399,7 +399,7 @@ async def test_create_api_key(tmp_path):
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
-    await db.add_tenant({"id": "acme", "name": "ACME Corp"})
+    await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
 
     raw_key = await db.tenants.create_api_key("acme")
 
@@ -407,7 +407,7 @@ async def test_create_api_key(tmp_path):
     assert len(raw_key) > 20  # secrets.token_urlsafe(32) generates ~43 chars
 
     # Verify hash is saved in DB
-    tenant = await db.get_tenant("acme")
+    tenant = await db.table('tenants').get("acme")
     assert tenant["api_key_hash"] is not None
     assert tenant["api_key_expires_at"] is None
 
@@ -420,14 +420,14 @@ async def test_create_api_key_with_expiration(tmp_path):
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
-    await db.add_tenant({"id": "acme", "name": "ACME Corp"})
+    await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
 
     expires_at = int(time.time()) + 3600  # 1 hour from now
     raw_key = await db.tenants.create_api_key("acme", expires_at=expires_at)
 
     assert raw_key is not None
 
-    tenant = await db.get_tenant("acme")
+    tenant = await db.table('tenants').get("acme")
     assert tenant["api_key_expires_at"] == expires_at
 
 
@@ -448,7 +448,7 @@ async def test_get_tenant_by_token(tmp_path):
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
-    await db.add_tenant({"id": "acme", "name": "ACME Corp"})
+    await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
     raw_key = await db.tenants.create_api_key("acme")
 
     tenant = await db.tenants.get_tenant_by_token(raw_key)
@@ -464,7 +464,7 @@ async def test_get_tenant_by_token_invalid(tmp_path):
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
-    await db.add_tenant({"id": "acme", "name": "ACME Corp"})
+    await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
     await db.tenants.create_api_key("acme")
 
     tenant = await db.tenants.get_tenant_by_token("invalid-token-12345")
@@ -480,7 +480,7 @@ async def test_get_tenant_by_token_expired(tmp_path):
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
-    await db.add_tenant({"id": "acme", "name": "ACME Corp"})
+    await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
 
     # Create key with past expiration
     expires_at = int(time.time()) - 3600  # 1 hour ago
@@ -497,7 +497,7 @@ async def test_revoke_api_key(tmp_path):
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
-    await db.add_tenant({"id": "acme", "name": "ACME Corp"})
+    await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
     raw_key = await db.tenants.create_api_key("acme")
 
     # Key works before revocation
@@ -513,7 +513,7 @@ async def test_revoke_api_key(tmp_path):
     assert tenant is None
 
     # DB fields are cleared
-    tenant_data = await db.get_tenant("acme")
+    tenant_data = await db.table('tenants').get("acme")
     assert tenant_data["api_key_hash"] is None
     assert tenant_data["api_key_expires_at"] is None
 
@@ -540,14 +540,14 @@ async def test_suspend_all_tenant(tmp_path):
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
-    await db.add_tenant({"id": "acme", "name": "ACME Corp"})
+    await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
 
     # Suspend all
     result = await db.tenants.suspend_batch("acme")
     assert result is True
 
     # Verify suspended_batches = "*"
-    tenant = await db.get_tenant("acme")
+    tenant = await db.table('tenants').get("acme")
     assert tenant["suspended_batches"] == "*"
 
     # Check helper method
@@ -561,13 +561,13 @@ async def test_suspend_single_batch(tmp_path):
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
-    await db.add_tenant({"id": "acme", "name": "ACME Corp"})
+    await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
 
     # Suspend single batch
     result = await db.tenants.suspend_batch("acme", "NL-2026-01")
     assert result is True
 
-    tenant = await db.get_tenant("acme")
+    tenant = await db.table('tenants').get("acme")
     assert tenant["suspended_batches"] == "NL-2026-01"
 
     suspended = await db.tenants.get_suspended_batches("acme")
@@ -580,7 +580,7 @@ async def test_suspend_multiple_batches(tmp_path):
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
-    await db.add_tenant({"id": "acme", "name": "ACME Corp"})
+    await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
 
     # Suspend first batch
     await db.tenants.suspend_batch("acme", "NL-01")
@@ -599,7 +599,7 @@ async def test_activate_single_batch(tmp_path):
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
-    await db.add_tenant({"id": "acme", "name": "ACME Corp"})
+    await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
 
     # Suspend multiple batches
     await db.tenants.suspend_batch("acme", "NL-01")
@@ -620,7 +620,7 @@ async def test_activate_all(tmp_path):
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
-    await db.add_tenant({"id": "acme", "name": "ACME Corp"})
+    await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
 
     # Suspend multiple batches
     await db.tenants.suspend_batch("acme", "NL-01")
@@ -634,7 +634,7 @@ async def test_activate_all(tmp_path):
     suspended = await db.tenants.get_suspended_batches("acme")
     assert suspended == set()
 
-    tenant = await db.get_tenant("acme")
+    tenant = await db.table('tenants').get("acme")
     assert tenant["suspended_batches"] is None
 
 
@@ -644,7 +644,7 @@ async def test_cannot_activate_single_from_full_suspension(tmp_path):
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
-    await db.add_tenant({"id": "acme", "name": "ACME Corp"})
+    await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
 
     # Suspend all
     await db.tenants.suspend_batch("acme")
@@ -701,7 +701,7 @@ async def test_fetch_ready_excludes_suspended_batches(tmp_path):
     await db.init_db()
 
     # Setup tenant and account
-    await db.add_tenant({"id": "acme", "name": "ACME Corp"})
+    await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
     await db.add_account({
         "id": "acme-smtp",
         "tenant_id": "acme",
@@ -750,7 +750,7 @@ async def test_count_pending_for_tenant(tmp_path):
     await db.init_db()
 
     # Setup tenant and account
-    await db.add_tenant({"id": "acme", "name": "ACME Corp"})
+    await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
     await db.add_account({
         "id": "acme-smtp",
         "tenant_id": "acme",

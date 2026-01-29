@@ -39,7 +39,7 @@ class TestTenantStarvationPrevention:
     async def test_tenant_without_events_called_after_interval(self, proxy: MailProxy):
         """Tenant without events is called when sync interval expires."""
         # Add tenant with client_base_url
-        await proxy.db.add_tenant({
+        await proxy.db.table('tenants').add({
             "id": "silent-tenant",
             "name": "Silent Tenant",
             "active": True,
@@ -79,13 +79,13 @@ class TestTenantStarvationPrevention:
     async def test_active_tenant_does_not_block_others(self, proxy: MailProxy):
         """Active tenant with events doesn't starve other tenants."""
         # Add two tenants
-        await proxy.db.add_tenant({
+        await proxy.db.table('tenants').add({
             "id": "active-tenant",
             "name": "Active Tenant",
             "active": True,
             "client_base_url": "http://active.example.com",
         })
-        await proxy.db.add_tenant({
+        await proxy.db.table('tenants').add({
             "id": "silent-tenant",
             "name": "Silent Tenant",
             "active": True,
@@ -132,7 +132,7 @@ class TestDoNotDisturb:
     @pytest.mark.asyncio
     async def test_dnd_skips_tenant_until_time(self, proxy: MailProxy):
         """Tenant with future next_sync_after is skipped until time passes."""
-        await proxy.db.add_tenant({
+        await proxy.db.table('tenants').add({
             "id": "dnd-tenant",
             "name": "DND Tenant",
             "active": True,
@@ -168,7 +168,7 @@ class TestDoNotDisturb:
     @pytest.mark.asyncio
     async def test_dnd_tenant_with_events_still_called(self, proxy: MailProxy):
         """Tenant in DND mode is still called if there are events to report."""
-        await proxy.db.add_tenant({
+        await proxy.db.table('tenants').add({
             "id": "dnd-tenant",
             "name": "DND Tenant",
             "active": True,
@@ -214,7 +214,7 @@ class TestRunNowWithTenantToken:
     @pytest.mark.asyncio
     async def test_run_now_resets_last_sync(self, proxy: MailProxy):
         """run-now with tenant_id resets that tenant's last_sync to 0."""
-        await proxy.db.add_tenant({
+        await proxy.db.table('tenants').add({
             "id": "urgent-tenant",
             "name": "Urgent Tenant",
             "active": True,
@@ -249,7 +249,7 @@ class TestRunNowWithTenantToken:
     @pytest.mark.asyncio
     async def test_run_now_without_tenant_does_not_reset(self, proxy: MailProxy):
         """run-now without tenant_id does not reset any specific tenant's DND."""
-        await proxy.db.add_tenant({
+        await proxy.db.table('tenants').add({
             "id": "dnd-tenant",
             "name": "DND Tenant",
             "active": True,
@@ -270,13 +270,13 @@ class TestRunNowWithTenantToken:
     @pytest.mark.asyncio
     async def test_run_now_tenant_id_targets_specific_tenant(self, proxy: MailProxy):
         """run-now with tenant_id sets _run_now_tenant_id for targeting."""
-        await proxy.db.add_tenant({
+        await proxy.db.table('tenants').add({
             "id": "target-tenant",
             "name": "Target Tenant",
             "active": True,
             "client_base_url": "http://target.example.com",
         })
-        await proxy.db.add_tenant({
+        await proxy.db.table('tenants').add({
             "id": "other-tenant",
             "name": "Other Tenant",
             "active": True,
@@ -315,13 +315,13 @@ class TestListTenantsSyncStatus:
     async def test_sync_status_returns_all_tenants(self, proxy: MailProxy):
         """listTenantsSyncStatus returns status for all tenants."""
         # Add two tenants
-        await proxy.db.add_tenant({
+        await proxy.db.table('tenants').add({
             "id": "tenant-a",
             "name": "Tenant A",
             "active": True,
             "client_base_url": "http://a.example.com",
         })
-        await proxy.db.add_tenant({
+        await proxy.db.table('tenants').add({
             "id": "tenant-b",
             "name": "Tenant B",
             "active": False,
@@ -352,7 +352,7 @@ class TestListTenantsSyncStatus:
     @pytest.mark.asyncio
     async def test_sync_status_shows_last_sync_time(self, proxy: MailProxy):
         """listTenantsSyncStatus shows last sync timestamp."""
-        await proxy.db.add_tenant({
+        await proxy.db.table('tenants').add({
             "id": "synced-tenant",
             "name": "Synced Tenant",
             "active": True,
@@ -373,7 +373,7 @@ class TestListTenantsSyncStatus:
     @pytest.mark.asyncio
     async def test_sync_status_shows_dnd_mode(self, proxy: MailProxy):
         """listTenantsSyncStatus detects Do Not Disturb mode."""
-        await proxy.db.add_tenant({
+        await proxy.db.table('tenants').add({
             "id": "dnd-tenant",
             "name": "DND Tenant",
             "active": True,
@@ -394,7 +394,7 @@ class TestListTenantsSyncStatus:
     @pytest.mark.asyncio
     async def test_sync_status_shows_sync_due(self, proxy: MailProxy):
         """listTenantsSyncStatus detects when sync is due."""
-        await proxy.db.add_tenant({
+        await proxy.db.table('tenants').add({
             "id": "overdue-tenant",
             "name": "Overdue Tenant",
             "active": True,

@@ -568,23 +568,23 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
                 removed = await self._cleanup_reported_messages(older_than, tenant_id)
                 return {"ok": True, "removed": removed}
             case "addTenant":
-                api_key = await self.db.add_tenant(payload)
+                api_key = await self.db.table('tenants').add(payload)
                 result: dict[str, Any] = {"ok": True}
                 if api_key:
                     result["api_key"] = api_key
                 return result
             case "getTenant":
                 tenant_id = payload.get("id")
-                tenant = await self.db.get_tenant(tenant_id)
+                tenant = await self.db.table('tenants').get(tenant_id)
                 if tenant:
                     return {"ok": True, **tenant}
                 return {"ok": False, "error": "tenant not found"}
             case "listTenants":
                 active_only = bool(payload.get("active_only", False)) if isinstance(payload, dict) else False
-                tenants = await self.db.list_tenants(active_only=active_only)
+                tenants = await self.db.table('tenants').list_all(active_only=active_only)
                 return {"ok": True, "tenants": tenants}
             case "listTenantsSyncStatus":
-                tenants = await self.db.list_tenants()
+                tenants = await self.db.table('tenants').list_all()
                 now = time.time()
                 result_tenants = []
                 for tenant in tenants:
@@ -620,13 +620,13 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
                 tenant_id = payload.pop("id", None)
                 if not tenant_id:
                     return {"ok": False, "error": "tenant id required"}
-                updated = await self.db.update_tenant(tenant_id, payload)
+                updated = await self.db.table('tenants').update_fields(tenant_id, payload)
                 if updated:
                     return {"ok": True}
                 return {"ok": False, "error": "tenant not found"}
             case "deleteTenant":
                 tenant_id = payload.get("id")
-                deleted = await self.db.delete_tenant(tenant_id)
+                deleted = await self.db.table('tenants').remove(tenant_id)
                 if deleted:
                     return {"ok": True}
                 return {"ok": False, "error": "tenant not found"}
@@ -1002,7 +1002,7 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
             self.metrics.set_pending(0)
 
             # Get all tenants to map tenant_id -> tenant_name
-            tenants = await self.db.list_tenants()
+            tenants = await self.db.table('tenants').list_all()
             tenant_names = {t["id"]: t.get("name", t["id"]) for t in tenants}
 
             accounts = await self.db.list_accounts()

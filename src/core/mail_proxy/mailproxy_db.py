@@ -221,37 +221,6 @@ class MailProxyDb(SqlDb):
     # ----------------------------------------------------------------- Convenience Methods
     # These delegate to table methods for backward compatibility
 
-    async def add_tenant(self, tenant: dict[str, Any]) -> str:
-        """Add or update a tenant. Returns API key for new tenants."""
-        return await self.table('tenants').add(tenant)  # type: ignore[union-attr]
-
-    async def get_tenant(self, tenant_id: str) -> dict[str, Any] | None:
-        """Get a tenant by ID."""
-        return await self.table('tenants').get(tenant_id)  # type: ignore[union-attr]
-
-    async def list_tenants(self, active_only: bool = False) -> list[dict[str, Any]]:
-        """List all tenants."""
-        return await self.table('tenants').list_all(active_only)  # type: ignore[union-attr]
-
-    async def update_tenant(self, tenant_id: str, updates: dict[str, Any]) -> bool:
-        """Update a tenant's fields."""
-        return await self.table('tenants').update_fields(tenant_id, updates)  # type: ignore[union-attr]
-
-    async def delete_tenant(self, tenant_id: str) -> bool:
-        """Delete a tenant and cascade to related accounts and messages."""
-        # Delete messages for this tenant
-        await self.adapter.execute(
-            "DELETE FROM messages WHERE tenant_id = :tenant_id",
-            {"tenant_id": tenant_id}
-        )
-        # Delete accounts for this tenant
-        await self.adapter.execute(
-            "DELETE FROM accounts WHERE tenant_id = :tenant_id",
-            {"tenant_id": tenant_id}
-        )
-        # Delete the tenant
-        return await self.table('tenants').remove(tenant_id)  # type: ignore[union-attr]
-
     async def add_account(self, account: dict[str, Any]) -> str:
         """Add or update an account. Returns the account pk."""
         return await self.table('accounts').add(account)  # type: ignore[union-attr]

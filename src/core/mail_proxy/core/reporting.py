@@ -142,7 +142,7 @@ class ReporterMixin:
                 continue
 
             called_tenant_ids.add(tenant_id)
-            tenant = await self.db.get_tenant(tenant_id)
+            tenant = await self.db.table('tenants').get(tenant_id)
             if not tenant:
                 continue
 
@@ -167,7 +167,7 @@ class ReporterMixin:
                 self.logger.warning("Client sync failed for tenant %s: %s", tenant_id, exc)
 
         # 2. Call tenants WITHOUT events if sync interval exceeded
-        tenants = await self.db.list_tenants()
+        tenants = await self.db.table('tenants').list_all()
         for tenant in tenants:
             tenant_id = tenant.get("id")
             if not tenant_id or not tenant.get("active"):

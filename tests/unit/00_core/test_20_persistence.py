@@ -11,7 +11,7 @@ async def test_account_crud(tmp_path):
     p = MailProxyDb(str(db))
     await p.init_db()
     # Create a tenant first - accounts require tenant_id
-    await p.add_tenant({"id": "test_tenant", "name": "Test"})
+    await p.table('tenants').add({"id": "test_tenant", "name": "Test"})
     await p.add_account(
         {
             "id": "gmail",
@@ -41,7 +41,7 @@ async def test_messages_lifecycle(tmp_path):
     p = MailProxyDb(str(db))
     await p.init_db()
     # Create tenant first - messages require tenant_id
-    await p.add_tenant({"id": "test_tenant", "name": "Test"})
+    await p.table('tenants').add({"id": "test_tenant", "name": "Test"})
     now = int(time.time())
     inserted = await p.insert_messages(
         [
@@ -106,7 +106,7 @@ async def test_existing_ids(tmp_path):
     db = tmp_path / "existing.db"
     p = MailProxyDb(str(db))
     await p.init_db()
-    await p.add_tenant({"id": "test_tenant", "name": "Test"})
+    await p.table('tenants').add({"id": "test_tenant", "name": "Test"})
     await p.insert_messages(
         [
             {
@@ -140,7 +140,7 @@ async def test_get_account_missing_raises(tmp_path):
     db = tmp_path / "missing.db"
     p = MailProxyDb(str(db))
     await p.init_db()
-    await p.add_tenant({"id": "test_tenant", "name": "Test"})
+    await p.table('tenants').add({"id": "test_tenant", "name": "Test"})
     with pytest.raises(ValueError):
         await p.get_account("test_tenant", "unknown")
 
@@ -151,7 +151,7 @@ async def test_fetch_ready_messages_priority_filter(tmp_path):
     db = tmp_path / "priority.db"
     p = MailProxyDb(str(db))
     await p.init_db()
-    await p.add_tenant({"id": "test_tenant", "name": "Test"})
+    await p.table('tenants').add({"id": "test_tenant", "name": "Test"})
     now = int(time.time())
 
     # Insert messages with different priorities

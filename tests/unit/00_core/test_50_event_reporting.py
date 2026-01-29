@@ -20,7 +20,7 @@ async def proxy(tmp_path):
     )
     await proxy.init()
     # Create default tenant for tests
-    await proxy.db.add_tenant({"id": "test_tenant", "name": "Test Tenant"})
+    await proxy.db.table('tenants').add({"id": "test_tenant", "name": "Test Tenant"})
     yield proxy
     await proxy.stop()
 
@@ -181,7 +181,7 @@ class TestEventReportingCycle:
     async def test_cycle_processes_events_and_marks_reported(self, proxy: MailProxy):
         """Cycle should process events and mark them as reported."""
         # Update tenant to have sync URL
-        await proxy.db.add_tenant({
+        await proxy.db.table('tenants').add({
             "id": "test_tenant",
             "name": "Test Tenant",
             "client_base_url": "http://test.example.com",
@@ -367,13 +367,13 @@ class TestProcessClientCycleWithTenants:
     async def test_cycle_groups_events_by_tenant(self, proxy: MailProxy):
         """Events should be grouped and sent to correct tenant endpoints."""
         # Setup two tenants with client_base_url
-        await proxy.db.add_tenant({
+        await proxy.db.table('tenants').add({
             "id": "tenant-a",
             "name": "Tenant A",
             "active": True,
             "client_base_url": "http://a.example.com",
         })
-        await proxy.db.add_tenant({
+        await proxy.db.table('tenants').add({
             "id": "tenant-b",
             "name": "Tenant B",
             "active": True,
@@ -442,7 +442,7 @@ class TestProcessClientCycleWithTenants:
     async def test_cycle_warns_on_no_sync_url(self, proxy: MailProxy):
         """Should log warning when tenant has no sync URL."""
         # Add tenant without client_base_url
-        await proxy.db.add_tenant({
+        await proxy.db.table('tenants').add({
             "id": "tenant-no-url",
             "name": "No URL Tenant",
             "active": True,

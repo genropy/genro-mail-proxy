@@ -214,14 +214,14 @@ async def test_process_client_cycle_routes_to_tenants(tmp_path):
     core = await make_core(tmp_path)
 
     # Create two tenants
-    await core.db.add_tenant({
+    await core.db.table('tenants').add({
         "id": "tenant1",
         "client_base_url": "https://api.tenant1.com",
         "client_sync_path": "/sync",
         "client_auth": {"method": "bearer", "token": "token1"},
         "active": True,
     })
-    await core.db.add_tenant({
+    await core.db.table('tenants').add({
         "id": "tenant2",
         "client_base_url": "https://api.tenant2.com",
         "client_sync_path": "/sync",
@@ -290,7 +290,7 @@ async def test_process_client_cycle_fallback_global(tmp_path):
     core._client_sync_url = "https://global.fallback.com/sync"
 
     # Create tenant without sync URL
-    await core.db.add_tenant({
+    await core.db.table('tenants').add({
         "id": "no-url-tenant",
         "client_base_url": None,
         "active": True,
@@ -329,7 +329,7 @@ async def test_process_client_cycle_mixed_tenants(tmp_path):
     core._client_sync_url = "https://global.com/sync"
 
     # Tenant with sync URL
-    await core.db.add_tenant({
+    await core.db.table('tenants').add({
         "id": "with-url",
         "client_base_url": "https://api.with-url.com",
         "client_sync_path": "/sync",
@@ -343,7 +343,7 @@ async def test_process_client_cycle_mixed_tenants(tmp_path):
     })
 
     # Create a tenant without sync URL for global fallback test
-    await core.db.add_tenant({
+    await core.db.table('tenants').add({
         "id": "no-url-tenant",
         "client_base_url": None,
         "active": True,
@@ -396,13 +396,13 @@ async def test_process_client_cycle_partial_failure(tmp_path):
     core = await make_core(tmp_path)
 
     # Two tenants
-    await core.db.add_tenant({
+    await core.db.table('tenants').add({
         "id": "success-tenant",
         "client_base_url": "https://api.success.com",
         "client_sync_path": "/sync",
         "active": True,
     })
-    await core.db.add_tenant({
+    await core.db.table('tenants').add({
         "id": "fail-tenant",
         "client_base_url": "https://api.fail.com",
         "client_sync_path": "/sync",

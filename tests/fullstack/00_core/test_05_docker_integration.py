@@ -158,7 +158,7 @@ async def setup_tenants(mail_proxy_core):
     core = mail_proxy_core
 
     # Create tenant1
-    await core.db.add_tenant({
+    await core.db.table('tenants').add({
         "id": "tenant1",
         "name": "Tenant 1",
         "client_base_url": CLIENT_TENANT1_URL,
@@ -175,7 +175,7 @@ async def setup_tenants(mail_proxy_core):
     })
 
     # Create tenant2
-    await core.db.add_tenant({
+    await core.db.table('tenants').add({
         "id": "tenant2",
         "name": "Tenant 2",
         "client_base_url": CLIENT_TENANT2_URL,

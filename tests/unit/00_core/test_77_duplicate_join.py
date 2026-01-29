@@ -21,8 +21,8 @@ async def test_fetch_ready_no_duplicate_with_same_account_id(tmp_path):
     await db.init_db()
 
     # Create two tenants
-    await db.add_tenant({"id": "tenant_a", "name": "Tenant A"})
-    await db.add_tenant({"id": "tenant_b", "name": "Tenant B"})
+    await db.table('tenants').add({"id": "tenant_a", "name": "Tenant A"})
+    await db.table('tenants').add({"id": "tenant_b", "name": "Tenant B"})
 
     # Create accounts with SAME id but different tenant_id
     shared_account_id = "shared-smtp-account"
@@ -65,8 +65,8 @@ async def test_fetch_ready_multiple_messages_no_cross_tenant_leak(tmp_path):
     await db.init_db()
 
     # Create two tenants
-    await db.add_tenant({"id": "tenant_a", "name": "Tenant A"})
-    await db.add_tenant({"id": "tenant_b", "name": "Tenant B"})
+    await db.table('tenants').add({"id": "tenant_a", "name": "Tenant A"})
+    await db.table('tenants').add({"id": "tenant_b", "name": "Tenant B"})
 
     # Create accounts with SAME id
     shared_account_id = "shared-smtp"
@@ -125,8 +125,8 @@ async def test_count_pending_for_tenant_no_inflation(tmp_path):
     await db.init_db()
 
     # Create two tenants
-    await db.add_tenant({"id": "tenant_a", "name": "Tenant A"})
-    await db.add_tenant({"id": "tenant_b", "name": "Tenant B"})
+    await db.table('tenants').add({"id": "tenant_a", "name": "Tenant A"})
+    await db.table('tenants').add({"id": "tenant_b", "name": "Tenant B"})
 
     # Create accounts with SAME id
     shared_account_id = "shared-smtp"
@@ -170,8 +170,8 @@ async def test_get_ids_for_tenant_no_duplication(tmp_path):
     await db.init_db()
 
     # Create two tenants
-    await db.add_tenant({"id": "tenant_a", "name": "Tenant A"})
-    await db.add_tenant({"id": "tenant_b", "name": "Tenant B"})
+    await db.table('tenants').add({"id": "tenant_a", "name": "Tenant A"})
+    await db.table('tenants').add({"id": "tenant_b", "name": "Tenant B"})
 
     # Create accounts with SAME id
     shared_account_id = "shared-smtp"

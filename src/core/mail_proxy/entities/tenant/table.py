@@ -134,11 +134,21 @@ class TenantsTable(Table):
         return rowcount > 0
 
     async def remove(self, tenant_id: str) -> bool:
-        """Delete a tenant. Returns True if deleted.
+        """Delete a tenant and cascade to related accounts and messages.
 
-        Note: Cascading deletes of accounts/messages should be handled
-        by the calling code or foreign key constraints.
+        Returns True if tenant was deleted.
         """
+        # Delete messages for this tenant
+        await self.db.adapter.execute(
+            "DELETE FROM messages WHERE tenant_id = :tenant_id",
+            {"tenant_id": tenant_id}
+        )
+        # Delete accounts for this tenant
+        await self.db.adapter.execute(
+            "DELETE FROM accounts WHERE tenant_id = :tenant_id",
+            {"tenant_id": tenant_id}
+        )
+        # Delete the tenant
         rowcount = await self.delete(where={"id": tenant_id})
         return rowcount > 0
 

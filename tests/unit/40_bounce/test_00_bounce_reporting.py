@@ -10,7 +10,7 @@ async def make_db_with_tenant(tmp_path, tenant_id="test_tenant"):
     """Create a test database with a default tenant."""
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
-    await db.add_tenant({"id": tenant_id, "name": "Test Tenant"})
+    await db.table('tenants').add({"id": tenant_id, "name": "Test Tenant"})
     return db
 
 

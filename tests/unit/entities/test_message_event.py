@@ -23,7 +23,7 @@ async def db(tmp_path):
 @pytest_asyncio.fixture
 async def db_with_message(db: MailProxyDb):
     """Database with a tenant, account, and message for event testing."""
-    await db.add_tenant({"id": "test-tenant", "name": "Test Tenant", "active": True})
+    await db.table('tenants').add({"id": "test-tenant", "name": "Test Tenant", "active": True})
     await db.add_account({
         "id": "test-account",
         "tenant_id": "test-tenant",
