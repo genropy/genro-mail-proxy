@@ -14,13 +14,13 @@ async def test_instance_ensure_creates_singleton(tmp_path):
     await p.init_db()
 
     # First call creates the instance
-    instance = await p.instance.ensure_instance()
+    instance = await p.table('instance').ensure_instance()
     assert instance is not None
     assert instance["id"] == 1
     assert instance["name"] == "mail-proxy"  # default value
 
     # Second call returns the same instance
-    instance2 = await p.instance.ensure_instance()
+    instance2 = await p.table('instance').ensure_instance()
     assert instance2["id"] == 1
 
 
@@ -31,7 +31,7 @@ async def test_instance_created_by_init_db(tmp_path):
     p = MailProxyDb(str(db))
     await p.init_db()
 
-    instance = await p.instance.get_instance()
+    instance = await p.table('instance').get_instance()
     # init_db now creates instance via _init_edition()
     assert instance is not None
     assert instance["edition"] in ("ce", "ee")
@@ -44,9 +44,9 @@ async def test_instance_update(tmp_path):
     p = MailProxyDb(str(db))
     await p.init_db()
 
-    await p.instance.update_instance({"name": "my-proxy"})
+    await p.table('instance').update_instance({"name": "my-proxy"})
 
-    instance = await p.instance.get_instance()
+    instance = await p.table('instance').get_instance()
     assert instance["name"] == "my-proxy"
 
 
@@ -58,12 +58,12 @@ async def test_instance_name_accessors(tmp_path):
     await p.init_db()
 
     # Default name
-    name = await p.instance.get_name()
+    name = await p.table('instance').get_name()
     assert name == "mail-proxy"
 
     # Set name
-    await p.instance.set_name("custom-name")
-    name = await p.instance.get_name()
+    await p.table('instance').set_name("custom-name")
+    name = await p.table('instance').get_name()
     assert name == "custom-name"
 
 
@@ -75,12 +75,12 @@ async def test_instance_api_token_accessors(tmp_path):
     await p.init_db()
 
     # No token initially
-    token = await p.instance.get_api_token()
+    token = await p.table('instance').get_api_token()
     assert token is None
 
     # Set token
-    await p.instance.set_api_token("secret-token-123")
-    token = await p.instance.get_api_token()
+    await p.table('instance').set_api_token("secret-token-123")
+    token = await p.table('instance').get_api_token()
     assert token == "secret-token-123"
 
 
@@ -91,7 +91,7 @@ async def test_bounce_config_disabled_by_default(tmp_path):
     p = MailProxyDb(str(db))
     await p.init_db()
 
-    enabled = await p.instance.is_bounce_enabled()
+    enabled = await p.table('instance').is_bounce_enabled()
     assert enabled is False
 
 
@@ -103,7 +103,7 @@ async def test_bounce_config_get_and_set(tmp_path):
     await p.init_db()
 
     # Set bounce config
-    await p.instance.set_bounce_config(
+    await p.table('instance').set_bounce_config(
         enabled=True,
         imap_host="imap.example.com",
         imap_port=993,
@@ -114,10 +114,10 @@ async def test_bounce_config_get_and_set(tmp_path):
     )
 
     # Verify enabled
-    assert await p.instance.is_bounce_enabled() is True
+    assert await p.table('instance').is_bounce_enabled() is True
 
     # Get full config
-    config = await p.instance.get_bounce_config()
+    config = await p.table('instance').get_bounce_config()
     assert config["enabled"] is True
     assert config["imap_host"] == "imap.example.com"
     assert config["imap_port"] == 993
@@ -136,16 +136,16 @@ async def test_bounce_config_partial_update(tmp_path):
     await p.init_db()
 
     # Initial setup
-    await p.instance.set_bounce_config(
+    await p.table('instance').set_bounce_config(
         enabled=True,
         imap_host="imap.example.com",
         imap_user="user@example.com",
     )
 
     # Partial update - only change host
-    await p.instance.set_bounce_config(imap_host="imap.newhost.com")
+    await p.table('instance').set_bounce_config(imap_host="imap.newhost.com")
 
-    config = await p.instance.get_bounce_config()
+    config = await p.table('instance').get_bounce_config()
     assert config["imap_host"] == "imap.newhost.com"
     assert config["imap_user"] == "user@example.com"  # unchanged
     assert config["enabled"] is True  # unchanged
@@ -159,13 +159,13 @@ async def test_bounce_sync_state_update(tmp_path):
     await p.init_db()
 
     # Update sync state
-    await p.instance.update_bounce_sync_state(
+    await p.table('instance').update_bounce_sync_state(
         last_uid=12345,
         last_sync=1700000000,
         uidvalidity=987654321,
     )
 
-    config = await p.instance.get_bounce_config()
+    config = await p.table('instance').get_bounce_config()
     assert config["last_uid"] == 12345
     assert config["last_sync"] is not None
     assert config["uidvalidity"] == 987654321
@@ -179,19 +179,19 @@ async def test_bounce_sync_state_without_uidvalidity(tmp_path):
     await p.init_db()
 
     # Set initial uidvalidity
-    await p.instance.update_bounce_sync_state(
+    await p.table('instance').update_bounce_sync_state(
         last_uid=100,
         last_sync=1700000000,
         uidvalidity=999,
     )
 
     # Update without uidvalidity - should not change it
-    await p.instance.update_bounce_sync_state(
+    await p.table('instance').update_bounce_sync_state(
         last_uid=200,
         last_sync=1700001000,
     )
 
-    config = await p.instance.get_bounce_config()
+    config = await p.table('instance').get_bounce_config()
     assert config["last_uid"] == 200
     assert config["uidvalidity"] == 999  # unchanged
 
@@ -204,13 +204,13 @@ async def test_disable_bounce(tmp_path):
     await p.init_db()
 
     # Enable first
-    await p.instance.set_bounce_config(enabled=True, imap_host="imap.example.com")
-    assert await p.instance.is_bounce_enabled() is True
+    await p.table('instance').set_bounce_config(enabled=True, imap_host="imap.example.com")
+    assert await p.table('instance').is_bounce_enabled() is True
 
     # Disable
-    await p.instance.set_bounce_config(enabled=False)
-    assert await p.instance.is_bounce_enabled() is False
+    await p.table('instance').set_bounce_config(enabled=False)
+    assert await p.table('instance').is_bounce_enabled() is False
 
     # Config should still have the host
-    config = await p.instance.get_bounce_config()
+    config = await p.table('instance').get_bounce_config()
     assert config["imap_host"] == "imap.example.com"

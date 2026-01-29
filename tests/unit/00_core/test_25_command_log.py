@@ -43,19 +43,19 @@ async def test_command_log_filters(tmp_path):
     now = int(time.time())
 
     # Log commands for different tenants and endpoints
-    await p.command_log.log_command(
+    await p.table('command_log').log_command(
         endpoint="POST /commands/add-messages",
         payload={"messages": []},
         tenant_id="acme",
         command_ts=now - 100,
     )
-    await p.command_log.log_command(
+    await p.table('command_log').log_command(
         endpoint="POST /tenant",
         payload={"id": "beta"},
         tenant_id=None,
         command_ts=now - 50,
     )
-    await p.command_log.log_command(
+    await p.table('command_log').log_command(
         endpoint="DELETE /account/smtp1",
         payload={},
         tenant_id="beta",
@@ -89,7 +89,7 @@ async def test_command_log_export(tmp_path):
 
     now = int(time.time())
 
-    await p.command_log.log_command(
+    await p.table('command_log').log_command(
         endpoint="POST /commands/add-messages",
         payload={"messages": [{"id": "msg1"}]},
         tenant_id="acme",
@@ -120,17 +120,17 @@ async def test_command_log_purge(tmp_path):
     now = int(time.time())
 
     # Log commands at different times
-    await p.command_log.log_command(
+    await p.table('command_log').log_command(
         endpoint="POST /commands/add-messages",
         payload={},
         command_ts=now - 1000,  # Old
     )
-    await p.command_log.log_command(
+    await p.table('command_log').log_command(
         endpoint="POST /commands/add-messages",
         payload={},
         command_ts=now - 500,  # Medium
     )
-    await p.command_log.log_command(
+    await p.table('command_log').log_command(
         endpoint="POST /commands/add-messages",
         payload={},
         command_ts=now,  # Recent
@@ -153,7 +153,7 @@ async def test_command_log_table_direct(tmp_path):
     await p.init_db()
 
     # Test get_command
-    cmd_id = await p.command_log.log_command(
+    cmd_id = await p.table('command_log').log_command(
         endpoint="POST /account",
         payload={"id": "smtp1", "host": "smtp.example.com"},
         tenant_id="acme",
@@ -161,12 +161,12 @@ async def test_command_log_table_direct(tmp_path):
         response_body={"ok": True},
     )
 
-    cmd = await p.command_log.get_command(cmd_id)
+    cmd = await p.table('command_log').get_command(cmd_id)
     assert cmd is not None
     assert cmd["endpoint"] == "POST /account"
     assert cmd["payload"]["id"] == "smtp1"
     assert cmd["response_body"]["ok"] is True
 
     # Test get_command with non-existent ID
-    cmd = await p.command_log.get_command(99999)
+    cmd = await p.table('command_log').get_command(99999)
     assert cmd is None

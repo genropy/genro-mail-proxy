@@ -163,6 +163,7 @@ class MessagesTable(Table):
         entries: Sequence[dict[str, Any]],
         pec_account_ids: set[str] | None = None,
         tenant_id: str | None = None,
+        auto_pec: bool = True,
     ) -> list[dict[str, str]]:
         """Persist a batch of messages for delivery.
 
@@ -178,14 +179,20 @@ class MessagesTable(Table):
             entries: List of message entries to insert.
             pec_account_ids: Set of account IDs that are PEC accounts.
                 Messages sent via these accounts will have is_pec=1.
+                If None and auto_pec=True, fetched automatically from accounts table.
             tenant_id: Tenant ID for multi-tenant isolation. Required unless
                 each entry has its own tenant_id.
+            auto_pec: If True (default), auto-fetch PEC account IDs when not provided.
 
         Returns:
             List of {"id": msg_id, "pk": pk} for inserted/updated messages.
         """
         if not entries:
             return []
+
+        # Auto-fetch PEC account IDs if not provided
+        if pec_account_ids is None and auto_pec:
+            pec_account_ids = await self.db.table('accounts').get_pec_account_ids()
 
         pec_accounts = pec_account_ids or set()
         result: list[dict[str, str]] = []

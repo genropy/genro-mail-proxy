@@ -94,7 +94,7 @@ async def verify_tenant_token(tenant_id: str | None, api_token: str | None, glob
 
     # Look up token in tenants table
     if service and getattr(service, "db", None):
-        token_tenant = await service.db.tenants.get_tenant_by_token(api_token)
+        token_tenant = await service.db.table('tenants').get_tenant_by_token(api_token)
         if token_tenant:
             # Token belongs to a tenant - verify tenant_id matches
             if tenant_id and token_tenant["id"] != tenant_id:
@@ -136,7 +136,7 @@ async def require_admin_token(
 
     # Check if it's a tenant token (to give a helpful error message)
     if service and getattr(service, "db", None):
-        token_tenant = await service.db.tenants.get_tenant_by_token(api_token)
+        token_tenant = await service.db.table('tenants').get_tenant_by_token(api_token)
         if token_tenant:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Admin token required, tenant tokens not allowed for this operation")
 
@@ -177,7 +177,7 @@ async def require_token(
 
     # Check tenant token
     if service and getattr(service, "db", None):
-        token_tenant = await service.db.tenants.get_tenant_by_token(api_token)
+        token_tenant = await service.db.table('tenants').get_tenant_by_token(api_token)
         if token_tenant:
             # Valid tenant token - store tenant info for scope verification
             request.state.token_tenant_id = token_tenant["id"]
@@ -1116,7 +1116,7 @@ def create_app(
         if not service:
             raise HTTPException(500, "Service not initialized")
         # Admin-only endpoint
-        api_key = await service.db.tenants.create_api_key(tenant_id)
+        api_key = await service.db.table('tenants').create_api_key(tenant_id)
         if not api_key:
             raise HTTPException(404, f"Tenant '{tenant_id}' not found")
         return ApiKeyResponse(ok=True, api_key=api_key)
@@ -1142,7 +1142,7 @@ def create_app(
         if not service:
             raise HTTPException(500, "Service not initialized")
         # Admin-only endpoint
-        revoked = await service.db.tenants.revoke_api_key(tenant_id)
+        revoked = await service.db.table('tenants').revoke_api_key(tenant_id)
         if not revoked:
             raise HTTPException(404, f"Tenant '{tenant_id}' not found")
         return BasicOkResponse(ok=True)
@@ -1219,7 +1219,7 @@ def create_app(
             raise HTTPException(500, "Service not initialized")
 
         # Get updated config from DB
-        bounce_config = await service.db.instance.get_bounce_config()
+        bounce_config = await service.db.table('instance').get_bounce_config()
 
         if not bounce_config.get("enabled"):
             # Stop existing bounce receiver if any
@@ -1279,16 +1279,16 @@ def create_app(
             raise HTTPException(400, "Enterprise modules not installed. Install with: pip install genro-mail-proxy[ee]")
 
         # Check if already EE
-        if await service.db.instance.is_enterprise():
+        if await service.db.table('instance').is_enterprise():
             return UpgradeToEEResponse(ok=True, edition="ee", message="Already in Enterprise Edition")
 
         # Upgrade to EE
-        await service.db.instance.set_edition("ee")
+        await service.db.table('instance').set_edition("ee")
 
         # If "default" tenant exists without token, generate one
-        default_tenant = await service.db.tenants.get("default")
+        default_tenant = await service.db.table('tenants').get("default")
         if default_tenant and not default_tenant.get("api_key_hash"):
-            token = await service.db.tenants.create_api_key("default")
+            token = await service.db.table('tenants').create_api_key("default")
             return UpgradeToEEResponse(
                 ok=True,
                 edition="ee",

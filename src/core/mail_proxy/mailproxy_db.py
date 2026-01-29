@@ -135,44 +135,6 @@ class MailProxyDb(SqlDb):
 
         # else: only "default" tenant exists -> keep current edition (CE or explicit upgrade)
 
-    # ----------------------------------------------------------------- Convenience Properties
-    # These provide direct access to table instances for backward compatibility
-
-    @property
-    def tenants(self) -> TenantsTable:
-        """Direct access to tenants table."""
-        return self.table('tenants')  # type: ignore[return-value]
-
-    @property
-    def accounts(self) -> AccountsTable:
-        """Direct access to accounts table."""
-        return self.table('accounts')  # type: ignore[return-value]
-
-    @property
-    def messages(self) -> MessagesTable:
-        """Direct access to messages table."""
-        return self.table('messages')  # type: ignore[return-value]
-
-    @property
-    def message_events(self) -> MessageEventTable:
-        """Direct access to message_events table."""
-        return self.table('message_events')  # type: ignore[return-value]
-
-    @property
-    def command_log(self) -> CommandLogTable:
-        """Direct access to command_log table."""
-        return self.table('command_log')  # type: ignore[return-value]
-
-    @property
-    def send_log(self) -> SendLogTable:
-        """Direct access to send_log table."""
-        return self.table('send_log')  # type: ignore[return-value]
-
-    @property
-    def instance(self) -> InstanceTable:
-        """Direct access to instance table."""
-        return self.table('instance')  # type: ignore[return-value]
-
     # Config convenience methods (backward compatibility with old key-value approach)
     # Typed columns in instance table
     _TYPED_CONFIG_KEYS = {"name", "api_token", "edition"}

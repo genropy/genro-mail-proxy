@@ -303,7 +303,7 @@ async def test_insert_messages_without_auto_pec(tmp_path):
     })
 
     # Insert message with auto_pec=False
-    await db.insert_messages(
+    await db.table('messages').insert_batch(
         [{
             "id": "msg-no-auto-pec",
             "tenant_id": "test_tenant",
@@ -314,5 +314,5 @@ async def test_insert_messages_without_auto_pec(tmp_path):
     )
 
     # Verify is_pec is NOT set
-    ready = await db.fetch_ready_messages(limit=10, now_ts=9999999999)
+    ready = await db.table('messages').fetch_ready(limit=10, now_ts=9999999999)
     assert ready[0]["is_pec"] == 0

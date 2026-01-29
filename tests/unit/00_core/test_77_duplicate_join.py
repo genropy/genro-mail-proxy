@@ -155,7 +155,7 @@ async def test_count_pending_for_tenant_no_inflation(tmp_path):
     ])
 
     # Count pending for tenant_a
-    count = await db.messages.count_pending_for_tenant("tenant_a")
+    count = await db.table('messages').count_pending_for_tenant("tenant_a")
 
     # Should be 3, not 6 (the bug would return 6 due to cross-join)
     assert count == 3
@@ -209,7 +209,7 @@ async def test_get_ids_for_tenant_no_duplication(tmp_path):
     ])
 
     # Get IDs for tenant_a with a list that includes both IDs
-    ids = await db.messages.get_ids_for_tenant(["msg-a-001", "msg-b-001"], "tenant_a")
+    ids = await db.table('messages').get_ids_for_tenant(["msg-a-001", "msg-b-001"], "tenant_a")
 
     # Should only return msg-a-001, not both
     assert ids == {"msg-a-001"}

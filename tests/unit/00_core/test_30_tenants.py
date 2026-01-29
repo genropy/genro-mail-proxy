@@ -401,7 +401,7 @@ async def test_create_api_key(tmp_path):
 
     await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
 
-    raw_key = await db.tenants.create_api_key("acme")
+    raw_key = await db.table('tenants').create_api_key("acme")
 
     assert raw_key is not None
     assert len(raw_key) > 20  # secrets.token_urlsafe(32) generates ~43 chars
@@ -423,7 +423,7 @@ async def test_create_api_key_with_expiration(tmp_path):
     await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
 
     expires_at = int(time.time()) + 3600  # 1 hour from now
-    raw_key = await db.tenants.create_api_key("acme", expires_at=expires_at)
+    raw_key = await db.table('tenants').create_api_key("acme", expires_at=expires_at)
 
     assert raw_key is not None
 
@@ -437,7 +437,7 @@ async def test_create_api_key_nonexistent_tenant(tmp_path):
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
-    raw_key = await db.tenants.create_api_key("nonexistent")
+    raw_key = await db.table('tenants').create_api_key("nonexistent")
 
     assert raw_key is None
 
@@ -449,9 +449,9 @@ async def test_get_tenant_by_token(tmp_path):
     await db.init_db()
 
     await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
-    raw_key = await db.tenants.create_api_key("acme")
+    raw_key = await db.table('tenants').create_api_key("acme")
 
-    tenant = await db.tenants.get_tenant_by_token(raw_key)
+    tenant = await db.table('tenants').get_tenant_by_token(raw_key)
 
     assert tenant is not None
     assert tenant["id"] == "acme"
@@ -465,9 +465,9 @@ async def test_get_tenant_by_token_invalid(tmp_path):
     await db.init_db()
 
     await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
-    await db.tenants.create_api_key("acme")
+    await db.table('tenants').create_api_key("acme")
 
-    tenant = await db.tenants.get_tenant_by_token("invalid-token-12345")
+    tenant = await db.table('tenants').get_tenant_by_token("invalid-token-12345")
 
     assert tenant is None
 
@@ -484,9 +484,9 @@ async def test_get_tenant_by_token_expired(tmp_path):
 
     # Create key with past expiration
     expires_at = int(time.time()) - 3600  # 1 hour ago
-    raw_key = await db.tenants.create_api_key("acme", expires_at=expires_at)
+    raw_key = await db.table('tenants').create_api_key("acme", expires_at=expires_at)
 
-    tenant = await db.tenants.get_tenant_by_token(raw_key)
+    tenant = await db.table('tenants').get_tenant_by_token(raw_key)
 
     assert tenant is None
 
@@ -498,18 +498,18 @@ async def test_revoke_api_key(tmp_path):
     await db.init_db()
 
     await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
-    raw_key = await db.tenants.create_api_key("acme")
+    raw_key = await db.table('tenants').create_api_key("acme")
 
     # Key works before revocation
-    tenant = await db.tenants.get_tenant_by_token(raw_key)
+    tenant = await db.table('tenants').get_tenant_by_token(raw_key)
     assert tenant is not None
 
     # Revoke
-    result = await db.tenants.revoke_api_key("acme")
+    result = await db.table('tenants').revoke_api_key("acme")
     assert result is True
 
     # Key no longer works
-    tenant = await db.tenants.get_tenant_by_token(raw_key)
+    tenant = await db.table('tenants').get_tenant_by_token(raw_key)
     assert tenant is None
 
     # DB fields are cleared
@@ -524,7 +524,7 @@ async def test_revoke_api_key_nonexistent(tmp_path):
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
-    result = await db.tenants.revoke_api_key("nonexistent")
+    result = await db.table('tenants').revoke_api_key("nonexistent")
 
     assert result is False
 
@@ -543,7 +543,7 @@ async def test_suspend_all_tenant(tmp_path):
     await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
 
     # Suspend all
-    result = await db.tenants.suspend_batch("acme")
+    result = await db.table('tenants').suspend_batch("acme")
     assert result is True
 
     # Verify suspended_batches = "*"
@@ -551,7 +551,7 @@ async def test_suspend_all_tenant(tmp_path):
     assert tenant["suspended_batches"] == "*"
 
     # Check helper method
-    suspended = await db.tenants.get_suspended_batches("acme")
+    suspended = await db.table('tenants').get_suspended_batches("acme")
     assert suspended == {"*"}
 
 
@@ -564,13 +564,13 @@ async def test_suspend_single_batch(tmp_path):
     await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
 
     # Suspend single batch
-    result = await db.tenants.suspend_batch("acme", "NL-2026-01")
+    result = await db.table('tenants').suspend_batch("acme", "NL-2026-01")
     assert result is True
 
     tenant = await db.table('tenants').get("acme")
     assert tenant["suspended_batches"] == "NL-2026-01"
 
-    suspended = await db.tenants.get_suspended_batches("acme")
+    suspended = await db.table('tenants').get_suspended_batches("acme")
     assert suspended == {"NL-2026-01"}
 
 
@@ -583,13 +583,13 @@ async def test_suspend_multiple_batches(tmp_path):
     await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
 
     # Suspend first batch
-    await db.tenants.suspend_batch("acme", "NL-01")
+    await db.table('tenants').suspend_batch("acme", "NL-01")
     # Suspend second batch
-    await db.tenants.suspend_batch("acme", "NL-02")
+    await db.table('tenants').suspend_batch("acme", "NL-02")
     # Suspend third batch
-    await db.tenants.suspend_batch("acme", "promo-jan")
+    await db.table('tenants').suspend_batch("acme", "promo-jan")
 
-    suspended = await db.tenants.get_suspended_batches("acme")
+    suspended = await db.table('tenants').get_suspended_batches("acme")
     assert suspended == {"NL-01", "NL-02", "promo-jan"}
 
 
@@ -602,15 +602,15 @@ async def test_activate_single_batch(tmp_path):
     await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
 
     # Suspend multiple batches
-    await db.tenants.suspend_batch("acme", "NL-01")
-    await db.tenants.suspend_batch("acme", "NL-02")
+    await db.table('tenants').suspend_batch("acme", "NL-01")
+    await db.table('tenants').suspend_batch("acme", "NL-02")
 
     # Activate one
-    result = await db.tenants.activate_batch("acme", "NL-01")
+    result = await db.table('tenants').activate_batch("acme", "NL-01")
     assert result is True
 
     # Only NL-02 remains suspended
-    suspended = await db.tenants.get_suspended_batches("acme")
+    suspended = await db.table('tenants').get_suspended_batches("acme")
     assert suspended == {"NL-02"}
 
 
@@ -623,15 +623,15 @@ async def test_activate_all(tmp_path):
     await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
 
     # Suspend multiple batches
-    await db.tenants.suspend_batch("acme", "NL-01")
-    await db.tenants.suspend_batch("acme", "NL-02")
+    await db.table('tenants').suspend_batch("acme", "NL-01")
+    await db.table('tenants').suspend_batch("acme", "NL-02")
 
     # Activate all
-    result = await db.tenants.activate_batch("acme")
+    result = await db.table('tenants').activate_batch("acme")
     assert result is True
 
     # No batches suspended
-    suspended = await db.tenants.get_suspended_batches("acme")
+    suspended = await db.table('tenants').get_suspended_batches("acme")
     assert suspended == set()
 
     tenant = await db.table('tenants').get("acme")
@@ -647,14 +647,14 @@ async def test_cannot_activate_single_from_full_suspension(tmp_path):
     await db.table('tenants').add({"id": "acme", "name": "ACME Corp"})
 
     # Suspend all
-    await db.tenants.suspend_batch("acme")
+    await db.table('tenants').suspend_batch("acme")
 
     # Try to activate single batch - should fail
-    result = await db.tenants.activate_batch("acme", "NL-01")
+    result = await db.table('tenants').activate_batch("acme", "NL-01")
     assert result is False
 
     # Still fully suspended
-    suspended = await db.tenants.get_suspended_batches("acme")
+    suspended = await db.table('tenants').get_suspended_batches("acme")
     assert suspended == {"*"}
 
 
@@ -664,7 +664,7 @@ async def test_is_batch_suspended_helper(tmp_path):
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
-    table = db.tenants
+    table = db.table('tenants')
 
     # No suspension
     assert table.is_batch_suspended(None, "NL-01") is False
@@ -688,7 +688,7 @@ async def test_suspend_nonexistent_tenant(tmp_path):
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
-    result = await db.tenants.suspend_batch("nonexistent")
+    result = await db.table('tenants').suspend_batch("nonexistent")
     assert result is False
 
 
@@ -722,22 +722,22 @@ async def test_fetch_ready_excludes_suspended_batches(tmp_path):
     ])
 
     # All messages should be ready initially
-    ready = await db.messages.fetch_ready(limit=10, now_ts=now_ts)
+    ready = await db.table('messages').fetch_ready(limit=10, now_ts=now_ts)
     assert len(ready) == 3
 
     # Suspend NL-01 batch
-    await db.tenants.suspend_batch("acme", "NL-01")
+    await db.table('tenants').suspend_batch("acme", "NL-01")
 
     # Only 2 messages ready (NL-02 and no-batch)
-    ready = await db.messages.fetch_ready(limit=10, now_ts=now_ts)
+    ready = await db.table('messages').fetch_ready(limit=10, now_ts=now_ts)
     assert len(ready) == 2
     assert {r["id"] for r in ready} == {"msg-2", "msg-3"}
 
     # Suspend all
-    await db.tenants.suspend_batch("acme")
+    await db.table('tenants').suspend_batch("acme")
 
     # No messages ready
-    ready = await db.messages.fetch_ready(limit=10, now_ts=now_ts)
+    ready = await db.table('messages').fetch_ready(limit=10, now_ts=now_ts)
     assert len(ready) == 0
 
 

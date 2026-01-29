@@ -487,10 +487,10 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
                 if not tenant_id:
                     return {"ok": False, "error": "tenant_id is required"}
                 batch_code = payload.get("batch_code") if isinstance(payload, dict) else None
-                success = await self.db.tenants.suspend_batch(tenant_id, batch_code)
+                success = await self.db.table('tenants').suspend_batch(tenant_id, batch_code)
                 if not success:
                     return {"ok": False, "error": "tenant not found"}
-                suspended = await self.db.tenants.get_suspended_batches(tenant_id)
+                suspended = await self.db.table('tenants').get_suspended_batches(tenant_id)
                 pending = await self.db.count_pending_messages(tenant_id, batch_code)
                 return {
                     "ok": True,
@@ -504,10 +504,10 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
                 if not tenant_id:
                     return {"ok": False, "error": "tenant_id is required"}
                 batch_code = payload.get("batch_code") if isinstance(payload, dict) else None
-                success = await self.db.tenants.activate_batch(tenant_id, batch_code)
+                success = await self.db.table('tenants').activate_batch(tenant_id, batch_code)
                 if not success:
                     return {"ok": False, "error": "tenant not found or cannot activate single batch from full suspension"}
-                suspended = await self.db.tenants.get_suspended_batches(tenant_id)
+                suspended = await self.db.table('tenants').get_suspended_batches(tenant_id)
                 pending = await self.db.count_pending_messages(tenant_id, batch_code)
                 return {
                     "ok": True,
@@ -631,12 +631,12 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
                     return {"ok": True}
                 return {"ok": False, "error": "tenant not found"}
             case "getInstance":
-                instance = await self.db.instance.get_instance()
+                instance = await self.db.table('instance').get_instance()
                 if instance:
                     return {"ok": True, **instance}
                 return {"ok": False, "error": "instance not configured"}
             case "updateInstance":
-                await self.db.instance.update_instance(payload)
+                await self.db.table('instance').update_instance(payload)
                 return {"ok": True}
             case _:
                 return {"ok": False, "error": "unknown command"}
@@ -767,7 +767,7 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
             return 0, [], []
 
         # Get messages that belong to this tenant (via account relationship)
-        authorized_ids = await self.db.messages.get_ids_for_tenant(list(ids), tenant_id)
+        authorized_ids = await self.db.table('messages').get_ids_for_tenant(list(ids), tenant_id)
 
         removed = 0
         missing: list[str] = []

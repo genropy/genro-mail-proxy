@@ -174,7 +174,7 @@ class TestGetInstanceCommand:
     @pytest.mark.asyncio
     async def test_get_existing_instance(self, proxy: MailProxy):
         """Should return instance data when configured."""
-        await proxy.db.instance.update_instance({
+        await proxy.db.table('instance').update_instance({
             "name": "mail-proxy-1",
             "api_token": "secret-token",
         })
@@ -200,7 +200,7 @@ class TestUpdateInstanceCommand:
         assert result["ok"] is True
 
         # Verify update
-        instance = await proxy.db.instance.get_instance()
+        instance = await proxy.db.table('instance').get_instance()
         assert instance is not None
         assert instance["name"] == "mail-proxy-2"
         assert instance["api_token"] == "new-token"
@@ -208,12 +208,12 @@ class TestUpdateInstanceCommand:
     @pytest.mark.asyncio
     async def test_update_instance_overwrite(self, proxy: MailProxy):
         """Should overwrite existing instance config."""
-        await proxy.db.instance.update_instance({"name": "old-name"})
+        await proxy.db.table('instance').update_instance({"name": "old-name"})
 
         result = await proxy.handle_command("updateInstance", {"name": "new-name"})
 
         assert result["ok"] is True
-        instance = await proxy.db.instance.get_instance()
+        instance = await proxy.db.table('instance').get_instance()
         assert instance["name"] == "new-name"
 
 
