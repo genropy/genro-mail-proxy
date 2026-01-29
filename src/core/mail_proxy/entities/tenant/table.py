@@ -58,43 +58,33 @@ class TenantsTable(Table):
 
         if existing:
             # Update existing tenant - don't change API key
-            await self.upsert(
-                {
-                    "id": tenant_id,
-                    "name": tenant.get("name"),
-                    "client_auth": tenant.get("client_auth"),
-                    "client_base_url": tenant.get("client_base_url"),
-                    "client_sync_path": tenant.get("client_sync_path"),
-                    "client_attachment_path": tenant.get("client_attachment_path"),
-                    "rate_limits": tenant.get("rate_limits"),
-                    "large_file_config": tenant.get("large_file_config"),
-                    "active": 1 if tenant.get("active", True) else 0,
-                },
-                conflict_columns=["id"],
-                update_extras=["updated_at = CURRENT_TIMESTAMP"],
-            )
+            async with self.record(tenant_id, pkey="id") as rec:
+                rec["name"] = tenant.get("name")
+                rec["client_auth"] = tenant.get("client_auth")
+                rec["client_base_url"] = tenant.get("client_base_url")
+                rec["client_sync_path"] = tenant.get("client_sync_path")
+                rec["client_attachment_path"] = tenant.get("client_attachment_path")
+                rec["rate_limits"] = tenant.get("rate_limits")
+                rec["large_file_config"] = tenant.get("large_file_config")
+                rec["active"] = 1 if tenant.get("active", True) else 0
             return ""  # Key unchanged
 
         # New tenant - generate API key
         raw_key = secrets.token_urlsafe(32)
         key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
 
-        await self.upsert(
-            {
-                "id": tenant_id,
-                "name": tenant.get("name"),
-                "client_auth": tenant.get("client_auth"),
-                "client_base_url": tenant.get("client_base_url"),
-                "client_sync_path": tenant.get("client_sync_path"),
-                "client_attachment_path": tenant.get("client_attachment_path"),
-                "rate_limits": tenant.get("rate_limits"),
-                "large_file_config": tenant.get("large_file_config"),
-                "active": 1 if tenant.get("active", True) else 0,
-                "api_key_hash": key_hash,
-            },
-            conflict_columns=["id"],
-            update_extras=["updated_at = CURRENT_TIMESTAMP"],
-        )
+        await self.insert({
+            "id": tenant_id,
+            "name": tenant.get("name"),
+            "client_auth": tenant.get("client_auth"),
+            "client_base_url": tenant.get("client_base_url"),
+            "client_sync_path": tenant.get("client_sync_path"),
+            "client_attachment_path": tenant.get("client_attachment_path"),
+            "rate_limits": tenant.get("rate_limits"),
+            "large_file_config": tenant.get("large_file_config"),
+            "active": 1 if tenant.get("active", True) else 0,
+            "api_key_hash": key_hash,
+        })
         return raw_key
 
     async def get(self, tenant_id: str) -> dict[str, Any] | None:

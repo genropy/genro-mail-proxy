@@ -113,7 +113,7 @@ class DispatcherMixin:
         processed_any = False
 
         # First, process immediate priority messages (priority=0)
-        immediate_batch = await self.db.fetch_ready_messages(
+        immediate_batch = await self.db.table("messages").fetch_ready(
             limit=self._smtp_batch_size, now_ts=now_ts, priority=0
         )
         if immediate_batch:
@@ -122,7 +122,7 @@ class DispatcherMixin:
             processed_any = True
 
         # Then, process regular priority messages (priority >= 1)
-        regular_batch = await self.db.fetch_ready_messages(
+        regular_batch = await self.db.table("messages").fetch_ready(
             limit=self._smtp_batch_size, now_ts=now_ts, min_priority=1
         )
         if regular_batch:
@@ -160,7 +160,7 @@ class DispatcherMixin:
                 tenant_id = account_messages[0].get("tenant_id")
                 if tenant_id:
                     try:
-                        account_data = await self.db.get_account(tenant_id, account_id)
+                        account_data = await self.db.table("accounts").get(tenant_id, account_id)
                         if account_data and account_data.get("batch_size"):
                             account_batch_size = int(account_data["batch_size"])
                     except Exception:
@@ -226,13 +226,15 @@ class DispatcherMixin:
                 message.get("account_id") or "default",
             )
         if pk:
-            await self.db.clear_deferred(pk)
+            await self.db.table("messages").clear_deferred(pk)
         try:
             email_msg, envelope_from = await self._build_email(message)
         except KeyError as exc:
             reason = f"missing {exc}"
             if pk:
-                await self.db.mark_error(pk, now_ts, reason)
+                await self.db.table("message_events").add_event(
+                    pk, "error", now_ts, description=reason
+                )
             await self._publish_result(
                 {
                     "id": msg_id,
@@ -247,7 +249,9 @@ class DispatcherMixin:
             # Attachment fetch failure or other validation error
             reason = str(exc)
             if pk:
-                await self.db.mark_error(pk, now_ts, reason)
+                await self.db.table("message_events").add_event(
+                    pk, "error", now_ts, description=reason
+                )
             await self._publish_result(
                 {
                     "id": msg_id,
@@ -296,7 +300,7 @@ class DispatcherMixin:
         # Fetch tenant name for metrics (best effort, fallback to tenant_id)
         tenant_name = tenant_id
         if tenant_id:
-            tenant = await self.db.get_tenant(tenant_id)
+            tenant = await self.db.table("tenants").get(tenant_id)
             if tenant:
                 tenant_name = tenant.get("name") or tenant_id
 
@@ -305,7 +309,9 @@ class DispatcherMixin:
         except AccountConfigurationError as exc:
             error_ts = self._utc_now_epoch()
             if pk:
-                await self.db.mark_error(pk, error_ts, str(exc))
+                await self.db.table("message_events").add_event(
+                    pk, "error", error_ts, description=str(exc)
+                )
             return {
                 "id": msg_id,
                 "status": "error",
@@ -340,7 +346,9 @@ class DispatcherMixin:
                 )
                 error_ts = self._utc_now_epoch()
                 if pk:
-                    await self.db.mark_error(pk, error_ts, "rate_limit_exceeded")
+                    await self.db.table("message_events").add_event(
+                        pk, "error", error_ts, description="rate_limit_exceeded"
+                    )
                 return {
                     "id": msg_id,
                     "status": "error",
@@ -353,7 +361,12 @@ class DispatcherMixin:
             # Rate limit hit - defer message for later retry (internal scheduling).
             # This is flow control, not an error, so it won't be reported to client.
             if pk:
-                await self.db.set_deferred(pk, deferred_until)
+                now_ts = self._utc_now_epoch()
+                await self.db.table("message_events").add_event(
+                    pk, "deferred", now_ts,
+                    description="rate_limit",
+                    metadata={"deferred_ts": deferred_until},
+                )
             self.metrics.inc_deferred(**metric_labels)
             self.logger.debug(
                 "Message %s rate-limited for account %s, deferred until %s",
@@ -382,21 +395,25 @@ class DispatcherMixin:
             if should_retry:
                 # Calculate next retry timestamp using strategy
                 delay = self._retry_strategy.calculate_delay(retry_count)
-                deferred_until = self._utc_now_epoch() + delay
+                now_ts = self._utc_now_epoch()
+                deferred_until = now_ts + delay
 
                 # Update payload with incremented retry count
                 updated_payload = dict(payload)
                 updated_payload["retry_count"] = retry_count + 1
 
                 # Store updated payload and defer the message
+                error_info = f"{exc} (SMTP {smtp_code})" if smtp_code else str(exc)
                 if pk:
-                    await self.db.update_message_payload(pk, updated_payload)
-                if pk:
-                    await self.db.set_deferred(pk, deferred_until)
+                    await self.db.table("messages").update_payload(pk, updated_payload)
+                    await self.db.table("message_events").add_event(
+                        pk, "deferred", now_ts,
+                        description=error_info,
+                        metadata={"deferred_ts": deferred_until, "retry_count": retry_count + 1},
+                    )
                 self.metrics.inc_deferred(**metric_labels)
 
                 # Log the retry attempt
-                error_info = f"{exc} (SMTP {smtp_code})" if smtp_code else str(exc)
                 max_retries = self._retry_strategy.max_retries
                 self.logger.warning(
                     "Temporary error for message %s (attempt %d/%d): %s - retrying in %ds",
@@ -438,7 +455,11 @@ class DispatcherMixin:
                     )
 
                 if pk:
-                    await self.db.mark_error(pk, error_ts, error_info)
+                    await self.db.table("message_events").add_event(
+                        pk, "error", error_ts,
+                        description=error_info,
+                        metadata={"smtp_code": smtp_code, "retry_count": retry_count},
+                    )
                 self.metrics.inc_error(**metric_labels)
 
                 return {
@@ -453,7 +474,7 @@ class DispatcherMixin:
 
         sent_ts = self._utc_now_epoch()
         if pk:
-            await self.db.mark_sent(pk, sent_ts)
+            await self.db.table("message_events").add_event(pk, "sent", sent_ts)
         await self.rate_limiter.log_send(resolved_account_id)
         self.metrics.inc_sent(**metric_labels)
         return {
@@ -481,7 +502,7 @@ class DispatcherMixin:
         from .proxy import AccountConfigurationError
 
         if account_id:
-            acc = await self.db.get_account(tenant_id, account_id)
+            acc = await self.db.table("accounts").get(tenant_id, account_id)
             return acc["host"], int(acc["port"]), acc.get("user"), acc.get("password"), acc
         if self.default_host and self.default_port:
             return (
@@ -721,7 +742,7 @@ class DispatcherMixin:
         if not tenant_id:
             return None
 
-        tenant = await self.db.get_tenant(tenant_id)
+        tenant = await self.db.table("tenants").get(tenant_id)
         if not tenant:
             return None
 
@@ -764,7 +785,7 @@ class DispatcherMixin:
             return self.attachments
 
         # Get tenant config directly from tenant_id
-        tenant = await self.db.get_tenant(tenant_id)
+        tenant = await self.db.table("tenants").get(tenant_id)
         if not tenant:
             return self.attachments
 

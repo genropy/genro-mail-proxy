@@ -12,6 +12,75 @@ if TYPE_CHECKING:
     from .sqldb import SqlDb
 
 
+class RecordUpdater:
+    """Async context manager for record update with locking and triggers.
+
+    Usage:
+        async with table.record(pk) as record:
+            record['field'] = 'value'
+        # → triggers update() with old_record
+
+        async with table.record(pk, insert_missing=True) as record:
+            record['field'] = 'value'
+        # → insert() if not exists, update() if exists
+
+    The context manager:
+    - __aenter__: SELECT FOR UPDATE (PostgreSQL) or SELECT (SQLite), saves old_record
+    - __aexit__: calls insert() or update() with proper trigger chain
+    """
+
+    def __init__(
+        self,
+        table: Table,
+        pkey: str,
+        pkey_value: Any,
+        insert_missing: bool = False,
+        for_update: bool = True,
+    ):
+        self.table = table
+        self.pkey = pkey
+        self.pkey_value = pkey_value
+        self.insert_missing = insert_missing
+        self.for_update = for_update
+        self.record: dict[str, Any] | None = None
+        self.old_record: dict[str, Any] | None = None
+        self.is_insert = False
+
+    async def __aenter__(self) -> dict[str, Any]:
+        where = {self.pkey: self.pkey_value}
+
+        if self.for_update:
+            self.old_record = await self.table.select_for_update(where)
+        else:
+            self.old_record = await self.table.select_one(where=where)
+
+        if self.old_record is None:
+            if self.insert_missing:
+                self.record = {self.pkey: self.pkey_value}
+                self.is_insert = True
+            else:
+                self.record = {}
+        else:
+            self.record = dict(self.old_record)
+
+        return self.record
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        if exc_type is not None:
+            return
+
+        if not self.record:
+            return
+
+        if self.is_insert:
+            await self.table.insert(self.record)
+        elif self.old_record:
+            await self.table.update(
+                self.record,
+                {self.pkey: self.pkey_value},
+            )
+
+
 class Table:
     """Base class for async table managers.
 
@@ -159,9 +228,12 @@ class Table:
     # -------------------------------------------------------------------------
 
     async def insert(self, data: dict[str, Any]) -> int:
-        """Insert a row."""
-        encoded = self._encode_json_fields(data)
-        return await self.db.adapter.insert(self.name, encoded)
+        """Insert a row. Calls trigger_on_inserting before and trigger_on_inserted after."""
+        record = await self.trigger_on_inserting(data)
+        encoded = self._encode_json_fields(record)
+        result = await self.db.adapter.insert(self.name, encoded)
+        await self.trigger_on_inserted(record)
+        return result
 
     async def select(
         self,
@@ -185,14 +257,88 @@ class Table:
         row = await self.db.adapter.select_one(self.name, columns, where)
         return self._decode_json_fields(row) if row else None
 
+    async def select_for_update(
+        self,
+        where: dict[str, Any],
+        columns: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """Select single row with FOR UPDATE lock (PostgreSQL) or regular select (SQLite).
+
+        Args:
+            where: WHERE conditions to identify the row.
+            columns: Columns to select (None = all).
+
+        Returns:
+            Row dict or None if not found.
+        """
+        cols_sql = ", ".join(columns) if columns else "*"
+        adapter = self.db.adapter
+
+        conditions = [f"{k} = {adapter._placeholder(k)}" for k in where.keys()]
+        where_sql = " AND ".join(conditions)
+
+        # PostgreSQL supports FOR UPDATE, SQLite doesn't need it (implicit locking)
+        is_postgres = hasattr(adapter, "_pool") and adapter._pool is not None  # type: ignore[attr-defined]
+        lock_clause = " FOR UPDATE" if is_postgres else ""
+
+        query = f"SELECT {cols_sql} FROM {self.name} WHERE {where_sql}{lock_clause}"
+        row = await adapter.fetch_one(query, where)
+        return self._decode_json_fields(row) if row else None
+
+    def record(
+        self,
+        pkey_value: Any,
+        pkey: str | None = None,
+        insert_missing: bool = False,
+        for_update: bool = True,
+    ) -> RecordUpdater:
+        """Return async context manager for record update.
+
+        Args:
+            pkey_value: Primary key value to look up.
+            pkey: Primary key column name (auto-detected if None).
+            insert_missing: If True, insert new record if not found.
+            for_update: If True, use SELECT FOR UPDATE (PostgreSQL).
+
+        Returns:
+            RecordUpdater context manager.
+
+        Usage:
+            async with table.record('uuid-123') as rec:
+                rec['name'] = 'New Name'
+            # → update() called automatically with old_record for triggers
+        """
+        if pkey is None:
+            for col in self.columns.values():
+                if col.primary_key:
+                    pkey = col.name
+                    break
+            if pkey is None:
+                raise ValueError(f"Table {self.name} has no primary key defined")
+
+        return RecordUpdater(self, pkey, pkey_value, insert_missing, for_update)
+
     async def update(self, values: dict[str, Any], where: dict[str, Any]) -> int:
-        """Update rows."""
-        encoded = self._encode_json_fields(values)
-        return await self.db.adapter.update(self.name, encoded, where)
+        """Update rows. Calls trigger_on_updating before and trigger_on_updated after."""
+        # Fetch old record for triggers (only if triggers might be overridden)
+        old_record = await self.select_one(where=where)
+        record = await self.trigger_on_updating(values, old_record or {})
+        encoded = self._encode_json_fields(record)
+        result = await self.db.adapter.update(self.name, encoded, where)
+        if result > 0 and old_record:
+            await self.trigger_on_updated(record, old_record)
+        return result
 
     async def delete(self, where: dict[str, Any]) -> int:
-        """Delete rows."""
-        return await self.db.adapter.delete(self.name, where)
+        """Delete rows. Calls trigger_on_deleting before and trigger_on_deleted after."""
+        # Fetch record for triggers before deletion
+        record = await self.select_one(where=where)
+        if record:
+            await self.trigger_on_deleting(record)
+        result = await self.db.adapter.delete(self.name, where)
+        if result > 0 and record:
+            await self.trigger_on_deleted(record)
+        return result
 
     async def exists(self, where: dict[str, Any]) -> bool:
         """Check if row exists."""
@@ -239,4 +385,4 @@ class Table:
         return await self.db.adapter.execute(query, params)
 
 
-__all__ = ["Table"]
+__all__ = ["Table", "RecordUpdater"]

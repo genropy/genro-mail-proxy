@@ -27,11 +27,8 @@ class InstanceConfigTable(Table):
 
     async def set(self, key: str, value: str) -> None:
         """Set a configuration value."""
-        await self.upsert(
-            {"key": key, "value": value},
-            conflict_columns=["key"],
-            update_extras=["updated_at = CURRENT_TIMESTAMP"],
-        )
+        async with self.record(key, pkey="key", insert_missing=True) as rec:
+            rec["value"] = value
 
     async def get_all(self) -> dict[str, str]:
         """Get all configuration values as a dict."""

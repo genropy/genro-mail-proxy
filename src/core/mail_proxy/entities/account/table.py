@@ -6,13 +6,15 @@ from __future__ import annotations
 from typing import Any
 
 from ...sql import Integer, String, Table, Timestamp
+from ...uid import get_uuid
 
 
 class AccountsTable(Table):
     """Accounts table: SMTP server configurations.
 
     Fields:
-    - tenant_id, id: Composite primary key (multi-tenant isolation)
+    - pk: Internal primary key (UUID)
+    - tenant_id, id: Unique constraint for multi-tenant isolation
     - host, port: SMTP server
     - user, password: Authentication
     - ttl: Connection TTL in seconds
@@ -21,21 +23,22 @@ class AccountsTable(Table):
     - use_tls: TLS mode (NULL=auto, 0=off, 1=on)
     - batch_size: Messages per connection
 
-    Multi-tenant isolation is enforced via PRIMARY KEY (tenant_id, id).
+    Multi-tenant isolation is enforced via UNIQUE (tenant_id, id).
     """
 
     name = "accounts"
 
     def create_table_sql(self) -> str:
-        """Generate CREATE TABLE with composite PRIMARY KEY (tenant_id, id)."""
+        """Generate CREATE TABLE with UNIQUE (tenant_id, id) for multi-tenant isolation."""
         sql = super().create_table_sql()
-        # Add composite PRIMARY KEY before final closing parenthesis
+        # Add UNIQUE constraint before final closing parenthesis
         last_paren = sql.rfind(")")
-        return sql[:last_paren] + ',\n    PRIMARY KEY ("tenant_id", "id")\n)'
+        return sql[:last_paren] + ',\n    UNIQUE ("tenant_id", "id")\n)'
 
     def configure(self) -> None:
         c = self.columns
-        c.column("id", String, nullable=False)  # Part of composite PRIMARY KEY
+        c.column("pk", String, primary_key=True)  # UUID generated internally
+        c.column("id", String, nullable=False)  # account_id from client
         c.column("tenant_id", String, nullable=False).relation("tenants", sql=True)
         c.column("host", String, nullable=False)
         c.column("port", Integer, nullable=False)
@@ -62,49 +65,175 @@ class AccountsTable(Table):
         c.column("imap_last_sync", Timestamp)
         c.column("imap_uidvalidity", Integer)
 
-    async def add(self, acc: dict[str, Any]) -> None:
+    async def migrate_from_legacy_schema(self) -> bool:
+        """Migrate from legacy schema (composite PK) to new schema (UUID pk).
+
+        This migration is needed for databases created before this version where
+        the accounts table used a composite PRIMARY KEY (tenant_id, id).
+
+        Returns:
+            True if migration was performed, False if not needed.
+        """
+        # Check if migration is needed by looking for pk column
+        try:
+            await self.db.adapter.fetch_one("SELECT pk FROM accounts LIMIT 1")
+            return False  # pk column exists, no migration needed
+        except Exception:
+            pass  # pk column doesn't exist, need migration
+
+        # Check if old table exists at all
+        try:
+            await self.db.adapter.fetch_one("SELECT id FROM accounts LIMIT 1")
+        except Exception:
+            return False  # Table doesn't exist, will be created fresh
+
+        # Migration: create new table, copy data with generated UUIDs, swap
+        await self.db.adapter.execute("""
+            CREATE TABLE accounts_new (
+                pk TEXT PRIMARY KEY,
+                id TEXT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                host TEXT NOT NULL,
+                port INTEGER NOT NULL,
+                user TEXT,
+                password TEXT,
+                ttl INTEGER DEFAULT 300,
+                limit_per_minute INTEGER,
+                limit_per_hour INTEGER,
+                limit_per_day INTEGER,
+                limit_behavior TEXT,
+                use_tls INTEGER,
+                batch_size INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_pec_account INTEGER DEFAULT 0,
+                imap_host TEXT,
+                imap_port INTEGER DEFAULT 993,
+                imap_user TEXT,
+                imap_password TEXT,
+                imap_folder TEXT DEFAULT 'INBOX',
+                imap_last_uid INTEGER,
+                imap_last_sync TIMESTAMP,
+                imap_uidvalidity INTEGER,
+                UNIQUE (tenant_id, id)
+            )
+        """)
+
+        # Copy data, generating UUIDs for pk
+        rows = await self.db.adapter.fetch_all(
+            """SELECT id, tenant_id, host, port, user, password, ttl,
+                      limit_per_minute, limit_per_hour, limit_per_day,
+                      limit_behavior, use_tls, batch_size,
+                      created_at, updated_at, is_pec_account,
+                      imap_host, imap_port, imap_user, imap_password, imap_folder,
+                      imap_last_uid, imap_last_sync, imap_uidvalidity
+               FROM accounts"""
+        )
+        for row in rows:
+            pk = get_uuid()
+            row_dict = dict(row)
+            await self.db.adapter.execute(
+                """INSERT INTO accounts_new
+                   (pk, id, tenant_id, host, port, user, password, ttl,
+                    limit_per_minute, limit_per_hour, limit_per_day,
+                    limit_behavior, use_tls, batch_size,
+                    created_at, updated_at, is_pec_account,
+                    imap_host, imap_port, imap_user, imap_password, imap_folder,
+                    imap_last_uid, imap_last_sync, imap_uidvalidity)
+                   VALUES (:pk, :id, :tenant_id, :host, :port, :user, :password, :ttl,
+                           :limit_per_minute, :limit_per_hour, :limit_per_day,
+                           :limit_behavior, :use_tls, :batch_size,
+                           :created_at, :updated_at, :is_pec_account,
+                           :imap_host, :imap_port, :imap_user, :imap_password, :imap_folder,
+                           :imap_last_uid, :imap_last_sync, :imap_uidvalidity)""",
+                {"pk": pk, **row_dict}
+            )
+
+        # Swap tables
+        await self.db.adapter.execute("DROP TABLE accounts")
+        await self.db.adapter.execute("ALTER TABLE accounts_new RENAME TO accounts")
+
+        return True
+
+    async def add(self, acc: dict[str, Any]) -> str:
         """Insert or update an SMTP account.
 
         Supports both regular SMTP accounts and PEC accounts with IMAP config.
+
+        Returns:
+            The account's internal pk (UUID).
         """
+        tenant_id = acc["tenant_id"]
+        account_id = acc["id"]
+
         use_tls = acc.get("use_tls")
         use_tls_val = None if use_tls is None else (1 if use_tls else 0)
 
         is_pec = acc.get("is_pec_account")
         is_pec_val = 1 if is_pec else 0
 
-        data = {
-            "id": acc["id"],
-            "tenant_id": acc["tenant_id"],  # Required for multi-tenant isolation
-            "host": acc["host"],
-            "port": int(acc["port"]),
-            "user": acc.get("user"),
-            "password": acc.get("password"),
-            "ttl": int(acc.get("ttl", 300)),
-            "limit_per_minute": acc.get("limit_per_minute"),
-            "limit_per_hour": acc.get("limit_per_hour"),
-            "limit_per_day": acc.get("limit_per_day"),
-            "limit_behavior": acc.get("limit_behavior", "defer"),
-            "use_tls": use_tls_val,
-            "batch_size": acc.get("batch_size"),
-            "is_pec_account": is_pec_val,
-        }
-
-        # Add PEC/IMAP fields if present
-        if acc.get("imap_host"):
-            data["imap_host"] = acc["imap_host"]
-            data["imap_port"] = int(acc.get("imap_port") or 993)
-            data["imap_user"] = acc.get("imap_user") or acc.get("user")
-            data["imap_password"] = acc.get("imap_password") or acc.get("password")
-            data["imap_folder"] = acc.get("imap_folder", "INBOX")
-
-        await self.upsert(
-            data,
-            conflict_columns=["tenant_id", "id"],
-            update_extras=["updated_at = CURRENT_TIMESTAMP"],
+        # Check if account exists
+        existing = await self.db.adapter.fetch_one(
+            "SELECT pk FROM accounts WHERE tenant_id = :tenant_id AND id = :id",
+            {"tenant_id": tenant_id, "id": account_id},
         )
 
-    async def add_pec_account(self, acc: dict[str, Any]) -> None:
+        if existing:
+            # Update existing account
+            pk = existing["pk"]
+            async with self.record(pk) as rec:
+                rec["host"] = acc["host"]
+                rec["port"] = int(acc["port"])
+                rec["user"] = acc.get("user")
+                rec["password"] = acc.get("password")
+                rec["ttl"] = int(acc.get("ttl", 300))
+                rec["limit_per_minute"] = acc.get("limit_per_minute")
+                rec["limit_per_hour"] = acc.get("limit_per_hour")
+                rec["limit_per_day"] = acc.get("limit_per_day")
+                rec["limit_behavior"] = acc.get("limit_behavior", "defer")
+                rec["use_tls"] = use_tls_val
+                rec["batch_size"] = acc.get("batch_size")
+                rec["is_pec_account"] = is_pec_val
+                # Add PEC/IMAP fields if present
+                if acc.get("imap_host"):
+                    rec["imap_host"] = acc["imap_host"]
+                    rec["imap_port"] = int(acc.get("imap_port") or 993)
+                    rec["imap_user"] = acc.get("imap_user") or acc.get("user")
+                    rec["imap_password"] = acc.get("imap_password") or acc.get("password")
+                    rec["imap_folder"] = acc.get("imap_folder", "INBOX")
+        else:
+            # Insert new account
+            pk = get_uuid()
+            data = {
+                "pk": pk,
+                "id": account_id,
+                "tenant_id": tenant_id,
+                "host": acc["host"],
+                "port": int(acc["port"]),
+                "user": acc.get("user"),
+                "password": acc.get("password"),
+                "ttl": int(acc.get("ttl", 300)),
+                "limit_per_minute": acc.get("limit_per_minute"),
+                "limit_per_hour": acc.get("limit_per_hour"),
+                "limit_per_day": acc.get("limit_per_day"),
+                "limit_behavior": acc.get("limit_behavior", "defer"),
+                "use_tls": use_tls_val,
+                "batch_size": acc.get("batch_size"),
+                "is_pec_account": is_pec_val,
+            }
+            # Add PEC/IMAP fields if present
+            if acc.get("imap_host"):
+                data["imap_host"] = acc["imap_host"]
+                data["imap_port"] = int(acc.get("imap_port") or 993)
+                data["imap_user"] = acc.get("imap_user") or acc.get("user")
+                data["imap_password"] = acc.get("imap_password") or acc.get("password")
+                data["imap_folder"] = acc.get("imap_folder", "INBOX")
+
+            await self.insert(data)
+
+        return pk
+
+    async def add_pec_account(self, acc: dict[str, Any]) -> str:
         """Insert or update a PEC account with IMAP configuration.
 
         PEC accounts have is_pec_account=1 and require IMAP settings
@@ -119,42 +248,20 @@ class AccountsTable(Table):
         - imap_user: IMAP username (defaults to SMTP user)
         - imap_password: IMAP password (defaults to SMTP password)
         - imap_folder: Folder to monitor (default "INBOX")
-        """
-        use_tls = acc.get("use_tls")
-        use_tls_val = None if use_tls is None else (1 if use_tls else 0)
 
-        await self.upsert(
-            {
-                "id": acc["id"],
-                "tenant_id": acc["tenant_id"],  # Required for multi-tenant isolation
-                "host": acc["host"],
-                "port": int(acc["port"]),
-                "user": acc.get("user"),
-                "password": acc.get("password"),
-                "ttl": int(acc.get("ttl", 300)),
-                "limit_per_minute": acc.get("limit_per_minute"),
-                "limit_per_hour": acc.get("limit_per_hour"),
-                "limit_per_day": acc.get("limit_per_day"),
-                "limit_behavior": acc.get("limit_behavior", "defer"),
-                "use_tls": use_tls_val,
-                "batch_size": acc.get("batch_size"),
-                # PEC-specific fields
-                "is_pec_account": 1,
-                "imap_host": acc["imap_host"],
-                "imap_port": int(acc.get("imap_port", 993)),
-                "imap_user": acc.get("imap_user") or acc.get("user"),
-                "imap_password": acc.get("imap_password") or acc.get("password"),
-                "imap_folder": acc.get("imap_folder", "INBOX"),
-            },
-            conflict_columns=["tenant_id", "id"],
-            update_extras=["updated_at = CURRENT_TIMESTAMP"],
-        )
+        Returns:
+            The account's internal pk (UUID).
+        """
+        # Delegate to add() with is_pec_account=1
+        pec_acc = dict(acc)
+        pec_acc["is_pec_account"] = 1
+        return await self.add(pec_acc)
 
     async def list_pec_accounts(self) -> list[dict[str, Any]]:
         """Return all PEC accounts (is_pec_account=1)."""
         rows = await self.db.adapter.fetch_all(
             """
-            SELECT id, tenant_id, host, port, user, ttl,
+            SELECT pk, id, tenant_id, host, port, user, ttl,
                    limit_per_minute, limit_per_hour, limit_per_day,
                    limit_behavior, use_tls, batch_size,
                    imap_host, imap_port, imap_user, imap_password, imap_folder,
@@ -230,7 +337,7 @@ class AccountsTable(Table):
     async def list_all(self, tenant_id: str | None = None) -> list[dict[str, Any]]:
         """Return SMTP accounts, optionally filtered by tenant."""
         columns = [
-            "id", "tenant_id", "host", "port", "user", "ttl",
+            "pk", "id", "tenant_id", "host", "port", "user", "ttl",
             "limit_per_minute", "limit_per_hour", "limit_per_day",
             "limit_behavior", "use_tls", "batch_size", "created_at", "updated_at",
             # PEC/IMAP fields
@@ -275,19 +382,18 @@ class AccountsTable(Table):
     async def sync_schema(self) -> None:
         """Sync table schema.
 
-        For new databases, PRIMARY KEY (tenant_id, id) is created automatically.
-        For existing databases without the composite PK, creates a UNIQUE index
-        as a fallback to enforce multi-tenant isolation.
+        For new databases, pk is PRIMARY KEY and UNIQUE(tenant_id, id) is created.
+        For existing databases, ensures the unique index exists as fallback.
         """
         await super().sync_schema()
-        # Fallback: add UNIQUE index for existing DBs without composite PK
+        # Ensure UNIQUE index for tenant isolation
         try:
             await self.execute(
                 'CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_tenant_id '
                 'ON accounts ("tenant_id", "id")'
             )
         except Exception:
-            pass  # Index already exists or PK constraint covers it
+            pass  # Index already exists or UNIQUE constraint covers it
 
 
 __all__ = ["AccountsTable"]

@@ -44,6 +44,40 @@ class MessageEventTable(Table):
         c.column("metadata", String)  # JSON for extra data (bounce_type, bounce_code)
         c.column("reported_ts", Integer)  # when event was reported to client
 
+    async def trigger_on_inserted(self, record: dict[str, Any]) -> None:
+        """Update message status based on event type.
+
+        This trigger is called after each event insert and updates the
+        corresponding message's state in the messages table.
+        """
+        event_type = record.get("event_type")
+        message_pk = record.get("message_pk")
+        event_ts = record.get("event_ts")
+
+        if not message_pk or not event_ts:
+            return
+
+        messages = self.db.table("messages")
+
+        if event_type == "sent":
+            await messages.mark_sent(message_pk, event_ts)
+        elif event_type == "error":
+            await messages.mark_error(message_pk, event_ts)
+        elif event_type == "deferred":
+            # For deferred, event_ts is when the deferral happened,
+            # but we need deferred_ts for when to retry.
+            # The metadata should contain the actual deferred_ts.
+            metadata = record.get("metadata")
+            if metadata:
+                try:
+                    meta_dict = json.loads(metadata) if isinstance(metadata, str) else metadata
+                    deferred_ts = meta_dict.get("deferred_ts", event_ts)
+                except (json.JSONDecodeError, TypeError):
+                    deferred_ts = event_ts
+            else:
+                deferred_ts = event_ts
+            await messages.set_deferred(message_pk, deferred_ts)
+
     async def add_event(
         self,
         message_pk: str,
@@ -52,7 +86,7 @@ class MessageEventTable(Table):
         description: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> int:
-        """Record a message event.
+        """Record a message event. Triggers are called automatically.
 
         Args:
             message_pk: The message's internal pk (UUID) this event belongs to.
@@ -62,42 +96,15 @@ class MessageEventTable(Table):
             metadata: Optional dict of extra data (serialized as JSON).
 
         Returns:
-            The ID of the inserted event.
+            Number of rows inserted (typically 1).
         """
-        metadata_json = json.dumps(metadata) if metadata else None
-        params = {
+        return await self.insert({
             "message_pk": message_pk,
             "event_type": event_type,
             "event_ts": event_ts,
             "description": description,
-            "metadata": metadata_json,
-        }
-
-        # Check if using PostgreSQL (has psycopg pool)
-        is_postgres = hasattr(self.db.adapter, "_pool") and self.db.adapter._pool is not None  # type: ignore[attr-defined]
-
-        if is_postgres:
-            # PostgreSQL: use RETURNING to get the auto-generated id
-            row = await self.db.adapter.fetch_one(
-                """
-                INSERT INTO message_events (message_pk, event_type, event_ts, description, metadata)
-                VALUES (:message_pk, :event_type, :event_ts, :description, :metadata)
-                RETURNING id
-                """,
-                params,
-            )
-            return int(row["id"]) if row else 0
-        else:
-            # SQLite: use last_insert_rowid()
-            await self.execute(
-                """
-                INSERT INTO message_events (message_pk, event_type, event_ts, description, metadata)
-                VALUES (:message_pk, :event_type, :event_ts, :description, :metadata)
-                """,
-                params,
-            )
-            row = await self.db.adapter.fetch_one("SELECT last_insert_rowid() as id", {})
-            return int(row["id"]) if row else 0
+            "metadata": json.dumps(metadata) if metadata else None,
+        })
 
     async def fetch_unreported(self, limit: int) -> list[dict[str, Any]]:
         """Fetch events that haven't been reported to clients yet.

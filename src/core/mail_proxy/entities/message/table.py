@@ -43,7 +43,8 @@ class MessagesTable(Table):
         c.column("pk", String, primary_key=True)  # get_uuid() generated
         c.column("id", String, nullable=False)  # message_id from client
         c.column("tenant_id", String, nullable=False)  # denormalized for isolation
-        c.column("account_id", String)
+        c.column("account_id", String)  # Legacy: business key (tenant_id, account_id)
+        c.column("account_pk", String)  # FK to accounts.pk (UUID)
         c.column("priority", Integer, nullable=False, default=2)
         c.column("payload", String, nullable=False)  # JSON but handled specially
         c.column("batch_code", String)  # Optional batch/campaign identifier
@@ -121,6 +122,42 @@ class MessagesTable(Table):
 
         return True
 
+    async def migrate_account_pk(self) -> bool:
+        """Populate account_pk from existing account_id + tenant_id.
+
+        This migration is needed after adding account_pk column to link
+        messages to accounts via UUID instead of business key.
+
+        Returns:
+            True if migration was performed, False if not needed.
+        """
+        # Check if account_pk column exists
+        try:
+            await self.db.adapter.fetch_one("SELECT account_pk FROM messages LIMIT 1")
+        except Exception:
+            return False  # Column doesn't exist yet, sync_schema will add it
+
+        # Check if there are messages with account_id but no account_pk
+        row = await self.db.adapter.fetch_one(
+            """SELECT COUNT(*) as cnt FROM messages
+               WHERE account_id IS NOT NULL AND account_pk IS NULL"""
+        )
+        if not row or row["cnt"] == 0:
+            return False  # No migration needed
+
+        # Populate account_pk from accounts table
+        await self.db.adapter.execute(
+            """UPDATE messages
+               SET account_pk = (
+                   SELECT a.pk FROM accounts a
+                   WHERE a.tenant_id = messages.tenant_id
+                     AND a.id = messages.account_id
+               )
+               WHERE account_id IS NOT NULL AND account_pk IS NULL"""
+        )
+
+        return True
+
     async def insert_batch(
         self,
         entries: Sequence[dict[str, Any]],
@@ -130,7 +167,12 @@ class MessagesTable(Table):
         """Persist a batch of messages for delivery.
 
         Returns list of dicts with 'id' (message_id) and 'pk' (internal key)
-        for each successfully inserted message.
+        for each successfully inserted/updated message.
+
+        Uses record() context manager to ensure triggers are called properly.
+        If message exists and smtp_ts IS NULL, updates it.
+        If message doesn't exist, inserts it.
+        If message exists but smtp_ts IS NOT NULL, skips it (already processed).
 
         Args:
             entries: List of message entries to insert.
@@ -140,63 +182,76 @@ class MessagesTable(Table):
                 each entry has its own tenant_id.
 
         Returns:
-            List of {"id": msg_id, "pk": pk} for inserted messages.
+            List of {"id": msg_id, "pk": pk} for inserted/updated messages.
         """
         if not entries:
             return []
 
         pec_accounts = pec_account_ids or set()
-        inserted: list[dict[str, str]] = []
+        result: list[dict[str, str]] = []
+
         for entry in entries:
             msg_id = entry["id"]
-            # Use entry's tenant_id if present, otherwise use the parameter
             entry_tenant_id = entry.get("tenant_id") or tenant_id
             if not entry_tenant_id:
-                # Skip entries without tenant_id
                 continue
 
-            # Generate internal pk
-            pk = get_uuid()
-
-            payload = json.dumps(entry["payload"])
             account_id = entry.get("account_id")
+            account_pk = entry.get("account_pk")  # UUID reference to accounts.pk
             priority = int(entry.get("priority", 2))
             deferred_ts = entry.get("deferred_ts")
             batch_code = entry.get("batch_code")
-            # Auto-set is_pec=1 if account is a PEC account
             is_pec = 1 if account_id in pec_accounts else 0
+            payload = json.dumps(entry["payload"])
 
-            rowcount = await self.execute(
-                """
-                INSERT INTO messages (pk, id, tenant_id, account_id, priority, payload, batch_code, deferred_ts, is_pec)
-                VALUES (:pk, :id, :tenant_id, :account_id, :priority, :payload, :batch_code, :deferred_ts, :is_pec)
-                ON CONFLICT(tenant_id, id) DO UPDATE SET
-                    account_id = excluded.account_id,
-                    priority = excluded.priority,
-                    payload = excluded.payload,
-                    batch_code = excluded.batch_code,
-                    deferred_ts = excluded.deferred_ts,
-                    is_pec = excluded.is_pec,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE messages.smtp_ts IS NULL
-                """,
-                {
+            # Resolve account_pk from account_id if not provided
+            if account_id and not account_pk:
+                acc_row = await self.db.adapter.fetch_one(
+                    "SELECT pk FROM accounts WHERE tenant_id = :tenant_id AND id = :account_id",
+                    {"tenant_id": entry_tenant_id, "account_id": account_id},
+                )
+                if acc_row:
+                    account_pk = acc_row["pk"]
+
+            # Check if message already exists
+            existing = await self.db.adapter.fetch_one(
+                "SELECT pk, smtp_ts FROM messages WHERE tenant_id = :tenant_id AND id = :id",
+                {"tenant_id": entry_tenant_id, "id": msg_id},
+            )
+
+            if existing:
+                # Message exists - only update if not yet processed
+                if existing["smtp_ts"] is not None:
+                    continue  # Already processed, skip
+
+                pk = existing["pk"]
+                async with self.record(pk) as rec:
+                    rec["account_id"] = account_id
+                    rec["account_pk"] = account_pk
+                    rec["priority"] = priority
+                    rec["payload"] = payload
+                    rec["batch_code"] = batch_code
+                    rec["deferred_ts"] = deferred_ts
+                    rec["is_pec"] = is_pec
+            else:
+                # New message - insert
+                pk = get_uuid()
+                await self.insert({
                     "pk": pk,
                     "id": msg_id,
                     "tenant_id": entry_tenant_id,
                     "account_id": account_id,
+                    "account_pk": account_pk,
                     "priority": priority,
                     "payload": payload,
                     "batch_code": batch_code,
                     "deferred_ts": deferred_ts,
                     "is_pec": is_pec,
-                },
-            )
+                })
 
-            if rowcount:
-                inserted.append({"id": msg_id, "pk": pk})
+            result.append({"id": msg_id, "pk": pk})
 
-        return inserted
+        return result
 
     async def fetch_ready(
         self,
