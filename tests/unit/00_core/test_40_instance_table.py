@@ -25,14 +25,16 @@ async def test_instance_ensure_creates_singleton(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_instance_get_returns_none_if_not_exists(tmp_path):
-    """get_instance returns None if instance not created yet."""
+async def test_instance_created_by_init_db(tmp_path):
+    """init_db creates instance singleton with edition set."""
     db = tmp_path / "test.db"
     p = MailProxyDb(str(db))
     await p.init_db()
 
     instance = await p.instance.get_instance()
-    assert instance is None
+    # init_db now creates instance via _init_edition()
+    assert instance is not None
+    assert instance["edition"] in ("ce", "ee")
 
 
 @pytest.mark.asyncio

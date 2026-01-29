@@ -487,6 +487,13 @@ class ApiKeyResponse(CommandStatus):
     api_key: str
 
 
+class UpgradeToEEResponse(CommandStatus):
+    """Response for upgrade-to-ee endpoint."""
+    edition: str = Field(description="Current edition after upgrade ('ee')")
+    default_tenant_token: str | None = Field(None, description="Token for 'default' tenant if it exists (show once)")
+    message: str | None = Field(None, description="Additional info message")
+
+
 class CommandLogEntry(BaseModel):
     """Single command log entry."""
     id: int
@@ -1244,6 +1251,52 @@ def create_app(
         service.configure_bounce_receiver(config)
         await service._start_bounce_receiver()
         return BasicOkResponse(ok=True)
+
+    @api.post("/instance/upgrade-to-ee", response_model=UpgradeToEEResponse, response_model_exclude_none=True, dependencies=[admin_dependency])
+    async def upgrade_to_ee():
+        """Upgrade instance from Community Edition to Enterprise Edition.
+
+        This endpoint performs an explicit upgrade from CE to EE mode:
+        1. Verifies that Enterprise modules are installed (HAS_ENTERPRISE=True)
+        2. Sets edition="ee" in the instance configuration
+        3. If a "default" tenant exists without an API key, generates one
+
+        The upgrade is idempotent - calling it when already in EE mode is safe.
+
+        Returns:
+            UpgradeToEEResponse: Contains edition, optional default_tenant_token, and message.
+
+        Raises:
+            HTTPException: 400 if Enterprise modules are not installed.
+            HTTPException: 500 if the service is not initialized.
+        """
+        from . import HAS_ENTERPRISE
+
+        if not service:
+            raise HTTPException(500, "Service not initialized")
+
+        if not HAS_ENTERPRISE:
+            raise HTTPException(400, "Enterprise modules not installed. Install with: pip install genro-mail-proxy[ee]")
+
+        # Check if already EE
+        if await service.db.instance.is_enterprise():
+            return UpgradeToEEResponse(ok=True, edition="ee", message="Already in Enterprise Edition")
+
+        # Upgrade to EE
+        await service.db.instance.set_edition("ee")
+
+        # If "default" tenant exists without token, generate one
+        default_tenant = await service.db.tenants.get("default")
+        if default_tenant and not default_tenant.get("api_key_hash"):
+            token = await service.db.tenants.create_api_key("default")
+            return UpgradeToEEResponse(
+                ok=True,
+                edition="ee",
+                default_tenant_token=token,
+                message="Upgraded to Enterprise Edition. Save the default tenant token - it will not be shown again."
+            )
+
+        return UpgradeToEEResponse(ok=True, edition="ee", message="Upgraded to Enterprise Edition")
 
     @api.get("/command-log", response_model=CommandLogResponse, response_model_exclude_none=True, dependencies=[admin_dependency])
     async def list_command_log(

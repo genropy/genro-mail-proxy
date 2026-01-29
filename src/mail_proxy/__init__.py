@@ -14,10 +14,16 @@ Features:
 
 Example::
 
-    from mail_proxy import MailProxy
+    from mail_proxy.core import MailProxy
     from mail_proxy.api import create_app
 
     proxy = MailProxy(db_path="/data/mail.db")
     app = create_app(proxy, api_token="secret")
 """
+
+# Enterprise Edition detection flag.
+# When EE modules are installed, this will be set to True and MailProxy
+# will include enterprise features (multi-tenant API, PEC, bounce detection).
+# For now, all features are bundled together (always True).
+HAS_ENTERPRISE: bool = True
 

@@ -126,6 +126,40 @@ class MailProxyDb(SqlDb):
         await self.message_events.sync_schema()
         await self.send_log.sync_schema()
         await self.command_log.sync_schema()
+        await self.instance.sync_schema()
+
+        # Edition detection and default tenant creation
+        await self._init_edition()
+
+    async def _init_edition(self) -> None:
+        """Initialize edition based on existing data and installed modules.
+
+        Logic:
+        - Fresh install with HAS_ENTERPRISE: set edition="ee", no default tenant
+        - Fresh install without HAS_ENTERPRISE: set edition="ce", create default tenant
+        - Existing DB with multiple tenants or non-default tenant: force edition="ee"
+        - Existing DB with only "default" tenant: keep current edition
+        """
+        from . import HAS_ENTERPRISE
+
+        tenants = await self.tenants.list_all()
+        count = len(tenants)
+
+        if count == 0:
+            # Fresh install
+            if HAS_ENTERPRISE:
+                # EE fresh install: no default tenant, edition = "ee"
+                await self.instance.set_edition("ee")
+            else:
+                # CE fresh install: create default tenant, edition = "ce"
+                await self.tenants.ensure_default()
+                await self.instance.set_edition("ce")
+
+        elif count > 1 or (count == 1 and tenants[0]["id"] != "default"):
+            # Existing DB with multi-tenant usage → force EE
+            await self.instance.set_edition("ee")
+
+        # else: only "default" tenant exists → keep current edition (CE or explicit upgrade)
 
     # -------------------------------------------------------------------------
     # Tenants

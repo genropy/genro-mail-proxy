@@ -163,12 +163,13 @@ class TestGetInstanceCommand:
     """Test getInstance command."""
 
     @pytest.mark.asyncio
-    async def test_get_instance_not_configured(self, proxy: MailProxy):
-        """Should return error when instance not configured."""
+    async def test_get_instance_default(self, proxy: MailProxy):
+        """Should return instance created by init_db with edition set."""
         result = await proxy.handle_command("getInstance", {})
 
-        assert result["ok"] is False
-        assert "not configured" in result["error"]
+        # init_db now creates instance via _init_edition()
+        assert result["ok"] is True
+        assert result["edition"] in ("ce", "ee")
 
     @pytest.mark.asyncio
     async def test_get_existing_instance(self, proxy: MailProxy):

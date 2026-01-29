@@ -8,6 +8,10 @@ Columns migrated from instance_config key-value:
     - name: Instance name
     - api_token: API authentication token
 
+Edition management:
+    - edition: "ce" (Community Edition) or "ee" (Enterprise Edition)
+      Default is "ce". Upgrade to "ee" enables multi-tenant features.
+
 Columns for bounce detection (EE feature):
     - bounce_enabled: Enable bounce detection
     - bounce_imap_host/port/user/password/folder: IMAP connection
@@ -40,6 +44,9 @@ class InstanceTable(Table):
         # General instance config (migrated from key-value)
         c.column("name", String, default="mail-proxy")
         c.column("api_token", String)
+
+        # Edition: "ce" (Community) or "ee" (Enterprise)
+        c.column("edition", String, default="ce")
 
         # Bounce detection config (EE)
         c.column("bounce_enabled", Integer, default=0)
@@ -100,6 +107,23 @@ class InstanceTable(Table):
     async def set_api_token(self, token: str) -> None:
         """Set API token."""
         await self.update_instance({"api_token": token})
+
+    # Edition management
+
+    async def get_edition(self) -> str:
+        """Get current edition ('ce' or 'ee')."""
+        row = await self.ensure_instance()
+        return row.get("edition") or "ce"
+
+    async def is_enterprise(self) -> bool:
+        """Check if running in Enterprise Edition mode."""
+        return await self.get_edition() == "ee"
+
+    async def set_edition(self, edition: str) -> None:
+        """Set edition ('ce' or 'ee')."""
+        if edition not in ("ce", "ee"):
+            raise ValueError(f"Invalid edition: {edition}. Must be 'ce' or 'ee'.")
+        await self.update_instance({"edition": edition})
 
     # Bounce detection config
 

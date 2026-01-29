@@ -107,6 +107,7 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
     and controlling the scheduler state.
 
     Attributes:
+        is_enterprise: True if Enterprise Edition features are available.
         default_host: Default SMTP server hostname when no account specified.
         default_port: Default SMTP server port when no account specified.
         default_user: Default SMTP username when no account specified.
@@ -119,6 +120,10 @@ class MailProxy(DispatcherMixin, ReporterMixin, BounceReceiverMixin):
         metrics: Prometheus metrics collector.
         attachments: Attachment manager for fetching email attachments.
     """
+
+    # Edition flag: True when Enterprise Edition modules are available.
+    # This will be set dynamically in mail_proxy/__init__.py when EE is installed.
+    is_enterprise: bool = True
 
     def __init__(
         self,

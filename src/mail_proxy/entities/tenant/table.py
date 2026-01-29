@@ -360,5 +360,25 @@ class TenantsTable(Table):
         suspended_set = set(suspended_batches.split(","))
         return batch_code in suspended_set
 
+    # -------------------------------------------------------------- Default Tenant
+
+    async def ensure_default(self) -> None:
+        """Ensure the 'default' tenant exists for CE single-tenant mode.
+
+        Creates the default tenant WITHOUT an API key. In CE mode, all operations
+        use the instance token. When upgrading to EE, the admin can generate
+        a tenant token via POST /tenant/default/api-key.
+        """
+        existing = await self.get("default")
+        if existing:
+            return
+
+        # Create without API key - CE uses instance token only
+        await self.insert({
+            "id": "default",
+            "name": "Default Tenant",
+            "active": 1,
+        })
+
 
 __all__ = ["TenantsTable"]

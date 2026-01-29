@@ -51,17 +51,19 @@ async def test_tenant_list(tmp_path):
     db = MailProxyDb(str(tmp_path / "test.db"))
     await db.init_db()
 
+    # With HAS_ENTERPRISE=True, init_db sets edition="ee" and does NOT create "default" tenant
+    # This is the expected behavior for fresh EE installs
     await db.add_tenant({"id": "tenant1", "name": "Tenant 1", "active": True})
     await db.add_tenant({"id": "tenant2", "name": "Tenant 2", "active": False})
     await db.add_tenant({"id": "tenant3", "name": "Tenant 3", "active": True})
 
-    # List all
+    # List all tenants
     all_tenants = await db.list_tenants()
     assert len(all_tenants) == 3
 
-    # List active only
+    # List active only (tenant2 is not active)
     active_tenants = await db.list_tenants(active_only=True)
-    assert len(active_tenants) == 2
+    assert len(active_tenants) == 2  # tenant1, tenant3
     assert all(t["active"] for t in active_tenants)
 
 
