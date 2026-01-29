@@ -39,14 +39,14 @@ async def pg_db(pg_container):
     Yields a connected SqlDb instance with clean tables.
     Tables are dropped after each test to ensure isolation.
     """
-    from mail_proxy.entities import (
+    from core.mail_proxy.entities import (
         AccountsTable,
         MessageEventTable,
         MessagesTable,
         SendLogTable,
         TenantsTable,
     )
-    from mail_proxy.sql import SqlDb
+    from core.mail_proxy.sql import SqlDb
 
     db = SqlDb(pg_container)
     await db.connect()
@@ -76,7 +76,7 @@ async def pg_adapter(pg_container):
 
     Useful for lower-level tests that don't need table managers.
     """
-    from mail_proxy.sql.adapters.postgresql import PostgresAdapter
+    from core.mail_proxy.sql.adapters.postgresql import PostgresAdapter
 
     adapter = PostgresAdapter(pg_container)
     await adapter.connect()

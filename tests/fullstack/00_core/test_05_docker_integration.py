@@ -106,7 +106,7 @@ async def mail_proxy_core(tmp_path):
     """Create a mail proxy core instance configured for Docker services."""
     import types
 
-    from mail_proxy.core import MailProxy
+    from core.mail_proxy.core import MailProxy
 
     db_path = tmp_path / "docker_test.db"
     core = MailProxy(

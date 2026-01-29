@@ -45,9 +45,9 @@ from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table
 
-from mail_proxy.mailproxy_db import MailProxyDb
-from mail_proxy.entities.account.schema import AccountCreate
-from mail_proxy.entities.tenant.schema import (
+from core.mail_proxy.mailproxy_db import MailProxyDb
+from core.mail_proxy.entities.account.schema import AccountCreate
+from core.mail_proxy.entities.tenant.schema import (
     DEFAULT_ATTACHMENT_PATH,
     DEFAULT_SYNC_PATH,
     TenantAuth,
@@ -1271,9 +1271,9 @@ def _add_connect_command(group: click.Group, instance_name: str) -> None:
         import readline  # noqa: F401
         import rlcompleter  # noqa: F401
 
-        from mail_proxy.client import MailProxyClient
-        from mail_proxy.client import connect as client_connect
-        from mail_proxy.forms import (
+        from core.mail_proxy.client import MailProxyClient
+        from core.mail_proxy.client import connect as client_connect
+        from core.mail_proxy.forms import (
             AccountForm,
             MessageForm,
             TenantForm,

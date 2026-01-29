@@ -7,8 +7,8 @@ import tempfile
 
 import pytest
 
-from mail_proxy.attachments import AttachmentManager
-from mail_proxy.attachments.cache import TieredCache
+from core.mail_proxy.attachments import AttachmentManager
+from core.mail_proxy.attachments.cache import TieredCache
 
 
 class TestParseFilename:

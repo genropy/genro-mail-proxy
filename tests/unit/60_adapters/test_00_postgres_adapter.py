@@ -9,7 +9,7 @@ class TestPostgresPlaceholderConversion:
 
     def test_convert_placeholders_preserves_cast(self):
         """Ensure :: cast operators are not converted."""
-        from mail_proxy.sql.adapters.postgresql import PostgresAdapter
+        from core.mail_proxy.sql.adapters.postgresql import PostgresAdapter
 
         # Create adapter (will fail if psycopg not installed, but we can test the method)
         try:
@@ -69,7 +69,7 @@ class TestPostgresPoolConfiguration:
         This ensures tables are created in a valid schema even when
         the connection default search_path is empty/unset.
         """
-        from mail_proxy.sql.adapters.postgresql import PostgresAdapter
+        from core.mail_proxy.sql.adapters.postgresql import PostgresAdapter
 
         try:
             adapter = PostgresAdapter("postgresql://test:test@localhost/test")

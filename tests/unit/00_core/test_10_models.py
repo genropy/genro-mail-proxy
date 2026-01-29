@@ -3,14 +3,14 @@
 import pytest
 from pydantic import ValidationError
 
-from mail_proxy.entities.account.schema import AccountCreate, AccountListItem
-from mail_proxy.entities.message.schema import (
+from core.mail_proxy.entities.account.schema import AccountCreate, AccountListItem
+from core.mail_proxy.entities.message.schema import (
     AttachmentPayload,
     MessageCreate,
     MessageListItem,
     MessageStatus,
 )
-from mail_proxy.entities.tenant.schema import (
+from core.mail_proxy.entities.tenant.schema import (
     AuthMethod,
     TenantAuth,
     TenantCreate,

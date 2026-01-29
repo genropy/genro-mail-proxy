@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.mail_proxy.pec.parser import PecReceiptParser
+from core.mail_proxy.pec.parser import PecReceiptParser
 
 
 class TestPecReceiptParser:

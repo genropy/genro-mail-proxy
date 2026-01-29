@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from src.mail_proxy.sql.adapters import get_adapter, ADAPTERS
-from src.mail_proxy.sql.adapters.sqlite import SqliteAdapter
+from core.mail_proxy.sql.adapters import get_adapter, ADAPTERS
+from core.mail_proxy.sql.adapters.sqlite import SqliteAdapter
 
 
 class TestGetAdapterSqlite:
@@ -54,7 +54,7 @@ class TestGetAdapterPostgres:
         try:
             adapter = get_adapter("postgresql://user:pass@localhost:5432/db")
             # If psycopg is installed, we get a PostgresAdapter
-            from src.mail_proxy.sql.adapters.postgresql import PostgresAdapter
+            from core.mail_proxy.sql.adapters.postgresql import PostgresAdapter
             assert isinstance(adapter, PostgresAdapter)
         except ImportError:
             # psycopg not installed - expected in unit tests
@@ -64,7 +64,7 @@ class TestGetAdapterPostgres:
         """'postgres:' prefix should also work (alias)."""
         try:
             adapter = get_adapter("postgres://user:pass@localhost:5432/db")
-            from src.mail_proxy.sql.adapters.postgresql import PostgresAdapter
+            from core.mail_proxy.sql.adapters.postgresql import PostgresAdapter
             assert isinstance(adapter, PostgresAdapter)
         except ImportError:
             pytest.skip("psycopg not installed")

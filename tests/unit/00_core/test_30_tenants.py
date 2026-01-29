@@ -2,7 +2,7 @@
 
 import pytest
 
-from mail_proxy.mailproxy_db import MailProxyDb
+from core.mail_proxy.mailproxy_db import MailProxyDb
 
 
 @pytest.mark.asyncio

@@ -14,7 +14,7 @@ from email.mime.text import MIMEText
 
 import pytest
 
-from mail_proxy.bounce import BounceInfo, BounceParser
+from core.mail_proxy.bounce import BounceInfo, BounceParser
 
 
 def create_dsn_bounce_email(

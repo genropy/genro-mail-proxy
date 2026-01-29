@@ -7,7 +7,7 @@ without conflicts or data loss.
 
 import pytest
 
-from mail_proxy.mailproxy_db import MailProxyDb
+from core.mail_proxy.mailproxy_db import MailProxyDb
 
 
 async def make_db_with_tenants(tmp_path):

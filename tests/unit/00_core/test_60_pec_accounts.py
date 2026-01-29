@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.mail_proxy.mailproxy_db import MailProxyDb
+from core.mail_proxy.mailproxy_db import MailProxyDb
 
 
 async def make_db_with_tenant(tmp_path, tenant_id="test_tenant"):

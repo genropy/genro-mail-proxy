@@ -4,7 +4,7 @@
 import asyncio
 import sys
 
-from mail_proxy.core import MailProxy
+from core.mail_proxy.core import MailProxy
 
 DB_PATH = "/tmp/mail_service_test.db"
 

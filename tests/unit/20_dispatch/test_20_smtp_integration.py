@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from aiosmtpd.controller import Controller
 
-from mail_proxy.core import MailProxy
+from core.mail_proxy.core import MailProxy
 
 
 def get_free_port() -> int:

@@ -3,7 +3,7 @@
 
 import pytest
 
-from mail_proxy.attachments import AttachmentManager
+from core.mail_proxy.attachments import AttachmentManager
 
 
 @pytest.mark.asyncio

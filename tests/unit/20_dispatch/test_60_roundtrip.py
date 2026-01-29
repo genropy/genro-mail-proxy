@@ -19,7 +19,7 @@ from aioresponses import aioresponses
 from aiosmtpd.controller import Controller
 from yarl import URL
 
-from mail_proxy.core import MailProxy
+from core.mail_proxy.core import MailProxy
 
 
 def get_free_port() -> int:

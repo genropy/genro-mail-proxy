@@ -4,7 +4,7 @@
 import asyncio
 import sqlite3
 
-from mail_proxy.mailproxy_db import MailProxyDb
+from core.mail_proxy.mailproxy_db import MailProxyDb
 
 
 async def main():

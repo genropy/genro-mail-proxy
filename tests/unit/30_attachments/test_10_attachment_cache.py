@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from mail_proxy.attachments.cache import DiskCache, MemoryCache, TieredCache
+from core.mail_proxy.attachments.cache import DiskCache, MemoryCache, TieredCache
 
 
 class TestMemoryCache:

@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from mail_proxy.core import MailProxy
+from core.mail_proxy.core import MailProxy
 
 
 class DummySMTP:
@@ -945,7 +945,7 @@ async def test_tenant_attachment_config_fallback_to_global(tmp_path):
 @pytest.mark.asyncio
 async def test_account_configuration_error():
     """Test AccountConfigurationError exception."""
-    from mail_proxy.core import AccountConfigurationError
+    from core.mail_proxy.core import AccountConfigurationError
 
     # Default message
     exc = AccountConfigurationError()
@@ -1026,7 +1026,7 @@ async def test_init_with_cache_config(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_summarise_addresses():
     """Test address summarization helper."""
-    from mail_proxy.core import MailProxy
+    from core.mail_proxy.core import MailProxy
 
     # Empty returns "-"
     assert MailProxy._summarise_addresses(None) == "-"

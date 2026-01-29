@@ -82,7 +82,7 @@ class TestPecReceiptParsing:
 
     async def test_pec_parser_parses_acceptance(self):
         """PecReceiptParser correctly parses acceptance receipts."""
-        from mail_proxy.pec import PecReceiptParser
+        from core.mail_proxy.pec import PecReceiptParser
 
         receipt = create_pec_receipt_email(
             original_message_id="parser-test-001",
@@ -97,7 +97,7 @@ class TestPecReceiptParsing:
 
     async def test_pec_parser_parses_delivery(self):
         """PecReceiptParser correctly parses delivery receipts."""
-        from mail_proxy.pec import PecReceiptParser
+        from core.mail_proxy.pec import PecReceiptParser
 
         receipt = create_pec_receipt_email(
             original_message_id="parser-test-002",
@@ -113,7 +113,7 @@ class TestPecReceiptParsing:
 
     async def test_pec_parser_parses_failure(self):
         """PecReceiptParser correctly parses failure receipts."""
-        from mail_proxy.pec import PecReceiptParser
+        from core.mail_proxy.pec import PecReceiptParser
 
         receipt = create_pec_receipt_email(
             original_message_id="parser-test-003",
@@ -455,7 +455,7 @@ class TestPecReceiptTypes:
 
     async def test_all_receipt_types_parseable(self):
         """All PEC receipt types can be parsed correctly."""
-        from mail_proxy.pec import PecReceiptParser
+        from core.mail_proxy.pec import PecReceiptParser
 
         parser = PecReceiptParser()
         receipt_types = [
@@ -478,7 +478,7 @@ class TestPecReceiptTypes:
 
     async def test_non_pec_email_not_parsed_as_receipt(self):
         """Regular emails are not mistaken for PEC receipts."""
-        from mail_proxy.pec import PecReceiptParser
+        from core.mail_proxy.pec import PecReceiptParser
         from email.mime.text import MIMEText
 
         # Create a regular email

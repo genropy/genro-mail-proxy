@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 
-from src.mail_proxy.core import MailProxy
+from core.mail_proxy.core import MailProxy
 
 
 @pytest_asyncio.fixture

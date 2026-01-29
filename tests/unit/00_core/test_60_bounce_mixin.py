@@ -10,8 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 
-from src.mail_proxy.core import MailProxy
-from src.mail_proxy.core.bounce_mixin import BounceReceiverMixin  # noqa: F401
+from core.mail_proxy.core import MailProxy
+from core.mail_proxy.core.bounce_mixin import BounceReceiverMixin  # noqa: F401
 
 
 @pytest_asyncio.fixture
@@ -42,7 +42,7 @@ class TestConfigureBounceReceiver:
     @pytest.mark.asyncio
     async def test_stores_config(self, proxy: MailProxy):
         """Configuration should be stored."""
-        from mail_proxy.bounce import BounceConfig
+        from core.mail_proxy.bounce import BounceConfig
 
         config = BounceConfig(
             host="imap.example.com",
@@ -59,7 +59,7 @@ class TestConfigureBounceReceiver:
     @pytest.mark.asyncio
     async def test_can_reconfigure(self, proxy: MailProxy):
         """Should allow reconfiguration."""
-        from mail_proxy.bounce import BounceConfig
+        from core.mail_proxy.bounce import BounceConfig
 
         config1 = BounceConfig(
             host="imap1.example.com",
@@ -94,9 +94,9 @@ class TestStartBounceReceiver:
     @pytest.mark.asyncio
     async def test_creates_and_starts_receiver(self, proxy: MailProxy):
         """Should create and start BounceReceiver with config."""
-        from mail_proxy.bounce import BounceConfig
+        from core.mail_proxy.bounce import BounceConfig
         # Import using src. prefix to match how pytest loads modules
-        from src.mail_proxy.bounce.receiver import BounceReceiver
+        from core.mail_proxy.bounce.receiver import BounceReceiver
 
         config = BounceConfig(
             host="imap.example.com",
@@ -118,7 +118,7 @@ class TestStartBounceReceiver:
     @pytest.mark.asyncio
     async def test_raises_if_no_db(self, tmp_path):
         """Should raise if db attribute is missing."""
-        from mail_proxy.bounce import BounceConfig
+        from core.mail_proxy.bounce import BounceConfig
 
         # Create a minimal object with mixin but no db
         class MinimalMixin(BounceReceiverMixin):
@@ -212,7 +212,7 @@ class TestHandleBounceCommand:
     @pytest.mark.asyncio
     async def test_get_bounce_status_configured_not_running(self, proxy: MailProxy):
         """getBounceStatus returns configured but not running."""
-        from mail_proxy.bounce import BounceConfig
+        from core.mail_proxy.bounce import BounceConfig
 
         config = BounceConfig(
             host="imap.example.com",
@@ -232,7 +232,7 @@ class TestHandleBounceCommand:
     @pytest.mark.asyncio
     async def test_get_bounce_status_running(self, proxy: MailProxy):
         """getBounceStatus returns running state."""
-        from mail_proxy.bounce import BounceConfig
+        from core.mail_proxy.bounce import BounceConfig
 
         config = BounceConfig(
             host="imap.example.com",

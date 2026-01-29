@@ -1,4 +1,4 @@
-from mail_proxy.logger import get_logger
+from core.mail_proxy.logger import get_logger
 
 
 def test_get_logger_reuses_existing_logger():

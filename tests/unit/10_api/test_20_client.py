@@ -3,7 +3,7 @@
 import json
 from unittest.mock import MagicMock, patch
 
-from mail_proxy.client import (
+from core.mail_proxy.client import (
     Account,
     AccountsAPI,
     MailProxyClient,

@@ -302,7 +302,7 @@ class TestBounceEndToEnd:
 
     async def test_bounce_parser_extracts_original_id(self):
         """BounceParser correctly extracts X-Genro-Mail-ID from DSN."""
-        from mail_proxy.bounce import BounceParser
+        from core.mail_proxy.bounce import BounceParser
 
         bounce_email = create_dsn_bounce_email(
             original_message_id="parser-test-abc",
@@ -321,7 +321,7 @@ class TestBounceEndToEnd:
 
     async def test_bounce_parser_soft_vs_hard(self):
         """BounceParser correctly classifies hard vs soft bounces."""
-        from mail_proxy.bounce import BounceParser
+        from core.mail_proxy.bounce import BounceParser
 
         parser = BounceParser()
 
@@ -457,7 +457,7 @@ class TestBounceEndToEnd:
 
     async def test_multiple_bounces_correlation(self):
         """Multiple bounce emails are correlated to correct messages."""
-        from mail_proxy.bounce import BounceParser
+        from core.mail_proxy.bounce import BounceParser
 
         parser = BounceParser()
 

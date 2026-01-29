@@ -527,7 +527,7 @@ class InteractiveForm:
 class TenantForm(InteractiveForm):
     """Interactive form for creating a tenant."""
 
-    from mail_proxy.entities.tenant.schema import TenantCreate
+    from core.mail_proxy.entities.tenant.schema import TenantCreate
     model = TenantCreate
     title = "Create New Tenant"
     fields = [
@@ -551,7 +551,7 @@ class TenantForm(InteractiveForm):
 class AccountForm(InteractiveForm):
     """Interactive form for creating an SMTP account."""
 
-    from mail_proxy.entities.account.schema import AccountCreate
+    from core.mail_proxy.entities.account.schema import AccountCreate
     model = AccountCreate
     title = "Create New SMTP Account"
     fields = [
@@ -581,7 +581,7 @@ class AccountForm(InteractiveForm):
 class MessageForm(InteractiveForm):
     """Interactive form for creating an email message."""
 
-    from mail_proxy.entities.message.schema import MessageCreate
+    from core.mail_proxy.entities.message.schema import MessageCreate
     model = MessageCreate
     title = "Create New Message"
     fields = [

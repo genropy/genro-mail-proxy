@@ -53,7 +53,7 @@ dependencies = [
 ]
 
 [project.scripts]
-mail-proxy = "mail_proxy.cli:main"
+mail-proxy = "core.mail_proxy.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -98,12 +98,12 @@ Repository = "https://github.com/genropy/genro-mail-proxy"
 Issues = "https://github.com/genropy/genro-mail-proxy/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/mail_proxy"]
+packages = ["src/core", "src/enterprise"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = ["_build", "docs/_build", "docs", ".git"]
-addopts = "-v --cov=mail_proxy --cov-report=term-missing"
+addopts = "-v --cov=core.mail_proxy --cov-report=term-missing"
 markers = [
     "network: marks tests as requiring network access (deselect with '-m \"not network\"')",
     "fullstack: marks tests as requiring full Docker infrastructure (PostgreSQL, MailHog, MinIO)",
@@ -140,23 +140,23 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["mail_proxy"]
+known-first-party = ["core", "enterprise"]
 
 [tool.mypy]
 python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
-files = ["src/mail_proxy"]
+files = ["src/core", "src/enterprise"]
 
 [tool.coverage.run]
-source = ["src/mail_proxy"]
+source = ["src/core", "src/enterprise"]
 branch = true
 omit = [
-    "src/mail_proxy/forms.py",   # Interactive REPL forms
-    "src/mail_proxy/server.py",  # Uvicorn entry point
-    "src/mail_proxy/cli.py",     # Interactive CLI commands
-    "src/mail_proxy/core/event_reporting.py",  # Mixin tested via MailProxy (coverage can't track)
+    "src/core/mail_proxy/forms.py",   # Interactive REPL forms
+    "src/core/mail_proxy/server.py",  # Uvicorn entry point
+    "src/core/mail_proxy/cli.py",     # Interactive CLI commands
+    "src/core/mail_proxy/core/event_reporting.py",  # Mixin tested via MailProxy (coverage can't track)
 ]
 
 [tool.coverage.report]
