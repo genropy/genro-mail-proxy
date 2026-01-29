@@ -135,51 +135,6 @@ class MailProxyDb(SqlDb):
 
         # else: only "default" tenant exists -> keep current edition (CE or explicit upgrade)
 
-    # Config convenience methods (backward compatibility with old key-value approach)
-    # Typed columns in instance table
-    _TYPED_CONFIG_KEYS = {"name", "api_token", "edition"}
-
-    async def get_config(self, key: str, default: str | None = None) -> str | None:
-        """Get a configuration value by key.
-
-        Keys in _TYPED_CONFIG_KEYS are read from typed columns.
-        Other keys are read from the JSON 'config' column.
-        """
-        row = await self.table('instance').ensure_instance()  # type: ignore[union-attr]
-        if key in self._TYPED_CONFIG_KEYS:
-            value = row.get(key)
-        else:
-            config = row.get("config") or {}
-            value = config.get(key)
-        return str(value) if value is not None else default
-
-    async def set_config(self, key: str, value: str) -> None:
-        """Set a configuration value.
-
-        Keys in _TYPED_CONFIG_KEYS are saved to typed columns.
-        Other keys are saved to the JSON 'config' column.
-        """
-        if key in self._TYPED_CONFIG_KEYS:
-            await self.table('instance').update_instance({key: value})  # type: ignore[union-attr]
-        else:
-            row = await self.table('instance').ensure_instance()  # type: ignore[union-attr]
-            config = row.get("config") or {}
-            config[key] = value
-            await self.table('instance').update_instance({"config": config})  # type: ignore[union-attr]
-
-    async def get_all_config(self) -> dict[str, Any]:
-        """Get all configuration values (typed columns + JSON config merged)."""
-        row = await self.table('instance').ensure_instance()  # type: ignore[union-attr]
-        result: dict[str, Any] = {}
-        # Add typed columns
-        for key in self._TYPED_CONFIG_KEYS:
-            if row.get(key) is not None:
-                result[key] = row[key]
-        # Merge JSON config (overrides typed if same key exists)
-        config = row.get("config") or {}
-        result.update(config)
-        return result
-
     # ----------------------------------------------------------------- Convenience Methods
     # These delegate to table methods for backward compatibility
 

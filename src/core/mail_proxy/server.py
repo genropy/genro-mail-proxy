@@ -57,13 +57,39 @@ def _get_config_from_db(connection_string: str) -> dict[str, str]:
 
 
 def _get_config_from_sqlite(db_path: str) -> dict[str, str]:
-    """Read configuration from SQLite database."""
+    """Read configuration from SQLite database.
+
+    Reads from the 'instance' table (singleton id=1) which has:
+    - Typed columns: name, api_token, edition
+    - JSON column: config (for host, port, start_active, etc.)
+    """
     if not os.path.exists(db_path):
         return {}
     conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
     try:
-        cursor = conn.execute("SELECT key, value FROM instance_config")
-        return {row[0]: row[1] for row in cursor.fetchall()}
+        cursor = conn.execute("SELECT name, api_token, edition, config FROM instance WHERE id = 1")
+        row = cursor.fetchone()
+        if not row:
+            return {}
+        result: dict[str, str] = {}
+        # Add typed columns
+        if row["name"]:
+            result["name"] = row["name"]
+        if row["api_token"]:
+            result["api_token"] = row["api_token"]
+        if row["edition"]:
+            result["edition"] = row["edition"]
+        # Merge JSON config
+        if row["config"]:
+            import json
+            try:
+                config_json = json.loads(row["config"])
+                for k, v in config_json.items():
+                    result[k] = str(v) if v is not None else ""
+            except json.JSONDecodeError:
+                pass
+        return result
     except sqlite3.OperationalError:
         # Table doesn't exist yet
         return {}
@@ -72,7 +98,12 @@ def _get_config_from_sqlite(db_path: str) -> dict[str, str]:
 
 
 def _get_config_from_postgres(dsn: str) -> dict[str, str]:
-    """Read configuration from PostgreSQL database."""
+    """Read configuration from PostgreSQL database.
+
+    Reads from the 'instance' table (singleton id=1) which has:
+    - Typed columns: name, api_token, edition
+    - JSON column: config (for host, port, start_active, etc.)
+    """
     try:
         import psycopg
         import psycopg.errors
@@ -80,8 +111,28 @@ def _get_config_from_postgres(dsn: str) -> dict[str, str]:
         return {}
     try:
         with psycopg.connect(dsn) as conn, conn.cursor() as cur:
-            cur.execute("SELECT key, value FROM instance_config")
-            return {row[0]: row[1] for row in cur.fetchall()}
+            cur.execute("SELECT name, api_token, edition, config FROM instance WHERE id = 1")
+            row = cur.fetchone()
+            if not row:
+                return {}
+            result: dict[str, str] = {}
+            # Add typed columns (row is a tuple: name, api_token, edition, config)
+            if row[0]:
+                result["name"] = row[0]
+            if row[1]:
+                result["api_token"] = row[1]
+            if row[2]:
+                result["edition"] = row[2]
+            # Merge JSON config
+            if row[3]:
+                import json
+                try:
+                    config_json = json.loads(row[3]) if isinstance(row[3], str) else row[3]
+                    for k, v in config_json.items():
+                        result[k] = str(v) if v is not None else ""
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            return result
     except (psycopg.OperationalError, psycopg.errors.UndefinedTable):
         # Database or table doesn't exist yet
         return {}
@@ -138,7 +189,7 @@ async def _initialize_instance_from_env() -> None:
     This is called once at startup. If the instance record doesn't exist or
     bounce is not configured, it populates from GMP_BOUNCE_* env vars.
     """
-    instance_table = _core.db.instance
+    instance_table = _core.db.table('instance')
 
     # Ensure instance record exists
     instance = await instance_table.ensure_instance()
@@ -163,7 +214,7 @@ async def _initialize_instance_from_env() -> None:
 
 async def _configure_bounce_from_db() -> None:
     """Configure BounceReceiver from database if enabled."""
-    instance_table = _core.db.instance
+    instance_table = _core.db.table('instance')
     bounce_config = await instance_table.get_bounce_config()
 
     if not bounce_config.get("enabled"):

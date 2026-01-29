@@ -278,16 +278,17 @@ def _ensure_instance(name: str, port: int = 8000, host: str = "0.0.0.0") -> dict
 
     async def _init():
         await persistence.init_db()
+        instance_table = persistence.table('instance')
         # Check if already configured
-        existing_token = await persistence.get_config("api_token")
+        existing_token = await instance_table.get_config("api_token")
         if not existing_token:
             # First initialization
             api_token = _generate_api_token()
-            await persistence.set_config("api_token", api_token)
-            await persistence.set_config("name", name)
-            await persistence.set_config("host", host)
-            await persistence.set_config("port", str(port))
-            await persistence.set_config("start_active", "true")
+            await instance_table.set_config("api_token", api_token)
+            await instance_table.set_config("name", name)
+            await instance_table.set_config("host", host)
+            await instance_table.set_config("port", str(port))
+            await instance_table.set_config("start_active", "true")
             console.print(f"[green]Created new instance:[/green] {name}")
             console.print(f"  API Token: {api_token}")
 
@@ -313,7 +314,7 @@ def _get_instance_config(name: str) -> dict[str, Any] | None:
 
     async def _get():
         await persistence.init_db()
-        return await persistence.get_all_config()
+        return await persistence.table('instance').get_all_config()
 
     config = run_async(_get())
     if not config:
@@ -858,7 +859,7 @@ def _add_tenants_commands(group: click.Group, instance_name: str) -> None:
 
         async def _list():
             await persistence.init_db()
-            return await persistence.list_tenants(active_only=active_only)
+            return await persistence.table('tenants').list_all(active_only=active_only)
 
         tenant_list = run_async(_list())
 
@@ -910,7 +911,7 @@ def _add_tenants_commands(group: click.Group, instance_name: str) -> None:
 
         async def _show():
             await persistence.init_db()
-            return await persistence.get_tenant(tenant_id)
+            return await persistence.table('tenants').get(tenant_id)
 
         tenant_data = run_async(_show())
 
@@ -1049,7 +1050,7 @@ def _add_tenants_commands(group: click.Group, instance_name: str) -> None:
 
         async def _add():
             await persistence.init_db()
-            await persistence.add_tenant(tenant_data.model_dump(exclude_none=True))
+            await persistence.table('tenants').add(tenant_data.model_dump(exclude_none=True))
 
         run_async(_add())
         print_success(f"Tenant '{tenant_id}' created.")
@@ -1118,7 +1119,7 @@ def _add_tenants_commands(group: click.Group, instance_name: str) -> None:
 
         async def _update():
             await persistence.init_db()
-            return await persistence.update_tenant(tenant_id, updates)
+            return await persistence.table('tenants').update_tenant(tenant_id, updates)
 
         success = run_async(_update())
 
@@ -1141,7 +1142,7 @@ def _add_tenants_commands(group: click.Group, instance_name: str) -> None:
 
         async def _delete():
             await persistence.init_db()
-            return await persistence.delete_tenant(tenant_id)
+            return await persistence.table('tenants').remove(tenant_id)
 
         success = run_async(_delete())
 
@@ -1215,13 +1216,13 @@ def _add_stats_command(group: click.Group, instance_name: str) -> None:
         async def _stats():
             await persistence.init_db()
 
-            tenants = await persistence.list_tenants()
-            accounts = await persistence.list_accounts()
+            tenants = await persistence.table('tenants').list_all()
+            accounts = await persistence.table('accounts').list_all()
 
             # Aggregate messages across all tenants
             all_messages: list[dict] = []
             for tenant in tenants:
-                tenant_messages = await persistence.list_messages(tenant["id"])
+                tenant_messages = await persistence.table('messages').list_all(tenant["id"])
                 all_messages.extend(tenant_messages)
 
             pending = sum(1 for m in all_messages if not m.get("smtp_ts") and not m.get("error_ts"))
@@ -1410,11 +1411,12 @@ def _add_token_command(group: click.Group, instance_name: str) -> None:
 
         async def _token():
             await persistence.init_db()
+            instance_table = persistence.table('instance')
             if regenerate:
                 new_token = _generate_api_token()
-                await persistence.set_config("api_token", new_token)
+                await instance_table.set_config("api_token", new_token)
                 return new_token, True
-            return await persistence.get_config("api_token"), False
+            return await instance_table.get_config("api_token"), False
 
         token, is_new = run_async(_token())
 
@@ -1746,7 +1748,7 @@ def _add_info_command(group: click.Group, instance_name: str, tenant_id: str) ->
 
         async def _show():
             await persistence.init_db()
-            return await persistence.get_tenant(tenant_id)
+            return await persistence.table('tenants').get(tenant_id)
 
         tenant_data = run_async(_show())
 
@@ -1794,7 +1796,7 @@ def _add_accounts_commands(group: click.Group, instance_name: str, tenant_id: st
 
         async def _list():
             await persistence.init_db()
-            return await persistence.list_accounts(tenant_id=tenant_id)
+            return await persistence.table('accounts').list_all(tenant_id=tenant_id)
 
         account_list = run_async(_list())
 
@@ -1850,7 +1852,7 @@ def _add_accounts_commands(group: click.Group, instance_name: str, tenant_id: st
         async def _show():
             await persistence.init_db()
             try:
-                return await persistence.get_account(tenant_id, account_id)
+                return await persistence.table('accounts').get(tenant_id, account_id)
             except ValueError:
                 return None
 
@@ -1982,12 +1984,12 @@ def _add_accounts_commands(group: click.Group, instance_name: str, tenant_id: st
         async def _add():
             await persistence.init_db()
             # Verify tenant exists
-            tenant_data = await persistence.get_tenant(tenant_id)
+            tenant_data = await persistence.table('tenants').get(tenant_id)
             if not tenant_data:
                 return False, f"Tenant '{tenant_id}' not found."
 
             acc_dict = account_data.model_dump(exclude_none=True)
-            await persistence.add_account(acc_dict)
+            await persistence.table('accounts').add(acc_dict)
             return True, None
 
         success, error = run_async(_add())
@@ -2013,7 +2015,7 @@ def _add_accounts_commands(group: click.Group, instance_name: str, tenant_id: st
             await persistence.init_db()
             # Verify account exists for this tenant
             try:
-                await persistence.get_account(tenant_id, account_id)
+                await persistence.table('accounts').get(tenant_id, account_id)
             except ValueError:
                 return False, f"Account '{account_id}' not found for tenant '{tenant_id}'."
 
@@ -2048,7 +2050,7 @@ def _add_messages_commands(group: click.Group, instance_name: str, tenant_id: st
 
         async def _list():
             await persistence.init_db()
-            messages = await persistence.list_messages(tenant_id=tenant_id)
+            messages = await persistence.table('messages').list_all(tenant_id=tenant_id)
 
             # Filter by account if specified
             if account:
@@ -2191,7 +2193,7 @@ def _add_messages_commands(group: click.Group, instance_name: str, tenant_id: st
 
         async def _show():
             await persistence.init_db()
-            messages = await persistence.list_messages(
+            messages = await persistence.table('messages').list_all(
                 tenant_id=tenant_id, include_history=history
             )
             for m in messages:
@@ -2295,7 +2297,7 @@ def _add_send_command(group: click.Group, instance_name: str, tenant_id: str) ->
             await persistence.init_db()
 
             # Get account to use
-            accounts = await persistence.list_accounts(tenant_id=tenant_id)
+            accounts = await persistence.table('accounts').list_all(tenant_id=tenant_id)
             if not accounts:
                 return False, f"No accounts found for tenant '{tenant_id}'."
 
