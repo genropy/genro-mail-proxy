@@ -21,7 +21,7 @@ import json
 import time
 from typing import Any
 
-from ...sql import Integer, String, Table
+from sql import Integer, String, Table
 
 
 class CommandLogTable(Table):

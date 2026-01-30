@@ -1,0 +1,955 @@
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
+"""Core orchestration logic for the asynchronous mail dispatcher.
+
+This module provides the MailProxy class, the central coordinator for
+the email dispatch service. It orchestrates all major subsystems including:
+
+- Message queue management and priority-based scheduling
+- SMTP delivery with connection pooling
+- Per-account rate limiting
+- Automatic retry with exponential backoff
+- Delivery report generation and client notification
+- Attachment fetching from storage backends
+
+The core runs background loops for continuous message processing and
+periodic maintenance tasks. It exposes a command-based API for external
+control and integrates with Prometheus for metrics collection.
+
+Example:
+    Running the mail dispatcher (recommended)::
+
+        from mail_proxy.core import MailProxy
+
+        # Recommended: use create() for automatic initialization
+        proxy = await MailProxy.create(
+            db_path="/data/mail.db",
+            start_active=True,
+            client_sync_url="https://api.example.com/delivery-report"
+        )
+        # Ready to use immediately
+
+        # To stop gracefully
+        await proxy.stop()
+
+    Alternative pattern for delayed startup::
+
+        proxy = MailProxy(db_path="/data/mail.db")
+        # ... additional setup ...
+        await proxy.start()
+
+Attributes:
+    PRIORITY_LABELS: Mapping of priority integers to human-readable labels.
+    LABEL_TO_PRIORITY: Reverse mapping from labels to priority integers.
+    DEFAULT_PRIORITY: Default message priority (2 = "medium").
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from collections.abc import Awaitable, Callable, Iterable
+from datetime import datetime, timezone
+from typing import Any
+
+from .smtp import AttachmentManager, TieredCache
+from .interface import EndpointDispatcher
+import logging
+from .proxy_base import MailProxyBase
+from .reporting import DEFAULT_SYNC_INTERVAL, ClientReporter
+from .proxy_config import ProxyConfig
+from .smtp import AccountConfigurationError, AttachmentTooLargeError, SmtpSender
+from .smtp.retry import DEFAULT_MAX_RETRIES, DEFAULT_RETRY_DELAYS, RetryStrategy
+from tools.prometheus import MailMetrics
+
+PRIORITY_LABELS = {
+    0: "immediate",
+    1: "high",
+    2: "medium",
+    3: "low",
+}
+LABEL_TO_PRIORITY = {label: value for value, label in PRIORITY_LABELS.items()}
+DEFAULT_PRIORITY = 2
+
+
+class MailProxy(MailProxyBase):
+    """Central orchestrator for the asynchronous mail dispatch service.
+
+    Coordinates all aspects of email delivery including message queue
+    management, SMTP connections, rate limiting, retry logic, and
+    delivery reporting. Runs background loops for continuous message
+    processing and maintenance.
+
+    The core provides a command-based interface for external control,
+    supporting operations like adding messages, managing SMTP accounts,
+    and controlling the scheduler state.
+
+    Attributes:
+        is_enterprise: True if Enterprise Edition features are available.
+        default_host: Default SMTP server hostname when no account specified.
+        default_port: Default SMTP server port when no account specified.
+        default_user: Default SMTP username when no account specified.
+        default_password: Default SMTP password when no account specified.
+        default_use_tls: Whether to use TLS for default SMTP connection.
+        logger: Logger instance for diagnostic output.
+        pool: SMTP connection pool for connection reuse.
+        persistence: Database persistence layer for message and account storage.
+        rate_limiter: Per-account rate limiting controller.
+        metrics: Prometheus metrics collector.
+        attachments: Attachment manager for fetching email attachments.
+    """
+
+    # Edition flag: True when Enterprise Edition modules are available.
+    # This will be set dynamically in mail_proxy/__init__.py when EE is installed.
+    is_enterprise: bool = False
+
+    # Compatibility properties - delegate to smtp_sender
+    @property
+    def pool(self):
+        """SMTP connection pool (delegated to smtp_sender)."""
+        return self.smtp_sender.pool
+
+    @property
+    def rate_limiter(self):
+        """Rate limiter (delegated to smtp_sender)."""
+        return self.smtp_sender.rate_limiter
+
+    # EE hook methods - overridden by MailProxy_EE mixin when EE is installed
+    def __init_proxy_ee__(self) -> None:
+        """Initialize EE state. Overridden by MailProxy_EE."""
+        pass
+
+    async def _start_proxy_ee(self) -> None:
+        """Start EE components. Overridden by MailProxy_EE."""
+        pass
+
+    async def _stop_proxy_ee(self) -> None:
+        """Stop EE components. Overridden by MailProxy_EE."""
+        pass
+
+    def __init__(
+        self,
+        *,
+        config: ProxyConfig | None = None,
+        # Legacy parameters for backwards compatibility (deprecated)
+        db_path: str | None = None,
+        logger=None,
+        metrics: MailMetrics | None = None,
+        start_active: bool | None = None,
+        result_queue_size: int | None = None,
+        message_queue_size: int | None = None,
+        queue_put_timeout: float | None = None,
+        max_enqueue_batch: int | None = None,
+        attachment_timeout: int | None = None,
+        client_sync_url: str | None = None,
+        client_sync_user: str | None = None,
+        client_sync_password: str | None = None,
+        client_sync_token: str | None = None,
+        default_priority: int | str | None = None,
+        report_delivery_callable: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        send_loop_interval: float | None = None,
+        report_retention_seconds: int | None = None,
+        batch_size_per_account: int = 50,
+        test_mode: bool | None = None,
+        log_delivery_activity: bool | None = None,
+        retry_strategy: RetryStrategy | None = None,
+        max_retries: int | None = None,
+        retry_delays: list[int] | None = None,
+        max_concurrent_sends: int | None = None,
+        max_concurrent_per_account: int | None = None,
+        max_concurrent_attachments: int | None = None,
+    ):
+        """Initialize the mail dispatcher core with configuration options.
+
+        Recommended: Use the config parameter with a ProxyConfig instance.
+        Legacy parameters are still supported for backwards compatibility.
+
+        Args:
+            config: ProxyConfig instance with all configuration. If provided,
+                legacy parameters are used as overrides only.
+
+        Legacy Args (deprecated - use config instead):
+            db_path: SQLite database path for persistence.
+            config_path: Optional path to INI config file for attachment settings.
+            logger: Custom logger instance. If None, uses default logger.
+            metrics: Prometheus metrics collector. If None, creates new instance.
+            start_active: Whether to start processing messages immediately.
+            result_queue_size: Maximum size of the delivery result queue.
+            message_queue_size: Maximum messages to fetch per SMTP cycle.
+            queue_put_timeout: Timeout in seconds for queue operations.
+            max_enqueue_batch: Maximum messages allowed in single addMessages call.
+            attachment_timeout: Timeout in seconds for fetching attachments.
+            client_sync_url: URL for posting delivery reports to upstream service.
+            client_sync_user: Username for client sync authentication.
+            client_sync_password: Password for client sync authentication.
+            client_sync_token: Bearer token for client sync authentication.
+            default_priority: Default priority for messages without explicit priority.
+            report_delivery_callable: Optional async callable for custom report delivery.
+            send_loop_interval: Seconds between SMTP dispatch loop iterations.
+            report_retention_seconds: How long to retain reported messages.
+            batch_size_per_account: Max messages to send per account per cycle.
+            test_mode: Enable test mode (disables automatic loop processing).
+            log_delivery_activity: Enable verbose delivery activity logging.
+            retry_strategy: RetryStrategy instance for configuring retry behavior.
+            max_retries: Maximum retry attempts.
+            retry_delays: Custom retry delays.
+            max_concurrent_sends: Maximum concurrent SMTP sends globally.
+            max_concurrent_per_account: Maximum concurrent sends per SMTP account.
+            max_concurrent_attachments: Maximum concurrent attachment fetches.
+        """
+        import math
+
+        # Use provided config or create default
+        cfg = config or ProxyConfig()
+
+        # Apply legacy parameter overrides (backwards compatibility)
+        _db_path = db_path if db_path is not None else cfg.db_path
+        _start_active = start_active if start_active is not None else cfg.start_active
+        _result_queue_size = result_queue_size if result_queue_size is not None else cfg.queue.result_size
+        _message_queue_size = message_queue_size if message_queue_size is not None else cfg.queue.message_size
+        _queue_put_timeout = queue_put_timeout if queue_put_timeout is not None else cfg.queue.put_timeout
+        _max_enqueue_batch = max_enqueue_batch if max_enqueue_batch is not None else cfg.queue.max_enqueue_batch
+        _attachment_timeout = attachment_timeout if attachment_timeout is not None else cfg.timing.attachment_timeout
+        _send_loop_interval = send_loop_interval if send_loop_interval is not None else cfg.timing.send_loop_interval
+        _report_retention = report_retention_seconds if report_retention_seconds is not None else cfg.timing.report_retention_seconds
+        _test_mode = test_mode if test_mode is not None else cfg.test_mode
+        _log_activity = log_delivery_activity if log_delivery_activity is not None else cfg.log_delivery_activity
+        _max_sends = max_concurrent_sends if max_concurrent_sends is not None else cfg.concurrency.max_sends
+        _max_per_account = max_concurrent_per_account if max_concurrent_per_account is not None else cfg.concurrency.max_per_account
+        _max_attachments = max_concurrent_attachments if max_concurrent_attachments is not None else cfg.concurrency.max_attachments
+        _default_priority = default_priority if default_priority is not None else cfg.default_priority
+        _client_url = client_sync_url if client_sync_url is not None else cfg.client_sync.url
+        _client_user = client_sync_user if client_sync_user is not None else cfg.client_sync.user
+        _client_password = client_sync_password if client_sync_password is not None else cfg.client_sync.password
+        _client_token = client_sync_token if client_sync_token is not None else cfg.client_sync.token
+        _report_callable = report_delivery_callable if report_delivery_callable is not None else cfg.report_delivery_callable
+
+        # Initialize base class (config, db with autodiscovered tables, endpoints)
+        MailProxyBase.__init__(self, config=cfg, db_path=_db_path)
+
+        self.default_host: str | None = None
+        self.default_port: int | None = None
+        self.default_user: str | None = None
+        self.default_password: str | None = None
+        self.default_use_tls: bool | None = False
+
+        self.logger = logger or logging.getLogger("AsyncMailService")
+        self.metrics = metrics or MailMetrics()
+
+        # SmtpSender manages pool, rate_limiter, dispatch loop, email building
+        self.smtp_sender = SmtpSender(self)
+        self._queue_put_timeout = _queue_put_timeout
+        self._max_enqueue_batch = _max_enqueue_batch
+        self._attachment_timeout = _attachment_timeout
+        base_send_interval = max(0.05, float(_send_loop_interval))
+        self._smtp_batch_size = max(1, int(_message_queue_size))
+        self._report_retention_seconds = _report_retention
+        self._test_mode = bool(_test_mode)
+
+        self._stop = asyncio.Event()
+        self._active = _start_active
+
+        self._send_loop_interval = math.inf if self._test_mode else base_send_interval
+        self._result_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=_result_queue_size)
+
+        # ClientReporter manages delivery report sync loop
+        self.client_reporter = ClientReporter(self)
+
+        self._client_sync_url = _client_url
+        self._client_sync_user = _client_user
+        self._client_sync_password = _client_password
+        self._client_sync_token = _client_token
+        self._report_delivery_callable = _report_callable
+
+        # Attachments and cache will be initialized in init()
+        self._attachment_cache: TieredCache | None = None
+        self.attachments: AttachmentManager | None = None
+        priority_value, _ = self._normalise_priority(_default_priority, DEFAULT_PRIORITY)
+        self._default_priority = priority_value
+        self._log_delivery_activity = bool(_log_activity)
+
+        # Build retry strategy from explicit param or config
+        if retry_strategy is not None:
+            self._retry_strategy = retry_strategy
+        elif max_retries is not None or retry_delays is not None:
+            self._retry_strategy = RetryStrategy(
+                max_retries=max_retries if max_retries is not None else DEFAULT_MAX_RETRIES,
+                delays=tuple(retry_delays) if retry_delays else DEFAULT_RETRY_DELAYS,
+            )
+        else:
+            self._retry_strategy = RetryStrategy(
+                max_retries=cfg.retry.max_retries,
+                delays=cfg.retry.delays,
+            )
+
+        self._batch_size_per_account = max(1, int(batch_size_per_account))
+        self._max_concurrent_sends = max(1, int(_max_sends))
+        self._max_concurrent_per_account = max(1, int(_max_per_account))
+        self._max_concurrent_attachments = max(1, int(_max_attachments))
+        self._attachment_semaphore: asyncio.Semaphore | None = None
+
+        # Initialize endpoint dispatcher for command routing
+        self._dispatcher = EndpointDispatcher(self.db, proxy=self)
+
+        # Initialize EE components (overridden in MailProxy_EE mixin)
+        self.__init_proxy_ee__()
+
+    @classmethod
+    async def create(cls, **kwargs) -> "MailProxy":
+        """Create and initialize a MailProxy instance.
+
+        This is the recommended way to create instances. It ensures proper
+        async initialization is completed before returning a ready-to-use proxy.
+
+        Args:
+            **kwargs: All arguments accepted by MailProxy.__init__().
+
+        Returns:
+            Fully initialized MailProxy instance with background tasks running.
+
+        Example:
+            proxy = await MailProxy.create(db_path="./mail.db")
+            # Ready to use immediately - no need to call start()
+
+        Note:
+            For cases requiring delayed startup, use the traditional pattern::
+
+                proxy = MailProxy(db_path="./mail.db")
+                # ... additional setup ...
+                await proxy.start()
+        """
+        instance = cls(**kwargs)
+        await instance.start()
+        return instance
+
+    # --------------------------------------------------------------------- utils
+    @staticmethod
+    def _utc_now_iso() -> str:
+        """Return the current UTC timestamp as ISO-8601 string.
+
+        Returns:
+            str: ISO-8601 formatted timestamp with 'Z' suffix.
+        """
+        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    @staticmethod
+    def _utc_now_epoch() -> int:
+        """Return the current UTC timestamp as seconds since Unix epoch.
+
+        Returns:
+            int: Unix timestamp in seconds.
+        """
+        return int(datetime.now(timezone.utc).timestamp())
+
+    async def init(self) -> None:
+        """Initialize persistence layer and attachment manager.
+
+        Performs the following initialization steps:
+        1. Initialize database schema and run migrations (via MailProxyBase.init)
+        2. Load cache configuration (from env vars or config file)
+        3. Initialize attachment cache (memory and disk tiers)
+        4. Create the AttachmentManager
+        """
+        await MailProxyBase.init(self)
+        await self._refresh_queue_gauge()
+
+        # Initialize metrics for all existing accounts so they appear in /metrics
+        # even before any email activity occurs
+        await self._init_account_metrics()
+
+        # Initialize attachment cache if configured
+        cache_cfg = self.config.cache
+        if cache_cfg.enabled:
+            self._attachment_cache = TieredCache(
+                memory_max_mb=cache_cfg.memory_max_mb,
+                memory_ttl_seconds=cache_cfg.memory_ttl_seconds,
+                disk_dir=cache_cfg.disk_dir,
+                disk_max_mb=cache_cfg.disk_max_mb,
+                disk_ttl_seconds=cache_cfg.disk_ttl_seconds,
+                disk_threshold_kb=cache_cfg.disk_threshold_kb,
+            )
+            await self._attachment_cache.init()
+            self.logger.info(
+                f"Attachment cache initialized (memory={cache_cfg.memory_max_mb}MB, "
+                f"disk={cache_cfg.disk_dir})"
+            )
+
+        # Initialize attachment manager (tenant-specific config applied per-message)
+        self.attachments = AttachmentManager(cache=self._attachment_cache)
+
+        # Initialize attachment fetch semaphore to limit memory pressure
+        self._attachment_semaphore = asyncio.Semaphore(self._max_concurrent_attachments)
+
+    def _normalise_priority(self, value: Any, default: Any = DEFAULT_PRIORITY) -> tuple[int, str]:
+        """Convert a priority value to internal numeric representation.
+
+        Accepts integers (0-3), strings ("immediate", "high", "medium", "low"),
+        or numeric strings and normalizes to (int, label) tuple.
+
+        Args:
+            value: Priority value to normalize.
+            default: Fallback if value is invalid.
+
+        Returns:
+            Tuple of (priority_int, priority_label).
+        """
+        if isinstance(default, str):
+            fallback = LABEL_TO_PRIORITY.get(default.lower(), DEFAULT_PRIORITY)
+        elif isinstance(default, (int, float)):
+            try:
+                fallback = int(default)
+            except (TypeError, ValueError):
+                fallback = DEFAULT_PRIORITY
+        else:
+            fallback = DEFAULT_PRIORITY
+        fallback = max(0, min(fallback, max(PRIORITY_LABELS)))
+
+        if value is None:
+            priority = fallback
+        elif isinstance(value, str):
+            key = value.lower()
+            if key in LABEL_TO_PRIORITY:
+                priority = LABEL_TO_PRIORITY[key]
+            else:
+                try:
+                    priority = int(value)
+                except ValueError:
+                    priority = fallback
+        else:
+            try:
+                priority = int(value)
+            except (TypeError, ValueError):
+                priority = fallback
+        priority = max(0, min(priority, max(PRIORITY_LABELS)))
+        label = PRIORITY_LABELS.get(priority, PRIORITY_LABELS[fallback])
+        return priority, label
+
+    @staticmethod
+    def _summarise_addresses(value: Any) -> str:
+        """Create a compact string summary of email addresses for logging.
+
+        Args:
+            value: String, list, or other iterable of email addresses.
+
+        Returns:
+            Comma-separated addresses, truncated to 200 chars if needed.
+        """
+        if not value:
+            return "-"
+        if isinstance(value, str):
+            items = [part.strip() for part in value.split(",") if part.strip()]
+        elif isinstance(value, (list, tuple, set)):
+            items = [str(item).strip() for item in value if item]
+        else:
+            items = [str(value).strip()]
+        preview = ", ".join(item for item in items if item)
+        if len(preview) > 200:
+            return f"{preview[:197]}..."
+        return preview or "-"
+
+    # Commands that modify state and should be logged for audit trail
+    _LOGGED_COMMANDS = frozenset({
+        "addMessages", "deleteMessages", "cleanupMessages",
+        "addAccount", "deleteAccount",
+        "addTenant", "updateTenant", "deleteTenant",
+        "suspend", "activate",
+    })
+
+    # ------------------------------------------------------------------ commands
+    async def handle_command(self, cmd: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Execute an external control command.
+
+        Dispatches the command to the appropriate handler method. Supported commands:
+        - ``run now``: Trigger immediate dispatch cycle
+        - ``suspend``: Pause the scheduler
+        - ``activate``: Resume the scheduler
+        - ``addAccount``, ``listAccounts``, ``deleteAccount``: SMTP account management
+        - ``addMessages``, ``deleteMessages``, ``listMessages``: Message queue management
+        - ``cleanupMessages``: Remove old reported messages
+        - ``addTenant``, ``getTenant``, ``listTenants``, ``updateTenant``, ``deleteTenant``: Tenant management
+
+        State-modifying commands are automatically logged to the command_log table
+        for audit trail and replay capability.
+
+        Args:
+            cmd: Command name to execute.
+            payload: Command-specific parameters.
+
+        Returns:
+            dict: Command result with ``ok`` status and command-specific data.
+        """
+        payload = payload or {}
+
+        # Log state-modifying commands for audit trail
+        should_log = cmd in self._LOGGED_COMMANDS
+        tenant_id = payload.get("tenant_id") if isinstance(payload, dict) else None
+
+        result = await self._execute_command(cmd, payload)
+
+        # Log after execution to capture result status
+        if should_log:
+            try:
+                ok = result.get("ok", False) if isinstance(result, dict) else False
+                await self.db.table('command_log').log_command(
+                    endpoint=cmd,
+                    payload=payload,
+                    tenant_id=tenant_id,
+                    response_status=200 if ok else 400,
+                    response_body=result,
+                )
+            except Exception as e:
+                self.logger.warning(f"Failed to log command {cmd}: {e}")
+
+        return result
+
+    async def _execute_command(self, cmd: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Internal command dispatcher.
+
+        Commands requiring proxy runtime state are handled here directly.
+        Other commands are delegated to the EndpointDispatcher.
+        """
+        # Commands requiring proxy runtime state
+        match cmd:
+            case "run now":
+                tenant_id = payload.get("tenant_id") if isinstance(payload, dict) else None
+                self.smtp_sender.wake()
+                self.client_reporter.wake(tenant_id)
+                return {"ok": True}
+
+            case "listTenantsSyncStatus":
+                # Requires client_reporter._last_sync runtime state
+                tenants = await self.db.table('tenants').list_all()
+                now = time.time()
+                result_tenants = []
+                for tenant in tenants:
+                    tenant_id = tenant.get("id")
+                    last_sync_ts = self.client_reporter._last_sync.get(tenant_id)
+                    next_sync_due = False
+                    in_dnd = False
+                    if last_sync_ts is not None:
+                        if last_sync_ts > now:
+                            in_dnd = True
+                        elif (now - last_sync_ts) >= DEFAULT_SYNC_INTERVAL:
+                            next_sync_due = True
+                    else:
+                        next_sync_due = True
+                    result_tenants.append({
+                        "id": tenant_id,
+                        "name": tenant.get("name"),
+                        "active": tenant.get("active", True),
+                        "client_base_url": tenant.get("client_base_url"),
+                        "last_sync_ts": last_sync_ts,
+                        "next_sync_due": next_sync_due,
+                        "in_dnd": in_dnd,
+                    })
+                return {
+                    "ok": True,
+                    "tenants": result_tenants,
+                    "sync_interval_seconds": DEFAULT_SYNC_INTERVAL,
+                }
+
+            # Commands with proxy-specific side effects (metrics refresh, result publishing)
+            case "addMessages":
+                return await self._handle_add_messages(payload)
+
+            case "deleteMessages":
+                tenant_id = payload.get("tenant_id") if isinstance(payload, dict) else None
+                if not tenant_id:
+                    return {"ok": False, "error": "tenant_id is required"}
+                ids = payload.get("ids") if isinstance(payload, dict) else []
+                removed, not_found, unauthorized = await self._delete_messages(ids or [], tenant_id)
+                await self._refresh_queue_gauge()
+                return {"ok": True, "removed": removed, "not_found": not_found, "unauthorized": unauthorized}
+
+            case "cleanupMessages":
+                tenant_id = payload.get("tenant_id") if isinstance(payload, dict) else None
+                if not tenant_id:
+                    return {"ok": False, "error": "tenant_id is required"}
+                older_than = payload.get("older_than_seconds") if isinstance(payload, dict) else None
+                removed = await self._cleanup_reported_messages(older_than, tenant_id)
+                return {"ok": True, "removed": removed}
+
+            case "deleteAccount":
+                tenant_id = payload.get("tenant_id") if isinstance(payload, dict) else None
+                if not tenant_id:
+                    return {"ok": False, "error": "tenant_id is required"}
+                account_id = payload.get("id")
+                try:
+                    await self.db.table('accounts').get(tenant_id, account_id)
+                except ValueError:
+                    return {"ok": False, "error": "account not found or not owned by tenant"}
+                await self.db.table('accounts').remove(tenant_id, account_id)
+                await self._refresh_queue_gauge()
+                return {"ok": True}
+
+            case _:
+                # Delegate to EndpointDispatcher for standard CRUD commands
+                return await self._dispatcher.dispatch(cmd, payload)
+
+    async def _handle_add_messages(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Process the addMessages command to enqueue emails for delivery.
+
+        Validates each message in the batch, checking required fields and account
+        configuration. Invalid messages are rejected with detailed reasons and
+        optionally persisted for error reporting.
+
+        Args:
+            payload: Dict with ``messages`` list and optional ``default_priority``.
+
+        Returns:
+            dict: Result with ``ok``, ``queued`` count, and ``rejected`` list.
+        """
+        messages = payload.get("messages") if isinstance(payload, dict) else None
+        if not isinstance(messages, list):
+            return {"ok": False, "error": "messages must be a list"}
+        if len(messages) > self._max_enqueue_batch:
+            return {"ok": False, "error": f"Cannot enqueue more than {self._max_enqueue_batch} messages at once"}
+
+        default_priority_value = 2
+        if "default_priority" in payload:
+            default_priority_value, _ = self._normalise_priority(payload.get("default_priority"), 2)
+
+        validated: list[dict[str, Any]] = []
+        rejected: list[dict[str, Any]] = []
+        rejected_for_sync: list[dict[str, Any]] = []  # Messages to report via proxy_sync
+        now_ts = self._utc_now_epoch()
+
+        for item in messages:
+            if not isinstance(item, dict):
+                rejected.append({"id": None, "reason": "invalid payload"})
+                continue
+            is_valid, reason = await self._validate_enqueue_payload(item)
+            if not is_valid:
+                msg_id = item.get("id")
+                rejected.append({"id": msg_id, "reason": reason})
+                if msg_id:
+                    # Insert rejected message into DB with error for proxy_sync notification
+                    priority, _ = self._normalise_priority(item.get("priority"), default_priority_value)
+                    entry = {
+                        "id": msg_id,
+                        "tenant_id": item.get("tenant_id"),
+                        "account_id": item.get("account_id"),
+                        "priority": priority,
+                        "payload": item,
+                        "deferred_ts": None,
+                        "batch_code": item.get("batch_code"),
+                    }
+                    inserted_items = await self.db.table('messages').insert_batch([entry])
+                    if inserted_items:
+                        pk = inserted_items[0]["pk"]
+                        await self.db.table('message_events').add_event(pk, "error", now_ts, description=reason or "validation error")
+                    rejected_for_sync.append({
+                        "id": msg_id,
+                        "status": "error",
+                        "error": reason,
+                        "timestamp": self._utc_now_iso(),
+                        "account": item.get("account_id"),
+                    })
+                continue
+
+            priority, _ = self._normalise_priority(item.get("priority"), default_priority_value)
+            item["priority"] = priority
+            if "deferred_ts" in item and item["deferred_ts"] is None:
+                item.pop("deferred_ts")
+            validated.append(item)
+
+        entries = []
+        inserted: list[dict[str, str]] = []
+
+        if validated:
+            entries = [
+                {
+                    "id": msg["id"],
+                    "tenant_id": msg["tenant_id"],  # Required for multi-tenant isolation
+                    "account_id": msg.get("account_id"),
+                    "priority": int(msg["priority"]),
+                    "payload": msg,
+                    "deferred_ts": msg.get("deferred_ts"),
+                    "batch_code": msg.get("batch_code"),
+                }
+                for msg in validated
+            ]
+            inserted = await self.db.table('messages').insert_batch(entries)
+            # Messages not inserted were already sent (sent_ts IS NOT NULL)
+            inserted_ids = {item["id"] for item in inserted}
+            for msg in validated:
+                if msg["id"] not in inserted_ids:
+                    rejected.append({"id": msg["id"], "reason": "already sent"})
+
+        await self._refresh_queue_gauge()
+
+        # Notify client via proxy_sync for rejected messages
+        if rejected_for_sync:
+            for event in rejected_for_sync:
+                await self._publish_result(event)
+
+        queued_count = len(inserted)
+        # ok is False only if ALL messages were rejected due to validation errors
+        # (not for "already sent" which is a normal case)
+        validation_failures = [r for r in rejected if r.get("reason") != "already sent"]
+        ok = queued_count > 0 or len(validation_failures) == 0
+        result: dict[str, Any] = {
+            "ok": ok,
+            "queued": queued_count,
+            "rejected": rejected,
+        }
+        return result
+
+    async def _delete_messages(
+        self, message_ids: Iterable[str], tenant_id: str
+    ) -> tuple[int, list[str], list[str]]:
+        """Remove messages from the queue by their IDs, with tenant validation.
+
+        Args:
+            message_ids: Iterable of message IDs to delete.
+            tenant_id: Tenant ID - only messages belonging to this tenant will be deleted.
+
+        Returns:
+            Tuple of (count of removed messages, list of IDs not found, list of unauthorized IDs).
+        """
+        ids = {mid for mid in message_ids if mid}
+        if not ids:
+            return 0, [], []
+
+        # Get messages that belong to this tenant (via account relationship)
+        authorized_ids = await self.db.table('messages').get_ids_for_tenant(list(ids), tenant_id)
+
+        removed = 0
+        missing: list[str] = []
+        unauthorized: list[str] = []
+
+        for mid in sorted(ids):
+            if mid not in authorized_ids:
+                unauthorized.append(mid)
+                continue
+            if await self.db.table('messages').delete(mid, tenant_id):
+                removed += 1
+            else:
+                missing.append(mid)
+        return removed, missing, unauthorized
+
+    async def _cleanup_reported_messages(
+        self, older_than_seconds: int | None = None, tenant_id: str | None = None
+    ) -> int:
+        """Remove reported messages older than the specified threshold.
+
+        Args:
+            older_than_seconds: Remove messages reported more than this many seconds ago.
+                              If None, uses the configured retention period.
+            tenant_id: If provided, only cleanup messages belonging to this tenant.
+
+        Returns:
+            Number of messages removed.
+        """
+        if older_than_seconds is None:
+            retention = self._report_retention_seconds
+        else:
+            retention = max(0, int(older_than_seconds))
+
+        threshold = self._utc_now_epoch() - retention
+
+        if tenant_id:
+            removed = await self.db.table('messages').remove_fully_reported_before_for_tenant(
+                threshold, tenant_id
+            )
+        else:
+            removed = await self.db.table('messages').remove_fully_reported_before(threshold)
+
+        if removed:
+            await self._refresh_queue_gauge()
+        return removed
+
+    async def _validate_enqueue_payload(self, payload: dict[str, Any]) -> tuple[bool, str | None]:
+        """Validate a message payload before enqueueing.
+
+        Checks for required fields (id, tenant_id, account_id, from, to, subject)
+        and verifies that the specified SMTP account exists for the tenant.
+
+        Args:
+            payload: Message payload dict to validate.
+
+        Returns:
+            Tuple of (is_valid, error_reason). error_reason is None if valid.
+        """
+        msg_id = payload.get("id")
+        if not msg_id:
+            return False, "missing id"
+        tenant_id = payload.get("tenant_id")
+        if not tenant_id:
+            return False, "missing tenant_id"
+        account_id = payload.get("account_id")
+        if not account_id:
+            return False, "missing account_id"
+        payload.setdefault("priority", 2)
+        sender = payload.get("from")
+        if not sender:
+            return False, "missing from"
+        recipients = payload.get("to")
+        if not recipients:
+            return False, "missing to"
+        if isinstance(recipients, (list, tuple, set)):
+            if not any(recipients):
+                return False, "missing to"
+        subject = payload.get("subject")
+        if not subject:
+            return False, "missing subject"
+        # Verify account exists and belongs to tenant
+        try:
+            await self.db.table('accounts').get(tenant_id, account_id)
+        except Exception:
+            return False, "account not found for tenant"
+        return True, None
+
+    # ----------------------------------------------------------------- lifecycle
+    async def start(self) -> None:
+        """Start the background scheduler and maintenance tasks.
+
+        Initializes the persistence layer and spawns background tasks for:
+        - SMTP dispatch via smtp_sender
+        - Client report loop: sends delivery reports to upstream services
+        """
+        self.logger.debug("Starting MailProxy...")
+        await self.init()
+        self._stop.clear()
+        self.logger.debug("Starting SMTP sender...")
+        await self.smtp_sender.start()
+        self.logger.debug("Starting client reporter...")
+        await self.client_reporter.start()
+        # Start EE components (overridden in MailProxy_EE mixin)
+        await self._start_proxy_ee()
+        self.logger.debug("All background tasks created")
+
+    async def stop(self) -> None:
+        """Stop all background tasks gracefully.
+
+        Signals all running loops to terminate and waits for them to complete.
+        Outstanding operations are allowed to finish before returning.
+        """
+        self._stop.set()
+        await self.smtp_sender.stop()
+        await self.client_reporter.stop()
+        # Stop EE components (overridden in MailProxy_EE mixin)
+        await self._stop_proxy_ee()
+        await self.db.adapter.close()
+
+    # ----------------------------------------------------------------- messaging
+    async def results(self):
+        """Async generator that yields delivery result events.
+
+        Yields:
+            dict: Delivery event with message ID, status, timestamp, and error info.
+        """
+        while True:
+            event = await self._result_queue.get()
+            yield event
+
+    async def _put_with_backpressure(self, queue: asyncio.Queue[Any], item: Any, queue_name: str) -> None:
+        """Push an item to a queue with timeout-based backpressure.
+
+        Args:
+            queue: Target asyncio.Queue.
+            item: Item to enqueue.
+            queue_name: Name for logging purposes.
+        """
+        try:
+            await asyncio.wait_for(queue.put(item), timeout=self._queue_put_timeout)
+        except asyncio.TimeoutError:  # pragma: no cover - defensive
+            self.logger.error("Timed out while enqueuing item into %s queue; dropping item", queue_name)
+
+    def _log_delivery_event(self, event: dict[str, Any]) -> None:
+        """Log a delivery outcome when verbose logging is enabled.
+
+        Args:
+            event: Delivery event dict with status, id, account, and error info.
+        """
+        if not self._log_delivery_activity:
+            return
+        status = (event.get("status") or "unknown").lower()
+        msg_id = event.get("id") or "-"
+        account = event.get("account") or event.get("account_id") or "default"
+
+        match status:
+            case "sent":
+                self.logger.info("Delivery succeeded for message %s (account=%s)", msg_id, account)
+            case "deferred":
+                deferred_until = event.get("deferred_until")
+                if isinstance(deferred_until, (int, float)):
+                    deferred_repr = (
+                        datetime.fromtimestamp(float(deferred_until), timezone.utc)
+                        .isoformat()
+                        .replace("+00:00", "Z")
+                    )
+                else:
+                    deferred_repr = deferred_until or "-"
+                self.logger.info(
+                    "Delivery deferred for message %s (account=%s) until %s",
+                    msg_id,
+                    account,
+                    deferred_repr,
+                )
+            case "error":
+                reason = event.get("error") or event.get("error_code") or "unknown error"
+                self.logger.warning(
+                    "Delivery failed for message %s (account=%s): %s",
+                    msg_id,
+                    account,
+                    reason,
+                )
+            case _:
+                self.logger.info("Delivery event for message %s (account=%s): %s", msg_id, account, status)
+
+    async def _publish_result(self, event: dict[str, Any]) -> None:
+        """Publish a delivery event to the result queue.
+
+        Args:
+            event: Delivery event dict to publish.
+        """
+        self._log_delivery_event(event)
+        await self._put_with_backpressure(self._result_queue, event, "result")
+
+    async def _refresh_queue_gauge(self) -> None:
+        """Update the Prometheus gauge for pending message count.
+
+        Queries the database for active (unsent, unreported) messages
+        and updates the metrics collector.
+        """
+        try:
+            count = await self.db.table('messages').count_active()
+        except Exception:  # pragma: no cover - defensive
+            self.logger.exception("Failed to refresh queue gauge")
+            return
+        self.metrics.set_pending(count)
+
+    async def _init_account_metrics(self) -> None:
+        """Initialize Prometheus counters for all existing accounts.
+
+        Prometheus counters with labels only appear in output after they have
+        been incremented at least once. This method ensures metrics appear in
+        /metrics output even before any email activity by initializing all
+        counters for each configured SMTP account.
+
+        Always initializes at least the "default" account to ensure basic
+        metrics are visible even when no accounts are configured.
+        """
+        try:
+            # Always initialize "default" account for basic metrics visibility
+            self.metrics.init_account()  # Uses defaults for all labels
+            # Also initialize pending gauge to 0
+            self.metrics.set_pending(0)
+
+            # Get all tenants to map tenant_id -> tenant_name
+            tenants = await self.db.table('tenants').list_all()
+            tenant_names = {t["id"]: t.get("name", t["id"]) for t in tenants}
+
+            accounts = await self.db.table('accounts').list_all()
+            for account in accounts:
+                tenant_id = account.get("tenant_id", "default")
+                account_id = account.get("id", "default")
+                self.metrics.init_account(
+                    tenant_id=tenant_id,
+                    tenant_name=tenant_names.get(tenant_id, tenant_id),
+                    account_id=account_id,
+                    account_name=account_id,  # No separate name field for accounts
+                )
+            self.logger.debug("Initialized metrics for %d accounts", len(accounts) + 1)
+        except Exception:  # pragma: no cover - defensive
+            self.logger.exception("Failed to initialize account metrics")

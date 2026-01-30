@@ -12,7 +12,6 @@ from .command_log.table import CommandLogTable
 from .instance.table import InstanceTable
 from .message.table import MessagesTable
 from .message_event.table import MessageEventTable
-from .send_log.table import SendLogTable
 from .tenant.table import TenantsTable
 
 __all__ = [
@@ -21,6 +20,5 @@ __all__ = [
     "InstanceTable",
     "MessageEventTable",
     "MessagesTable",
-    "SendLogTable",
     "TenantsTable",
 ]

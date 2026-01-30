@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ...sql import Integer, String, Table
+from sql import Integer, String, Table
 
 
 class MessageEventTable(Table):

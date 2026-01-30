@@ -1,17 +1,12 @@
-# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: BSL-1.1
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Tenant entity: multi-tenant configuration."""
 
-from .schema import (
+from .endpoint import (
     AuthMethod,
+    DEFAULT_ATTACHMENT_PATH,
+    DEFAULT_SYNC_PATH,
     LargeFileAction,
-    Tenant,
-    TenantAuth,
-    TenantCreate,
-    TenantLargeFileConfig,
-    TenantListItem,
-    TenantRateLimits,
-    TenantSyncAuth,
-    TenantUpdate,
+    TenantEndpoint,
     get_tenant_attachment_url,
     get_tenant_sync_url,
 )
@@ -19,16 +14,11 @@ from .table import TenantsTable
 
 __all__ = [
     "AuthMethod",
+    "DEFAULT_ATTACHMENT_PATH",
+    "DEFAULT_SYNC_PATH",
     "LargeFileAction",
-    "Tenant",
-    "TenantAuth",
-    "TenantCreate",
-    "TenantLargeFileConfig",
-    "TenantListItem",
-    "TenantRateLimits",
-    "TenantSyncAuth",
+    "TenantEndpoint",
     "TenantsTable",
-    "TenantUpdate",
     "get_tenant_attachment_url",
     "get_tenant_sync_url",
 ]

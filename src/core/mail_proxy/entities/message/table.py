@@ -1,5 +1,5 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
-"""Messages table manager for email queue."""
+"""Messages table manager for email queue (CE base)."""
 
 from __future__ import annotations
 
@@ -7,26 +7,19 @@ import json
 from collections.abc import Iterable, Sequence
 from typing import Any
 
-from ...sql import Integer, String, Table, Timestamp
-from ...uid import get_uuid
+from sql import Integer, String, Table, Timestamp
+from tools.uid import get_uuid
 
 
 class MessagesTable(Table):
-    """Messages table: email queue with scheduling.
+    """Messages table: email queue with scheduling (CE base).
 
-    Fields:
-    - pk: Internal primary key (autoincrement)
-    - tenant_id, id: Composite unique key for multi-tenant isolation
-    - account_id: SMTP account (FK)
-    - priority: 1=high, 2=normal, 3=low
-    - payload: JSON-encoded message data
-    - batch_code: Optional batch/campaign identifier for grouping messages
-    - deferred_ts: Timestamp when message can be retried (for retry scheduling)
-    - smtp_ts: Timestamp when SMTP send was attempted (NULL = not yet attempted)
-    - is_pec: PEC flag (1=awaiting PEC receipts, 0=normal email)
+    CE provides: insert_batch(), fetch_ready(), mark_sent/error(), get(),
+                 list_all(), count_active(), purge methods, migrations.
+    EE extends with: clear_pec_flag(), get_pec_without_acceptance().
 
-    Multi-tenant isolation is enforced via UNIQUE (tenant_id, id).
-    Delivery status and reporting are tracked in the message_events table.
+    Schema: pk (UUID), tenant_id+id (unique), account_id, priority,
+            payload (JSON), batch_code, deferred_ts, smtp_ts, is_pec.
     """
 
     name = "messages"
@@ -387,46 +380,6 @@ class MessagesTable(Table):
             """,
             {"smtp_ts": smtp_ts, "pk": pk},
         )
-
-    async def clear_pec_flag(self, pk: str) -> None:
-        """Clear the is_pec flag when recipient is not a PEC address.
-
-        Args:
-            pk: Internal primary key of the message (UUID string).
-        """
-        await self.execute(
-            """
-            UPDATE messages
-            SET is_pec = 0, updated_at = CURRENT_TIMESTAMP
-            WHERE pk = :pk
-            """,
-            {"pk": pk},
-        )
-
-    async def get_pec_without_acceptance(self, cutoff_ts: int) -> list[dict[str, Any]]:
-        """Get PEC messages sent before cutoff_ts without acceptance receipt.
-
-        Returns messages where:
-        - is_pec = 1 (marked as PEC)
-        - smtp_ts < cutoff_ts (sent before cutoff)
-        - No pec_acceptance event exists
-        """
-        rows = await self.db.adapter.fetch_all(
-            """
-            SELECT m.pk, m.id, m.account_id, m.smtp_ts
-            FROM messages m
-            WHERE m.is_pec = 1
-              AND m.smtp_ts IS NOT NULL
-              AND m.smtp_ts < :cutoff_ts
-              AND NOT EXISTS (
-                  SELECT 1 FROM message_events e
-                  WHERE e.message_pk = m.pk
-                    AND e.event_type = 'pec_acceptance'
-              )
-            """,
-            {"cutoff_ts": cutoff_ts},
-        )
-        return [dict(row) for row in rows]
 
     async def update_payload(self, pk: str, payload: dict[str, Any]) -> None:
         """Update the payload field of a message.

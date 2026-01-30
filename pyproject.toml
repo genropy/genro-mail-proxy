@@ -104,6 +104,7 @@ packages = ["src/core", "src/enterprise"]
 testpaths = ["tests"]
 norecursedirs = ["_build", "docs/_build", "docs", ".git"]
 addopts = "-v --cov=core.mail_proxy --cov-report=term-missing"
+asyncio_mode = "auto"
 markers = [
     "network: marks tests as requiring network access (deselect with '-m \"not network\"')",
     "fullstack: marks tests as requiring full Docker infrastructure (PostgreSQL, MailHog, MinIO)",

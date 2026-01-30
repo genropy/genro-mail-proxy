@@ -1,19 +1,26 @@
-# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: BSL-1.1
-"""Tenants table manager with JSON field handling."""
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
+"""Tenants table manager with JSON field handling.
+
+CE (Core Edition): Single-tenant mode with implicit 'default' tenant.
+EE (Enterprise): Extends with multi-tenant management via TenantsTable_EE mixin.
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
-from ...sql import Integer, String, Table, Timestamp
+from sql import Integer, String, Table, Timestamp
 
 
 class TenantsTable(Table):
-    """Tenants table: multi-tenant configuration storage.
+    """Tenants table: tenant configuration storage (CE base).
 
-    JSON-encoded fields: client_auth, rate_limits, large_file_config.
-    Boolean field: active (stored as INTEGER 0/1).
-    Suspension: suspended_batches contains comma-separated batch codes or "*" for all.
+    CE provides: get(), is_batch_suspended(), ensure_default().
+    EE extends with: add(), list_all(), update_fields(), remove(),
+                     API key management, batch suspension control.
+
+    Schema: id (PK), name, client_auth (JSON), rate_limits (JSON),
+            active (0/1), suspended_batches, api_key_hash, timestamps.
     """
 
     name = "tenants"
@@ -35,58 +42,6 @@ class TenantsTable(Table):
         c.column("created_at", Timestamp, default="CURRENT_TIMESTAMP")
         c.column("updated_at", Timestamp, default="CURRENT_TIMESTAMP")
 
-    async def add(self, tenant: dict[str, Any]) -> str:
-        """Insert or update a tenant configuration.
-
-        For new tenants, automatically generates an API key.
-        For existing tenants, keeps the existing API key.
-
-        Args:
-            tenant: Tenant configuration dict with at least 'id' field.
-
-        Returns:
-            The API key (raw, show once). For new tenants this is a fresh key.
-            For existing tenants, returns empty string (key unchanged).
-        """
-        import hashlib
-        import secrets
-
-        tenant_id = tenant["id"]
-
-        # Check if tenant exists
-        existing = await self.get(tenant_id)
-
-        if existing:
-            # Update existing tenant - don't change API key
-            async with self.record(tenant_id, pkey="id") as rec:
-                rec["name"] = tenant.get("name")
-                rec["client_auth"] = tenant.get("client_auth")
-                rec["client_base_url"] = tenant.get("client_base_url")
-                rec["client_sync_path"] = tenant.get("client_sync_path")
-                rec["client_attachment_path"] = tenant.get("client_attachment_path")
-                rec["rate_limits"] = tenant.get("rate_limits")
-                rec["large_file_config"] = tenant.get("large_file_config")
-                rec["active"] = 1 if tenant.get("active", True) else 0
-            return ""  # Key unchanged
-
-        # New tenant - generate API key
-        raw_key = secrets.token_urlsafe(32)
-        key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-
-        await self.insert({
-            "id": tenant_id,
-            "name": tenant.get("name"),
-            "client_auth": tenant.get("client_auth"),
-            "client_base_url": tenant.get("client_base_url"),
-            "client_sync_path": tenant.get("client_sync_path"),
-            "client_attachment_path": tenant.get("client_attachment_path"),
-            "rate_limits": tenant.get("rate_limits"),
-            "large_file_config": tenant.get("large_file_config"),
-            "active": 1 if tenant.get("active", True) else 0,
-            "api_key_hash": key_hash,
-        })
-        return raw_key
-
     async def get(self, tenant_id: str) -> dict[str, Any] | None:
         """Fetch a tenant configuration by ID."""
         tenant = await self.select_one(where={"id": tenant_id})
@@ -94,156 +49,57 @@ class TenantsTable(Table):
             return None
         return self._decode_active(tenant)
 
-    async def list_all(self, active_only: bool = False) -> list[dict[str, Any]]:
-        """Return all tenants, optionally filtered by active status."""
-        if active_only:
-            rows = await self.fetch_all(
-                "SELECT * FROM tenants WHERE active = 1 ORDER BY id"
-            )
-        else:
-            rows = await self.select(order_by="id")
-        return [self._decode_active(row) for row in rows]
-
-    async def update_fields(self, tenant_id: str, updates: dict[str, Any]) -> bool:
-        """Update a tenant's fields. Returns True if row was updated."""
-        if not updates:
-            return False
-
-        values: dict[str, Any] = {}
-        for key, value in updates.items():
-            if key in ("client_auth", "rate_limits", "large_file_config"):
-                values[key] = value  # Will be JSON-encoded by Table.update()
-            elif key == "active":
-                values["active"] = 1 if value else 0
-            elif key in ("name", "client_base_url", "client_sync_path", "client_attachment_path"):
-                values[key] = value
-
-        if not values:
-            return False
-
-        # Add updated_at via raw query to use CURRENT_TIMESTAMP
-        set_parts = [f"{k} = :val_{k}" for k in values]
-        set_parts.append("updated_at = CURRENT_TIMESTAMP")
-        params = {f"val_{k}": v for k, v in self._encode_json_fields(values).items()}
-        params["tenant_id"] = tenant_id
-
-        rowcount = await self.execute(
-            f"UPDATE tenants SET {', '.join(set_parts)} WHERE id = :tenant_id",
-            params,
-        )
-        return rowcount > 0
-
-    async def remove(self, tenant_id: str) -> bool:
-        """Delete a tenant and cascade to related accounts and messages.
-
-        Returns True if tenant was deleted.
-        """
-        # Delete messages for this tenant
-        await self.db.adapter.execute(
-            "DELETE FROM messages WHERE tenant_id = :tenant_id",
-            {"tenant_id": tenant_id}
-        )
-        # Delete accounts for this tenant
-        await self.db.adapter.execute(
-            "DELETE FROM accounts WHERE tenant_id = :tenant_id",
-            {"tenant_id": tenant_id}
-        )
-        # Delete the tenant
-        rowcount = await self.delete(where={"id": tenant_id})
-        return rowcount > 0
-
     def _decode_active(self, tenant: dict[str, Any]) -> dict[str, Any]:
         """Convert active INTEGER to bool."""
         tenant["active"] = bool(tenant.get("active", 1))
         return tenant
 
-    # ----------------------------------------------------------------- API Keys
-
-    async def create_api_key(
-        self, tenant_id: str, expires_at: int | None = None
-    ) -> str | None:
-        """Create a new API key for a tenant.
+    def is_batch_suspended(self, suspended_batches: str | None, batch_code: str | None) -> bool:
+        """Check if a batch is suspended based on tenant's suspended_batches field.
 
         Args:
-            tenant_id: The tenant ID.
-            expires_at: Optional Unix timestamp for key expiration.
+            suspended_batches: The tenant's suspended_batches value.
+            batch_code: The message's batch_code (None if no batch).
 
         Returns:
-            The raw API key (show once), or None if tenant not found.
+            True if the message should be skipped.
         """
-        import hashlib
-        import secrets
+        if not suspended_batches:
+            return False
+        if suspended_batches == "*":
+            return True
+        if batch_code is None:
+            # Messages without batch_code are only suspended by "*"
+            return False
+        suspended_set = set(suspended_batches.split(","))
+        return batch_code in suspended_set
 
-        tenant = await self.get(tenant_id)
-        if not tenant:
-            return None
+    async def ensure_default(self) -> None:
+        """Ensure the 'default' tenant exists for CE single-tenant mode.
 
-        raw_key = secrets.token_urlsafe(32)
-        key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-
-        await self.execute(
-            """
-            UPDATE tenants
-            SET api_key_hash = :key_hash,
-                api_key_expires_at = :expires_at,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = :tenant_id
-            """,
-            {"tenant_id": tenant_id, "key_hash": key_hash, "expires_at": expires_at},
-        )
-        return raw_key
-
-    async def get_tenant_by_token(self, raw_key: str) -> dict[str, Any] | None:
-        """Find tenant by API key token.
-
-        Args:
-            raw_key: The raw API key to look up.
-
-        Returns:
-            Tenant dict if found and not expired, None otherwise.
+        Creates the default tenant WITHOUT an API key. In CE mode, all operations
+        use the instance token. When upgrading to EE, the admin can generate
+        a tenant token via POST /tenant/default/api-key.
         """
-        import hashlib
-        import time
+        existing = await self.get("default")
+        if existing:
+            return
 
-        key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-        tenant = await self.fetch_one(
-            "SELECT * FROM tenants WHERE api_key_hash = :key_hash",
-            {"key_hash": key_hash},
-        )
-        if not tenant:
-            return None
+        # Create without API key - CE uses instance token only
+        await self.insert({
+            "id": "default",
+            "name": "Default Tenant",
+            "active": 1,
+        })
 
-        expires_at = tenant.get("api_key_expires_at")
-        if expires_at and expires_at < time.time():
-            return None  # Expired
-
-        return self._decode_active(tenant)
-
-    async def revoke_api_key(self, tenant_id: str) -> bool:
-        """Revoke the API key for a tenant.
-
-        Args:
-            tenant_id: The tenant ID.
-
-        Returns:
-            True if key was revoked, False if tenant not found.
-        """
-        rowcount = await self.execute(
-            """
-            UPDATE tenants
-            SET api_key_hash = NULL,
-                api_key_expires_at = NULL,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = :tenant_id
-            """,
-            {"tenant_id": tenant_id},
-        )
-        return rowcount > 0
-
-    # -------------------------------------------------------------- Batch Suspension
+    # ----------------------------------------------------------------- Batch Suspension
 
     async def suspend_batch(self, tenant_id: str, batch_code: str | None = None) -> bool:
         """Suspend sending for a tenant, optionally for a specific batch only.
+
+        Suspended batches are skipped by the dispatcher. Use this for:
+        - Pausing a campaign (specific batch_code)
+        - Emergency stop for a tenant (batch_code=None suspends all)
 
         Args:
             tenant_id: The tenant ID.
@@ -284,12 +140,19 @@ class TenantsTable(Table):
     async def activate_batch(self, tenant_id: str, batch_code: str | None = None) -> bool:
         """Resume sending for a tenant, optionally for a specific batch only.
 
+        Removes the batch from the suspension list. If batch_code is None,
+        clears ALL suspensions for the tenant.
+
+        Note: Cannot remove a single batch when full suspension ("*") is active.
+        Must activate_batch(None) first to clear full suspension.
+
         Args:
             tenant_id: The tenant ID.
             batch_code: Optional batch code. If None, clears all suspensions.
 
         Returns:
             True if tenant was found and updated.
+            False if tenant not found or trying to remove single batch from "*".
         """
         tenant = await self.get(tenant_id)
         if not tenant:
@@ -324,6 +187,9 @@ class TenantsTable(Table):
     async def get_suspended_batches(self, tenant_id: str) -> set[str]:
         """Get the set of suspended batch codes for a tenant.
 
+        Args:
+            tenant_id: The tenant to query.
+
         Returns:
             Set of batch codes, or {"*"} if all suspended, or empty set if none.
         """
@@ -339,46 +205,6 @@ class TenantsTable(Table):
         batches = set(suspended.split(","))
         batches.discard("")
         return batches
-
-    def is_batch_suspended(self, suspended_batches: str | None, batch_code: str | None) -> bool:
-        """Check if a batch is suspended based on tenant's suspended_batches field.
-
-        Args:
-            suspended_batches: The tenant's suspended_batches value.
-            batch_code: The message's batch_code (None if no batch).
-
-        Returns:
-            True if the message should be skipped.
-        """
-        if not suspended_batches:
-            return False
-        if suspended_batches == "*":
-            return True
-        if batch_code is None:
-            # Messages without batch_code are only suspended by "*"
-            return False
-        suspended_set = set(suspended_batches.split(","))
-        return batch_code in suspended_set
-
-    # -------------------------------------------------------------- Default Tenant
-
-    async def ensure_default(self) -> None:
-        """Ensure the 'default' tenant exists for CE single-tenant mode.
-
-        Creates the default tenant WITHOUT an API key. In CE mode, all operations
-        use the instance token. When upgrading to EE, the admin can generate
-        a tenant token via POST /tenant/default/api-key.
-        """
-        existing = await self.get("default")
-        if existing:
-            return
-
-        # Create without API key - CE uses instance token only
-        await self.insert({
-            "id": "default",
-            "name": "Default Tenant",
-            "active": 1,
-        })
 
 
 __all__ = ["TenantsTable"]
