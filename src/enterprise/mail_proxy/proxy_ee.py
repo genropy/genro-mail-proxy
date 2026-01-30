@@ -1,13 +1,28 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: BSL-1.1
-"""Enterprise Edition extensions for MailProxy.
+"""MailProxy_EE: Enterprise Edition mixin for bounce detection.
 
-This module adds bounce detection capabilities to the base MailProxy class.
-Bounce detection monitors a dedicated IMAP mailbox for bounce notifications
-and correlates them with sent messages.
+This mixin adds bounce detection to MailProxy by overriding the CE stub
+methods (__init_proxy_ee__, _start_proxy_ee, _stop_proxy_ee).
 
-Usage:
-    class MailProxy(MailProxy_EE, MailProxyBase):
-        pass
+Class Hierarchy:
+    MailProxyBase (CE): config, db, tables, endpoints, api/cli
+        └── MailProxy (CE): +SmtpSender, +ClientReporter, +metrics
+            └── MailProxy with MailProxy_EE (EE): +BounceReceiver
+
+Bounce Detection:
+    Monitors a dedicated IMAP mailbox for bounce notifications. Correlates
+    bounces with sent messages using the X-Genro-Mail-ID header.
+
+Configuration:
+    proxy.configure_bounce_receiver(BounceConfig(
+        imap_host="imap.example.com",
+        imap_user="bounce@example.com",
+        imap_password="secret",
+    ))
+    await proxy.start()
+
+Commands (via handle_bounce_command):
+    - getBounceStatus: Returns configured and running status
 """
 
 from __future__ import annotations
@@ -19,21 +34,38 @@ if TYPE_CHECKING:
 
 
 class MailProxy_EE:
-    """Enterprise Edition: Bounce detection capabilities.
+    """EE mixin: adds BounceReceiver to MailProxy.
 
-    Adds methods for:
-    - Configuring bounce detection via IMAP
-    - Starting/stopping bounce receiver
-    - Handling bounce-related commands
+    Instance Attributes (added by this mixin):
+        bounce_receiver: BounceReceiver instance (or None if not started)
+        _bounce_config: BounceConfig instance (or None if not configured)
+
+    Methods:
+        configure_bounce_receiver(): Set BounceConfig before start()
+        bounce_receiver_running: Property to check if poller is active
+        handle_bounce_command(): Handle getBounceStatus command
+
+    Overridden Methods (from MailProxy CE stubs):
+        __init_proxy_ee__(): Initialize bounce_receiver, _bounce_config
+        _start_proxy_ee(): Start BounceReceiver if configured
+        _stop_proxy_ee(): Stop BounceReceiver
     """
 
     bounce_receiver: "BounceReceiver | None"
     _bounce_config: "BounceConfig | None"
 
+    # -------------------------------------------------------------------------
+    # Initialization (override CE stub)
+    # -------------------------------------------------------------------------
+
     def __init_proxy_ee__(self) -> None:
-        """Initialize EE proxy state. Called from MailProxy.__init__."""
+        """Initialize EE state. Called from MailProxy.__init__."""
         self.bounce_receiver = None
         self._bounce_config = None
+
+    # -------------------------------------------------------------------------
+    # Configuration
+    # -------------------------------------------------------------------------
 
     def configure_bounce_receiver(self, config: "BounceConfig") -> None:
         """Configure bounce detection.
@@ -47,8 +79,12 @@ class MailProxy_EE:
         """
         self._bounce_config = config
 
+    # -------------------------------------------------------------------------
+    # Lifecycle (override CE stubs)
+    # -------------------------------------------------------------------------
+
     async def _start_proxy_ee(self) -> None:
-        """Start EE components. Called from MailProxy.start()."""
+        """Start BounceReceiver if configured. Called from MailProxy.start()."""
         if self._bounce_config is None:
             return
 
@@ -58,14 +94,18 @@ class MailProxy_EE:
         await self.bounce_receiver.start()
 
     async def _stop_proxy_ee(self) -> None:
-        """Stop EE components. Called from MailProxy.stop()."""
+        """Stop BounceReceiver. Called from MailProxy.stop()."""
         if self.bounce_receiver is not None:
             await self.bounce_receiver.stop()
             self.bounce_receiver = None
 
+    # -------------------------------------------------------------------------
+    # Status and commands
+    # -------------------------------------------------------------------------
+
     @property
     def bounce_receiver_running(self) -> bool:
-        """Return True if bounce receiver is currently running."""
+        """True if BounceReceiver is active and polling."""
         return self.bounce_receiver is not None and self.bounce_receiver._running
 
     async def handle_bounce_command(self, cmd: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:

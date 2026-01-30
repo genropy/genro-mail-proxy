@@ -53,7 +53,7 @@ dependencies = [
 ]
 
 [project.scripts]
-mail-proxy = "core.mail_proxy.cli:main"
+mail-proxy = "core.mail_proxy:main"
 
 [project.optional-dependencies]
 dev = [
@@ -154,10 +154,8 @@ files = ["src/core", "src/enterprise"]
 source = ["src/core", "src/enterprise"]
 branch = true
 omit = [
-    "src/core/mail_proxy/forms.py",   # Interactive REPL forms
-    "src/core/mail_proxy/server.py",  # Uvicorn entry point
-    "src/core/mail_proxy/cli.py",     # Interactive CLI commands
-    "src/core/mail_proxy/core/event_reporting.py",  # Mixin tested via MailProxy (coverage can't track)
+    "src/core/mail_proxy/interface/forms.py",   # Interactive REPL forms
+    "src/core/mail_proxy/server.py",            # Uvicorn entry point
 ]
 
 [tool.coverage.report]

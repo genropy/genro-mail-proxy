@@ -374,6 +374,7 @@ def create_app(
         svc: MailProxy instance implementing business logic.
         api_token: Optional secret for X-API-Token header authentication.
         lifespan: Optional lifespan context manager for startup/shutdown.
+            If None, creates default lifespan that starts/stops the proxy.
         tenant_tokens_enabled: When True, enables per-tenant API keys.
 
     Returns:
@@ -381,6 +382,26 @@ def create_app(
     """
     global _service
     _service = svc
+
+    # Create default lifespan if not provided
+    if lifespan is None:
+        from contextlib import asynccontextmanager
+        from collections.abc import AsyncGenerator
+
+        @asynccontextmanager
+        async def default_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+            """Default lifespan: start and stop the MailProxy service."""
+            logger.info("Starting mail-proxy service...")
+            await svc.start()
+            logger.info("Mail-proxy service started")
+            try:
+                yield
+            finally:
+                logger.info("Stopping mail-proxy service...")
+                await svc.stop()
+                logger.info("Mail-proxy service stopped")
+
+        lifespan = default_lifespan
 
     app = FastAPI(title="Async Mail Service", lifespan=lifespan)
     app.state.api_token = api_token

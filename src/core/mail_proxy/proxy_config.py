@@ -1,10 +1,34 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
-"""Configuration dataclasses for MailProxy.
+"""Configuration dataclasses for MailProxy (Community Edition).
 
-Provides nested configuration structure for clean parameter organization:
-- proxy.config.timing.send_loop_interval
-- proxy.config.queue.max_enqueue_batch
-- proxy.config.concurrency.max_sends
+This module defines the configuration hierarchy for genro-mail-proxy.
+ProxyConfig is the single entry point for all configuration, organizing
+settings into logical nested groups (timing, queue, concurrency, etc.).
+
+Architecture:
+    ProxyConfig is used by MailProxyBase (and thus MailProxy) to configure
+    the service. It is CE-only: Enterprise Edition does not extend these
+    dataclasses but rather stores EE-specific config in the database
+    (via InstanceTable_EE for bounce detection).
+
+Usage:
+    config = ProxyConfig(
+        db_path="/data/mail.db",
+        timing=TimingConfig(send_loop_interval=1.0),
+        concurrency=ConcurrencyConfig(max_sends=20),
+    )
+    proxy = MailProxy(config=config)
+
+    # Access nested config
+    interval = proxy.config.timing.send_loop_interval
+
+Nested Config Classes:
+    - TimingConfig: Intervals, timeouts, retention periods
+    - QueueConfig: Queue sizes, batch limits
+    - ConcurrencyConfig: Parallelism limits (sends, attachments)
+    - ClientSyncConfig: Upstream reporting (URL, auth)
+    - RetryConfig: Retry behavior (max attempts, delays)
+    - CacheConfig: Attachment cache (memory/disk tiers)
 """
 
 from __future__ import annotations
@@ -15,7 +39,7 @@ from typing import Any, Callable, Awaitable
 
 @dataclass
 class TimingConfig:
-    """Timing and interval settings."""
+    """Timing and interval settings for the dispatch service."""
 
     send_loop_interval: float = 0.5
     """Seconds between SMTP dispatch loop iterations."""
@@ -29,7 +53,7 @@ class TimingConfig:
 
 @dataclass
 class QueueConfig:
-    """Queue size and batch settings."""
+    """Queue sizes and batch limits for message processing."""
 
     result_size: int = 1000
     """Maximum size of the delivery result queue."""
@@ -46,7 +70,7 @@ class QueueConfig:
 
 @dataclass
 class ConcurrencyConfig:
-    """Concurrency limits."""
+    """Parallelism limits for SMTP sends and attachment fetches."""
 
     max_sends: int = 10
     """Maximum concurrent SMTP sends globally."""
@@ -60,7 +84,7 @@ class ConcurrencyConfig:
 
 @dataclass
 class ClientSyncConfig:
-    """Client synchronization settings."""
+    """Upstream delivery report synchronization settings."""
 
     url: str | None = None
     """URL for posting delivery reports to upstream service."""
@@ -77,7 +101,7 @@ class ClientSyncConfig:
 
 @dataclass
 class RetryConfig:
-    """Retry behavior settings."""
+    """SMTP retry behavior with exponential backoff."""
 
     max_retries: int = 3
     """Maximum retry attempts."""
@@ -88,7 +112,7 @@ class RetryConfig:
 
 @dataclass
 class CacheConfig:
-    """Configuration for attachment cache."""
+    """Two-tier attachment cache configuration (memory + disk)."""
 
     memory_max_mb: float = 50.0
     """Max memory cache size in MB."""
@@ -116,14 +140,32 @@ class CacheConfig:
 
 @dataclass
 class ProxyConfig:
-    """Main configuration container for MailProxy.
+    """Main configuration container for MailProxy (CE).
 
-    Groups all configuration into logical nested structures:
-    - timing: Intervals and timeouts
-    - queue: Queue sizes and batch limits
-    - concurrency: Parallelism limits
-    - client_sync: Upstream reporting settings
-    - retry: Retry behavior
+    Single entry point for all proxy configuration. Groups settings into
+    logical nested structures for clean organization and access.
+
+    This class is CE-only. Enterprise Edition stores additional config
+    (bounce detection, PEC) in the database via table extensions.
+
+    Nested Groups:
+        timing: Intervals, timeouts, retention periods
+        queue: Queue sizes, batch limits
+        concurrency: Parallelism limits (sends, attachments)
+        client_sync: Upstream reporting (URL, auth)
+        retry: Retry behavior (max attempts, delays)
+        cache: Attachment cache (memory/disk tiers)
+
+    Top-Level Settings:
+        db_path: SQLite/PostgreSQL database path
+        instance_name: Service identifier for display
+        port: Default API server port
+        api_token: Optional bearer token for API auth
+        default_priority: Default message priority (0-3)
+        test_mode: Disable auto-processing for tests
+        log_delivery_activity: Verbose delivery logging
+        start_active: Start processing immediately
+        report_delivery_callable: Custom delivery report handler
 
     Example:
         config = ProxyConfig(
@@ -132,13 +174,20 @@ class ProxyConfig:
             concurrency=ConcurrencyConfig(max_sends=20),
         )
         proxy = MailProxy(config=config)
-
-        # Access nested config
         interval = proxy.config.timing.send_loop_interval
     """
 
     db_path: str = "/data/mail_service.db"
     """SQLite database path for persistence."""
+
+    instance_name: str = "mail-proxy"
+    """Instance name for display and identification."""
+
+    port: int = 8000
+    """Default port for API server."""
+
+    api_token: str | None = None
+    """API authentication token. If None, no auth required."""
 
     timing: TimingConfig = field(default_factory=TimingConfig)
     """Timing and interval settings."""

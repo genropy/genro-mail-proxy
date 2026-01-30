@@ -1,46 +1,52 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
-"""Core orchestration logic for the asynchronous mail dispatcher.
+"""MailProxy: runtime layer with SMTP sending, background loops, and metrics.
 
-This module provides the MailProxy class, the central coordinator for
-the email dispatch service. It orchestrates all major subsystems including:
+MailProxy extends MailProxyBase with the full runtime for email dispatch:
 
-- Message queue management and priority-based scheduling
-- SMTP delivery with connection pooling
-- Per-account rate limiting
-- Automatic retry with exponential backoff
-- Delivery report generation and client notification
-- Attachment fetching from storage backends
+Components:
+    - SmtpSender: Connection pool, rate limiting, dispatch loop
+    - ClientReporter: Delivery report sync to upstream services
+    - AttachmentManager: Fetch attachments with two-tier cache
+    - Prometheus MailMetrics: Counters and gauges for monitoring
 
-The core runs background loops for continuous message processing and
-periodic maintenance tasks. It exposes a command-based API for external
-control and integrates with Prometheus for metrics collection.
+Class Hierarchy:
+    MailProxyBase (proxy_base.py): config, db, tables, endpoints, api/cli
+        └── MailProxy (this class): +SmtpSender, +ClientReporter, +metrics
+            └── MailProxy with MailProxy_EE mixin: +bounce detection (EE)
 
-Example:
-    Running the mail dispatcher (recommended)::
+EE Hook Methods (CE stubs, overridden by MailProxy_EE):
+    - __init_proxy_ee__(): Initialize EE state (bounce_receiver, _bounce_config)
+    - _start_proxy_ee(): Start bounce poller background task
+    - _stop_proxy_ee(): Stop bounce poller
 
-        from mail_proxy.core import MailProxy
+Command Handling:
+    handle_command() is the entry point for external control. Commands are
+    routed to local handlers (runtime-dependent) or EndpointDispatcher (CRUD).
 
-        # Recommended: use create() for automatic initialization
-        proxy = await MailProxy.create(
-            db_path="/data/mail.db",
-            start_active=True,
-            client_sync_url="https://api.example.com/delivery-report"
-        )
-        # Ready to use immediately
+    Local commands (require runtime state):
+        run now, listTenantsSyncStatus, addMessages, deleteMessages,
+        cleanupMessages, deleteAccount
 
-        # To stop gracefully
-        await proxy.stop()
+    Delegated commands (via EndpointDispatcher):
+        addTenant, getTenant, listTenants, updateTenant, deleteTenant,
+        addAccount, listAccounts, getAccount, ...
 
-    Alternative pattern for delayed startup::
+Background Tasks:
+    - SmtpSender.dispatch_loop: Fetch pending messages, send via SMTP
+    - ClientReporter.sync_loop: Report delivery events to upstream
 
-        proxy = MailProxy(db_path="/data/mail.db")
-        # ... additional setup ...
-        await proxy.start()
+Usage (recommended factory):
+    proxy = await MailProxy.create(db_path="/data/mail.db", start_active=True)
+    await proxy.stop()
 
-Attributes:
-    PRIORITY_LABELS: Mapping of priority integers to human-readable labels.
-    LABEL_TO_PRIORITY: Reverse mapping from labels to priority integers.
-    DEFAULT_PRIORITY: Default message priority (2 = "medium").
+Usage (via API property):
+    proxy = MailProxy(config=ProxyConfig(db_path="/data/mail.db"))
+    app = proxy.api  # Lifespan calls start()/stop() automatically
+
+Module Constants:
+    PRIORITY_LABELS: {0: "immediate", 1: "high", 2: "medium", 3: "low"}
+    LABEL_TO_PRIORITY: Reverse mapping
+    DEFAULT_PRIORITY: 2 (medium)
 """
 
 from __future__ import annotations
@@ -72,58 +78,69 @@ DEFAULT_PRIORITY = 2
 
 
 class MailProxy(MailProxyBase):
-    """Central orchestrator for the asynchronous mail dispatch service.
+    """Runtime layer: SMTP sending, background loops, metrics, command handling.
 
-    Coordinates all aspects of email delivery including message queue
-    management, SMTP connections, rate limiting, retry logic, and
-    delivery reporting. Runs background loops for continuous message
-    processing and maintenance.
+    Extends MailProxyBase with:
+    - SmtpSender: SMTP connection pool, rate limiter, dispatch loop
+    - ClientReporter: Delivery report sync loop
+    - AttachmentManager: Fetch attachments with caching
+    - MailMetrics: Prometheus counters and gauges
 
-    The core provides a command-based interface for external control,
-    supporting operations like adding messages, managing SMTP accounts,
-    and controlling the scheduler state.
+    Class Attributes:
+        is_enterprise: True when EE modules installed (set dynamically)
 
-    Attributes:
-        is_enterprise: True if Enterprise Edition features are available.
-        default_host: Default SMTP server hostname when no account specified.
-        default_port: Default SMTP server port when no account specified.
-        default_user: Default SMTP username when no account specified.
-        default_password: Default SMTP password when no account specified.
-        default_use_tls: Whether to use TLS for default SMTP connection.
-        logger: Logger instance for diagnostic output.
-        pool: SMTP connection pool for connection reuse.
-        persistence: Database persistence layer for message and account storage.
-        rate_limiter: Per-account rate limiting controller.
-        metrics: Prometheus metrics collector.
-        attachments: Attachment manager for fetching email attachments.
+    Instance Attributes (from base):
+        config: ProxyConfig instance
+        db: SqlDb with autodiscovered tables
+        endpoints: Dict of endpoint instances
+
+    Instance Attributes (runtime):
+        smtp_sender: SmtpSender instance (pool, rate_limiter, dispatch)
+        client_reporter: ClientReporter instance (sync loop)
+        attachments: AttachmentManager instance
+        metrics: MailMetrics instance
+        logger: Logger for diagnostics
+
+    Compatibility Properties (delegate to smtp_sender):
+        pool: SMTP connection pool
+        rate_limiter: Per-account rate limiter
     """
 
-    # Edition flag: True when Enterprise Edition modules are available.
-    # This will be set dynamically in mail_proxy/__init__.py when EE is installed.
-    is_enterprise: bool = False
+    # -------------------------------------------------------------------------
+    # Class attributes
+    # -------------------------------------------------------------------------
 
-    # Compatibility properties - delegate to smtp_sender
+    is_enterprise: bool = False
+    """True when EE modules installed. Set dynamically in mail_proxy/__init__.py."""
+
+    # -------------------------------------------------------------------------
+    # Compatibility properties (delegate to smtp_sender)
+    # -------------------------------------------------------------------------
+
     @property
     def pool(self):
-        """SMTP connection pool (delegated to smtp_sender)."""
+        """SMTP connection pool (delegate to smtp_sender.pool)."""
         return self.smtp_sender.pool
 
     @property
     def rate_limiter(self):
-        """Rate limiter (delegated to smtp_sender)."""
+        """Per-account rate limiter (delegate to smtp_sender.rate_limiter)."""
         return self.smtp_sender.rate_limiter
 
-    # EE hook methods - overridden by MailProxy_EE mixin when EE is installed
+    # -------------------------------------------------------------------------
+    # EE hook methods (CE stubs, overridden by MailProxy_EE mixin)
+    # -------------------------------------------------------------------------
+
     def __init_proxy_ee__(self) -> None:
-        """Initialize EE state. Overridden by MailProxy_EE."""
+        """Initialize EE state (bounce_receiver, _bounce_config). CE stub."""
         pass
 
     async def _start_proxy_ee(self) -> None:
-        """Start EE components. Overridden by MailProxy_EE."""
+        """Start EE background tasks (bounce poller). CE stub."""
         pass
 
     async def _stop_proxy_ee(self) -> None:
-        """Stop EE components. Overridden by MailProxy_EE."""
+        """Stop EE background tasks. CE stub."""
         pass
 
     def __init__(
@@ -321,7 +338,10 @@ class MailProxy(MailProxyBase):
         await instance.start()
         return instance
 
-    # --------------------------------------------------------------------- utils
+    # -------------------------------------------------------------------------
+    # Utility methods (static)
+    # -------------------------------------------------------------------------
+
     @staticmethod
     def _utc_now_iso() -> str:
         """Return the current UTC timestamp as ISO-8601 string.
@@ -454,7 +474,9 @@ class MailProxy(MailProxyBase):
         "suspend", "activate",
     })
 
-    # ------------------------------------------------------------------ commands
+    # -------------------------------------------------------------------------
+    # Command handling (public API)
+    # -------------------------------------------------------------------------
     async def handle_command(self, cmd: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         """Execute an external control command.
 
@@ -799,7 +821,10 @@ class MailProxy(MailProxyBase):
             return False, "account not found for tenant"
         return True, None
 
-    # ----------------------------------------------------------------- lifecycle
+    # -------------------------------------------------------------------------
+    # Lifecycle (start/stop)
+    # -------------------------------------------------------------------------
+
     async def start(self) -> None:
         """Start the background scheduler and maintenance tasks.
 
@@ -831,7 +856,10 @@ class MailProxy(MailProxyBase):
         await self._stop_proxy_ee()
         await self.db.adapter.close()
 
-    # ----------------------------------------------------------------- messaging
+    # -------------------------------------------------------------------------
+    # Messaging and metrics (internal)
+    # -------------------------------------------------------------------------
+
     async def results(self):
         """Async generator that yields delivery result events.
 

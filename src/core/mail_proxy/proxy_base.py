@@ -1,19 +1,44 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
-"""Base class for MailProxy with database, tables, and endpoints.
+"""Base class for MailProxy: database, tables, endpoints, and interface factories.
 
-Provides the foundation for MailProxy:
-- Configuration via ProxyConfig
-- Database with autodiscovered tables
-- Endpoint registry with autodiscovered endpoints
-- Database initialization and migrations
+MailProxyBase is the foundation layer of genro-mail-proxy, providing:
 
-This class can be used directly for testing without the full MailProxy
-runtime (SMTP pool, background loops, etc.).
+1. Configuration: ProxyConfig instance at self.config
+2. Database: SqlDb at self.db with autodiscovered Table classes
+3. Endpoints: Registry at self.endpoints with autodiscovered Endpoint classes
+4. Interfaces: Lazy `api` (FastAPI) and `cli` (Click) properties
 
-Example (testing):
+Class Hierarchy:
+    MailProxyBase (this class)
+        └── MailProxy (proxy.py): adds SMTP sender, background loops, metrics
+            └── MailProxy with MailProxy_EE mixin: adds bounce detection (EE)
+
+Discovery Mechanism:
+    Tables from `core.mail_proxy.entities.*/table.py` are composed with
+    optional EE mixins from `enterprise.mail_proxy.entities.*/table_ee.py`.
+    Endpoints follow the same pattern with `endpoint.py` and `endpoint_ee.py`.
+
+    Discovered entities (CE):
+        - tenants: Multi-tenant isolation
+        - accounts: SMTP account configuration
+        - messages: Message queue with priority
+        - message_events: Delivery event history
+        - command_log: API audit trail
+        - instance: Service-level configuration
+
+    EE extensions (when enterprise package installed):
+        - accounts: +PEC (certified email) fields
+        - tenants: +API key management
+        - instance: +Bounce detection config
+
+Usage (testing without runtime):
     proxy = MailProxyBase(db_path=":memory:")
     await proxy.init()
     await proxy.db.table("tenants").add({"id": "t1", "name": "Test"})
+
+Usage (production via proxy.api):
+    proxy = MailProxy(config=ProxyConfig(db_path="/data/mail.db"))
+    app = proxy.api  # FastAPI app with auto-start/stop lifespan
 """
 
 from __future__ import annotations
@@ -21,12 +46,16 @@ from __future__ import annotations
 import importlib
 import logging
 import pkgutil
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sql import SqlDb
 
 from .interface import BaseEndpoint
 from .proxy_config import ProxyConfig
+
+if TYPE_CHECKING:
+    import click
+    from fastapi import FastAPI
 
 # Packages to scan for entities
 _CE_ENTITIES_PACKAGE = "core.mail_proxy.entities"
@@ -34,14 +63,18 @@ _EE_ENTITIES_PACKAGE = "enterprise.mail_proxy.entities"
 
 
 class MailProxyBase:
-    """Base class with database, tables, and endpoints.
+    """Foundation layer: config, database, tables, endpoints, interface factories.
 
-    Provides:
-    - config: ProxyConfig instance
-    - db: SqlDb with autodiscovered tables
-    - endpoints: dict of endpoint instances by name
+    Attributes:
+        config: ProxyConfig instance with all configuration
+        db: SqlDb with autodiscovered Table classes (CE + EE mixins)
+        endpoints: Dict of Endpoint instances keyed by name
 
-    Subclassed by MailProxy which adds SMTP, loops, rate limiting, etc.
+    Properties:
+        api: FastAPI app (lazy, created on first access)
+        cli: Click CLI group (lazy, created on first access)
+
+    Subclassed by MailProxy which adds SMTP sender, background loops, etc.
     """
 
     def __init__(
@@ -66,7 +99,7 @@ class MailProxyBase:
         self._discover_endpoints()
 
     def _discover_tables(self) -> None:
-        """Autodiscover and register table classes from entities/ directories."""
+        """Autodiscover Table classes from entities/ and compose with EE mixins."""
         ce_modules = self._find_entity_modules(_CE_ENTITIES_PACKAGE, "table")
         ee_modules = self._find_entity_modules(_EE_ENTITIES_PACKAGE, "table_ee")
 
@@ -90,7 +123,7 @@ class MailProxyBase:
             self.db.add_table(ce_class)
 
     def _discover_endpoints(self) -> None:
-        """Autodiscover and instantiate endpoint classes from entities/ directories."""
+        """Autodiscover Endpoint classes and compose with EE mixins."""
         for endpoint_class in BaseEndpoint.discover():
             table = self.db.table(endpoint_class.name)
             # InstanceEndpoint needs proxy reference, others just need table
@@ -106,7 +139,7 @@ class MailProxyBase:
         return self.endpoints[name]
 
     async def init(self) -> None:
-        """Initialize database: connect, create schema, run migrations."""
+        """Initialize database: connect, create tables, run migrations, detect edition."""
         await self.db.connect()
         await self.db.check_structure()
 
@@ -137,7 +170,7 @@ class MailProxyBase:
         await self._init_edition()
 
     async def _init_edition(self) -> None:
-        """Initialize edition based on existing data and installed modules."""
+        """Detect CE/EE mode based on existing data and installed modules."""
         from . import HAS_ENTERPRISE
 
         tenants_table = self.db.table('tenants')
@@ -160,11 +193,11 @@ class MailProxyBase:
         await self.db.close()
 
     # -------------------------------------------------------------------------
-    # Discovery helpers
+    # Discovery helpers (private)
     # -------------------------------------------------------------------------
 
     def _find_entity_modules(self, base_package: str, module_name: str) -> dict[str, Any]:
-        """Find entity modules in a package."""
+        """Scan package for entity subpackages containing module_name."""
         result: dict[str, Any] = {}
         try:
             package = importlib.import_module(base_package)
@@ -187,7 +220,7 @@ class MailProxyBase:
         return result
 
     def _get_class_from_module(self, module: Any, class_suffix: str) -> type | None:
-        """Extract a class from module by suffix pattern."""
+        """Extract CE Table/Endpoint class by suffix (excludes _EE mixins)."""
         for attr_name in dir(module):
             if attr_name.startswith("_"):
                 continue
@@ -203,7 +236,7 @@ class MailProxyBase:
         return None
 
     def _get_ee_mixin_from_module(self, module: Any, class_suffix: str) -> type | None:
-        """Extract an EE mixin class from module."""
+        """Extract EE mixin class (suffix _EE) for composition with CE class."""
         for name in dir(module):
             if name.startswith("_"):
                 continue
@@ -211,6 +244,92 @@ class MailProxyBase:
             if isinstance(obj, type) and name.endswith(class_suffix):
                 return obj
         return None
+
+    # -------------------------------------------------------------------------
+    # Interface factories (lazy properties)
+    # -------------------------------------------------------------------------
+
+    @property
+    def api(self) -> "FastAPI":
+        """FastAPI app with all endpoints, auth middleware, and lifespan.
+
+        Created on first access. Includes default lifespan that calls
+        proxy.start() on startup and proxy.stop() on shutdown.
+
+        Usage:
+            uvicorn core.mail_proxy.server:app
+        """
+        if not hasattr(self, "_api") or self._api is None:
+            from .interface import create_app
+            self._api = create_app(self, api_token=self.config.api_token)
+        return self._api
+
+    @property
+    def cli(self) -> "click.Group":
+        """Click CLI group with endpoint commands and service commands.
+
+        Created on first access. Includes:
+        - Endpoint commands: tenants, accounts, messages, instance, command_log
+        - Service commands: serve, connect, stats, token, run-now
+
+        Usage:
+            mail-proxy --help
+        """
+        if not hasattr(self, "_cli") or self._cli is None:
+            self._cli = self._create_cli()
+        return self._cli
+
+    def _create_cli(self) -> "click.Group":
+        """Build Click CLI: endpoint commands + service commands (serve, etc.)."""
+        import click
+
+        from .interface import (
+            add_connect_command,
+            add_run_now_command,
+            add_send_command,
+            add_stats_command,
+            add_token_command,
+            register_cli_endpoint,
+        )
+
+        @click.group()
+        @click.version_option()
+        def cli() -> None:
+            """Mail-Proxy: Asynchronous email dispatch service."""
+            pass
+
+        # Register endpoint-based commands (tenants, accounts, messages, instance)
+        for endpoint in self.endpoints.values():
+            register_cli_endpoint(cli, endpoint)
+
+        # Add special commands
+        def get_url() -> str:
+            return f"http://localhost:{self.config.port}"
+
+        def get_token() -> str | None:
+            return self.config.api_token
+
+        add_connect_command(cli, get_url, get_token, self.config.instance_name)
+        add_stats_command(cli, self.db)
+        add_token_command(cli, self.db)
+        add_run_now_command(cli, get_url, get_token)
+
+        # Add serve command
+        @cli.command("serve")
+        @click.option("--host", default="0.0.0.0", help="Bind host")
+        @click.option("--port", "-p", default=self.config.port, help="Bind port")
+        @click.option("--reload", is_flag=True, help="Enable auto-reload")
+        def serve_cmd(host: str, port: int, reload: bool) -> None:
+            """Start the API server."""
+            import uvicorn
+            uvicorn.run(
+                "core.mail_proxy.server:app",
+                host=host,
+                port=port,
+                reload=reload,
+            )
+
+        return cli
 
 
 __all__ = ["MailProxyBase"]
