@@ -52,7 +52,8 @@ async def pg_db(pg_url: str) -> AsyncGenerator:
     await proxy.db.connect()
 
     # Drop all tables first to ensure clean state (CASCADE handles FK order)
-    for table_name in ["message_events", "messages", "accounts", "tenants", "storage_nodes", "instance", "command_log"]:
+    # Include test tables that may be created by tests
+    for table_name in ["test_items", "auto_items", "no_pk_items", "message_events", "messages", "accounts", "tenants", "storage_nodes", "instance", "command_log"]:
         with contextlib.suppress(Exception):
             await proxy.db.execute(f'DROP TABLE IF EXISTS "{table_name}" CASCADE')
 
@@ -65,8 +66,8 @@ async def pg_db(pg_url: str) -> AsyncGenerator:
 
     yield proxy.db
 
-    # Cleanup: drop all tables
-    for table_name in ["message_events", "messages", "accounts", "tenants", "storage_nodes", "instance", "command_log"]:
+    # Cleanup: drop all tables (including test tables)
+    for table_name in ["test_items", "auto_items", "no_pk_items", "message_events", "messages", "accounts", "tenants", "storage_nodes", "instance", "command_log"]:
         with contextlib.suppress(Exception):
             await proxy.db.execute(f'DROP TABLE IF EXISTS "{table_name}" CASCADE')
 

@@ -29,15 +29,13 @@ class MockDb:
         }
         self.adapter = MagicMock()
         self.adapter.close = AsyncMock()
+        self.add_table = MagicMock()  # Track calls to add_table
+        self.tables = {}  # For endpoint discovery
 
     def table(self, name):
         if name not in self._tables:
             self._tables[name] = MagicMock()
         return self._tables[name]
-
-    def add_table(self, table_class):
-        """Mock add_table - does nothing."""
-        pass
 
 
 class TestPriorityConstants:
@@ -652,3 +650,270 @@ class TestMailProxyCreateFactory:
             proxy = await MailProxy.create()
             mock_start.assert_called_once()
             assert isinstance(proxy, MailProxy)
+
+
+class TestMailProxyBaseEncryptionKey:
+    """Tests for encryption key loading in MailProxyBase."""
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_encryption_key_from_env_var(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """Encryption key is loaded from MAIL_PROXY_ENCRYPTION_KEY env var."""
+        import base64
+        import os
+
+        mock_db_cls.return_value = MockDb()
+
+        # Generate a valid 32-byte key
+        key = b"0123456789abcdef0123456789abcdef"
+        key_b64 = base64.b64encode(key).decode()
+
+        with patch.dict(os.environ, {"MAIL_PROXY_ENCRYPTION_KEY": key_b64}):
+            proxy = MailProxy()
+            assert proxy.encryption_key == key
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_encryption_key_invalid_base64_ignored(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """Invalid base64 in env var is silently ignored."""
+        import os
+
+        mock_db_cls.return_value = MockDb()
+
+        with patch.dict(os.environ, {"MAIL_PROXY_ENCRYPTION_KEY": "not-valid-base64!!!"}):
+            proxy = MailProxy()
+            assert proxy.encryption_key is None
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_encryption_key_wrong_length_ignored(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """Key with wrong length is silently ignored."""
+        import base64
+        import os
+
+        mock_db_cls.return_value = MockDb()
+
+        # Generate a key with wrong length (16 bytes instead of 32)
+        key = b"0123456789abcdef"  # 16 bytes
+        key_b64 = base64.b64encode(key).decode()
+
+        with patch.dict(os.environ, {"MAIL_PROXY_ENCRYPTION_KEY": key_b64}):
+            proxy = MailProxy()
+            assert proxy.encryption_key is None
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_encryption_key_from_secrets_file(self, mock_db_cls, mock_reporter_cls, mock_sender_cls, tmp_path):
+        """Encryption key is loaded from secrets file when env var not set."""
+        import os
+
+        mock_db_cls.return_value = MockDb()
+
+        # Create a mock secrets file
+        key = b"0123456789abcdef0123456789abcdef"
+        secrets_path = tmp_path / "encryption_key"
+        secrets_path.write_bytes(key + b"\n")  # With trailing newline
+
+        # We need to mock the Path class used inside _load_encryption_key
+        # The method imports Path from pathlib inside the function
+        mock_path_instance = MagicMock()
+        mock_path_instance.exists.return_value = True
+        mock_path_instance.read_bytes.return_value = key + b"\n"
+
+        with patch.dict(os.environ, {}, clear=True), \
+             patch('pathlib.Path') as mock_path_cls:
+            mock_path_cls.return_value = mock_path_instance
+
+            proxy = MailProxy()
+            assert proxy.encryption_key == key
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_encryption_key_secrets_file_wrong_length(self, mock_db_cls, mock_reporter_cls, mock_sender_cls, tmp_path):
+        """Secrets file with wrong key length is ignored."""
+        import os
+
+        mock_db_cls.return_value = MockDb()
+
+        # Create a mock secrets file with wrong length
+        mock_path_instance = MagicMock()
+        mock_path_instance.exists.return_value = True
+        mock_path_instance.read_bytes.return_value = b"short"
+
+        with patch.dict(os.environ, {}, clear=True), \
+             patch('pathlib.Path') as mock_path_cls:
+            mock_path_cls.return_value = mock_path_instance
+
+            proxy = MailProxy()
+            assert proxy.encryption_key is None
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_set_encryption_key_programmatically(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """Encryption key can be set programmatically."""
+        mock_db_cls.return_value = MockDb()
+
+        proxy = MailProxy()
+        key = b"0123456789abcdef0123456789abcdef"
+        proxy.set_encryption_key(key)
+        assert proxy.encryption_key == key
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_set_encryption_key_validates_length(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """set_encryption_key raises ValueError for wrong length."""
+        mock_db_cls.return_value = MockDb()
+
+        proxy = MailProxy()
+        with pytest.raises(ValueError, match="32 bytes"):
+            proxy.set_encryption_key(b"short")
+
+
+class TestMailProxyBaseTableDiscovery:
+    """Tests for EE mixin discovery and table composition in MailProxyBase."""
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_discover_tables_finds_ce_tables(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """Table discovery finds CE tables from entities package."""
+        mock_db_cls.return_value = MockDb()
+
+        proxy = MailProxy()
+
+        # Should have called add_table for discovered tables
+        assert mock_db_cls.return_value.add_table.called
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_find_entity_modules_handles_import_error(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """_find_entity_modules handles missing packages gracefully."""
+        mock_db_cls.return_value = MockDb()
+
+        proxy = MailProxy()
+
+        # Test with non-existent package
+        result = proxy._find_entity_modules("nonexistent.package", "table")
+        assert result == {}
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_get_class_from_module_filters_private(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """_get_class_from_module filters out private classes."""
+        mock_db_cls.return_value = MockDb()
+
+        proxy = MailProxy()
+
+        # Create a mock module with private and public classes
+        mock_module = MagicMock()
+        mock_module._PrivateTable = type("_PrivateTable", (), {"name": "private"})
+        mock_module.PublicTable = type("PublicTable", (), {"name": "public"})
+        # Add dir() result
+        mock_module.__dir__ = lambda: ["_PrivateTable", "PublicTable"]
+        type(mock_module).__iter__ = lambda self: iter(["_PrivateTable", "PublicTable"])
+
+        # Private class should not be returned
+        # Use a fresh mock module that doesn't have classes matching our pattern
+        simple_module = type('SimpleModule', (), {})()
+        simple_module._SomeTable = type("_SomeTable", (), {"name": "test"})
+        result = proxy._get_class_from_module(simple_module, "Table")
+        assert result is None  # Private classes are filtered
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_get_ee_mixin_from_module_extracts_mixin(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """_get_ee_mixin_from_module extracts classes with _EE suffix."""
+        mock_db_cls.return_value = MockDb()
+
+        proxy = MailProxy()
+
+        # Create a mock module with _EE mixin
+        mock_module = type('MockModule', (), {})()
+        mock_module.SomeTable_EE = type("SomeTable_EE", (), {})
+
+        result = proxy._get_ee_mixin_from_module(mock_module, "_EE")
+        assert result is not None
+        assert result.__name__ == "SomeTable_EE"
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_get_ee_mixin_from_module_returns_none_if_not_found(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """_get_ee_mixin_from_module returns None when no mixin found."""
+        mock_db_cls.return_value = MockDb()
+
+        proxy = MailProxy()
+
+        # Create a mock module without _EE mixin
+        mock_module = type('MockModule', (), {})()
+        mock_module.SomeTable = type("SomeTable", (), {})
+
+        result = proxy._get_ee_mixin_from_module(mock_module, "_EE")
+        assert result is None
+
+
+class TestMailProxyBaseCli:
+    """Tests for CLI creation in MailProxyBase."""
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_cli_property_creates_click_group(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """cli property creates a Click group on first access."""
+        import click
+
+        mock_db_cls.return_value = MockDb()
+
+        proxy = MailProxy()
+        cli = proxy.cli
+
+        assert isinstance(cli, click.Group)
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_cli_property_is_cached(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """cli property returns same instance on subsequent calls."""
+        mock_db_cls.return_value = MockDb()
+
+        proxy = MailProxy()
+        cli1 = proxy.cli
+        cli2 = proxy.cli
+
+        assert cli1 is cli2
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_cli_has_serve_command(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """CLI includes serve command."""
+        mock_db_cls.return_value = MockDb()
+
+        proxy = MailProxy()
+        cli = proxy.cli
+
+        assert "serve" in cli.commands
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_cli_has_endpoint_commands(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """CLI includes endpoint-based commands."""
+        mock_db_cls.return_value = MockDb()
+
+        proxy = MailProxy()
+        cli = proxy.cli
+
+        # Should have commands for registered endpoints
+        # At minimum should have some commands
+        assert len(cli.commands) > 1  # serve + at least some endpoint commands
