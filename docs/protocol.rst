@@ -44,7 +44,7 @@ REST command surface
      - ``{"ok": true, "active": <bool>}``
    * - ``POST /account`` / ``GET /accounts`` / ``DELETE /account/{id}``
      - Manage SMTP account definitions
-     - :class:`mail_proxy.api.AccountPayload`
+     - See :class:`core.mail_proxy.entities.account.endpoint.AccountEndpoint`
      - Confirmation plus account list
    * - ``POST /commands/delete-messages``
      - Remove messages from the queue
@@ -92,7 +92,7 @@ Message batch payload
      "default_priority": 1
    }
 
-Each entry mirrors :class:`mail_proxy.api.MessagePayload`. Key fields:
+Each entry mirrors the message payload schema. Key fields:
 
 .. list-table::
    :header-rows: 1

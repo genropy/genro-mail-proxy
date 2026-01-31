@@ -12,7 +12,7 @@ The service is composed of the following building blocks:
 * **MailProxy** – orchestrates scheduling, rate limiting, persistence and
   delivery.  It exposes a coroutine-based API (`handle_command`) used by the
   HTTP layer.
-* **REST API** – defined in :mod:`mail_proxy.api`, built with FastAPI
+* **REST API** – defined in :mod:`core.mail_proxy.api_base`, built with FastAPI
   and protected by the ``X-API-Token`` header.
 * **AttachmentManager** – fetches attachments from multiple sources (HTTP endpoints,
   URLs, base64, filesystem) with optional MD5-based caching.
@@ -27,7 +27,7 @@ The service is composed of the following building blocks:
 * **LargeFileStorage** – optional module for uploading large attachments to
   external storage (S3, GCS, Azure, local filesystem) and replacing them with
   download links. Requires ``pip install genro-mail-proxy[large-files]``.
-* **Metrics** – :class:`mail_proxy.prometheus.MailMetrics` exports
+* **Metrics** – :class:`tools.prometheus.metrics.MailMetrics` exports
   Prometheus counters and gauges with the ``gmp_`` prefix.
 
 .. mermaid::
@@ -61,7 +61,7 @@ Request flow
 3. The SMTP dispatch loop repeatedly queries ``messages`` for entries lacking
    ``sent_ts``/``error_ts`` whose ``deferred_ts`` is in the past.  Rate limiting
    can reschedule the delivery by updating ``deferred_ts``.
-4. Delivery uses :mod:`aiosmtplib` via :class:`mail_proxy.smtp_pool.SMTPPool`
+4. Delivery uses :mod:`aiosmtplib` via :class:`core.mail_proxy.smtp.pool.SMTPPool`
    so repeated sends within the same asyncio task can reuse the connection.
 5. Delivery results are buffered in the ``messages`` table (``sent_ts`` /
    ``error_ts`` / ``error``) and streamed to API consumers through
@@ -144,7 +144,7 @@ filesystem, a signed token URL is generated using ``public_base_url``.
 Attachment caching
 ------------------
 
-The :class:`mail_proxy.attachments.cache.TieredCache` provides two-level
+The :class:`core.mail_proxy.smtp.cache.TieredCache` provides two-level
 caching for attachment content:
 
 * **Level 1 (Memory)**: Fast LRU cache with configurable TTL and size limit

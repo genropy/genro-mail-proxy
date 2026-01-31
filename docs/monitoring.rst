@@ -304,7 +304,7 @@ Configure log level via environment:
 .. code-block:: bash
 
    export LOG_LEVEL=DEBUG
-   uvicorn mail_proxy.server:app --host 0.0.0.0
+   uvicorn core.mail_proxy.server:app --host 0.0.0.0
 
 Or in Docker:
 

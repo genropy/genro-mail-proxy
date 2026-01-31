@@ -226,3 +226,134 @@ This document records key architectural decisions for genro-mail-proxy.
 - Positive: Standard observability
 - Positive: Grafana dashboards out of the box
 - Negative: Metrics endpoint must be secured in production
+
+## ADR-011: Dual-License Package Structure (CE/EE)
+
+**Date**: 2026-01-30
+
+**Status**: Accepted
+
+**Context**: The project uses a dual-license model (Apache 2.0 for core, BSL 1.1 for enterprise). Code needs to be organized to reflect licensing boundaries clearly.
+
+**Decision**: Split source code into two top-level packages under `src/`:
+
+- `src/core/mail_proxy/` - Apache 2.0 licensed core functionality
+- `src/enterprise/mail_proxy/` - BSL 1.1 licensed enterprise features
+
+**Structure**:
+
+```text
+src/
+├── core/
+│   └── mail_proxy/
+│       ├── core/           # proxy.py, dispatcher.py, reporting.py
+│       ├── entities/       # account, tenant, message, instance, command_log
+│       │   └── <entity>/
+│       │       ├── table.py      # Database table class
+│       │       └── endpoint.py   # API endpoint class
+│       ├── smtp/           # sender, pool, cache, retry, rate_limiter
+│       ├── api_base.py     # FastAPI app with endpoint discovery
+│       ├── cli_base.py     # CLI with command discovery
+│       └── server.py       # Uvicorn entry point
+│
+├── enterprise/
+│   └── mail_proxy/
+│       ├── bounce/         # DSN bounce detection
+│       ├── pec/            # Italian certified email
+│       ├── imap/           # IMAP client for bounce polling
+│       ├── attachments/    # Large file storage
+│       └── entities/       # EE entity extensions
+│           └── <entity>/
+│               ├── table_ee.py     # EE table mixin
+│               └── endpoint_ee.py  # EE endpoint mixin
+│
+├── sql/                    # Database abstraction layer
+├── storage/                # Storage node management
+└── tools/                  # Shared utilities
+```
+
+**Rationale**:
+
+- Clear licensing boundary at filesystem level
+- Enterprise features are optional (import fails gracefully if not installed)
+- EE tables/endpoints extend CE via mixins
+- Discovery system (`api_base.py`, `cli_base.py`) auto-detects available features
+
+**Consequences**:
+
+- Positive: Clear separation of licensed code
+- Positive: CE works standalone without EE
+- Positive: Dynamic discovery of available features
+- Negative: More directories to navigate
+
+## ADR-012: Entity Table + Endpoint Pattern
+
+**Date**: 2026-01-30
+
+**Status**: Accepted
+
+**Context**: Entities (account, tenant, message, etc.) need both database persistence and API exposure. The old approach mixed everything in `api.py` (1500+ lines).
+
+**Decision**: Each entity has a dedicated directory with:
+
+- `table.py` - Database operations (CRUD, queries)
+- `endpoint.py` - API exposure (FastAPI routes, validation)
+
+Both are discovered automatically by `api_base.py` and `cli_base.py`.
+
+**Discovery mechanism**:
+
+```python
+# api_base.py discovers endpoints via:
+for entity in entities_dir:
+    endpoint_module = import_module(f"core.mail_proxy.entities.{entity}.endpoint")
+    # Registers routes from endpoint class
+
+    # Also checks for EE extension:
+    try:
+        ee_module = import_module(f"enterprise.mail_proxy.entities.{entity}.endpoint_ee")
+        # Merges EE routes into endpoint
+    except ImportError:
+        pass  # EE not installed, skip
+```
+
+**Rationale**:
+
+- Each file under 300 lines
+- Clear separation of concerns
+- Easy to add new entities
+- EE extends CE non-invasively
+
+**Consequences**:
+
+- Positive: Modular, testable code
+- Positive: Self-documenting structure (entity name = directory name)
+- Negative: More files to maintain
+
+## ADR-013: Uvicorn Entry Point Location
+
+**Date**: 2026-01-30
+
+**Status**: Accepted
+
+**Context**: Docker and production deployments need a consistent entry point for uvicorn.
+
+**Decision**: The uvicorn entry point is `core.mail_proxy.server:app`.
+
+**Usage**:
+
+```bash
+uvicorn core.mail_proxy.server:app --host 0.0.0.0 --port 8000
+```
+
+**Rationale**:
+
+- Located in core (not enterprise) so it works with CE-only installs
+- `server.py` imports `api_base.py` which handles discovery
+- Single entry point for all deployment scenarios
+
+**Consequences**:
+
+- Positive: Consistent entry point across Docker, K8s, dev
+- Positive: Works with CE-only or CE+EE
+- Negative: Must update all deployment configs when changing entry point
