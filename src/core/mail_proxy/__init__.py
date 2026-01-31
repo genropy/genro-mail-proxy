@@ -38,6 +38,10 @@ Note:
     package is installed.
 """
 
+# Import submodules to ensure they are accessible via core.mail_proxy.module
+# This is required for patch() in tests to work correctly
+from . import proxy, proxy_base, proxy_config
+
 # Enterprise Edition detection
 # When EE modules are installed, MailProxy includes enterprise features
 # (multi-tenant API, PEC, bounce detection).
