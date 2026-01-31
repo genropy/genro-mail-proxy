@@ -123,14 +123,14 @@ class TestAccountEndpointViaApi:
         assert len(data) == 2
 
     def test_delete_account(self, client):
-        """DELETE /accounts/delete removes account."""
+        """POST /accounts/delete removes account."""
         # Create
         client.post("/accounts/add", json={
             "id": "smtp1", "tenant_id": "t1", "host": "a.com", "port": 25
         })
 
-        # Delete
-        response = client.delete("/accounts/delete", params={
+        # Delete via POST
+        response = client.post("/accounts/delete", json={
             "tenant_id": "t1",
             "account_id": "smtp1",
         })
@@ -209,17 +209,17 @@ class TestTenantEndpointViaApi:
         assert len(data) >= 2
 
     def test_delete_tenant(self, client):
-        """DELETE /tenants/delete removes tenant."""
+        """POST /tenants/delete removes tenant."""
         client.post("/tenants/add", json={"id": "temp"})
 
-        response = client.delete("/tenants/delete", params={"tenant_id": "temp"})
+        response = client.post("/tenants/delete", json={"tenant_id": "temp"})
         assert response.status_code == 200
 
     def test_update_tenant(self, client):
-        """PATCH /tenants/update modifies tenant."""
+        """POST /tenants/update modifies tenant."""
         client.post("/tenants/add", json={"id": "acme", "name": "Old Name"})
 
-        response = client.request("PATCH", "/tenants/update", json={
+        response = client.post("/tenants/update", json={
             "tenant_id": "acme",
             "name": "New Name",
         })
@@ -396,8 +396,8 @@ class TestInstanceEndpointViaApi:
         assert data["ok"] is True
 
     def test_update_route(self, client):
-        """PATCH /instance/update modifies configuration."""
-        response = client.request("PATCH", "/instance/update", json={"name": "test-instance"})
+        """POST /instance/update modifies configuration."""
+        response = client.post("/instance/update", json={"name": "test-instance"})
         assert response.status_code == 200
         data = response.json()
         assert data["ok"] is True
@@ -460,7 +460,7 @@ class TestRouteGeneration:
         assert "POST" in route_methods.get("/accounts/add", [])
         assert "GET" in route_methods.get("/accounts/get", [])
         assert "GET" in route_methods.get("/accounts/list", [])
-        assert "DELETE" in route_methods.get("/accounts/delete", [])
+        assert "POST" in route_methods.get("/accounts/delete", [])
 
     def test_custom_prefix(self, app, db):
         """Custom prefix changes route paths."""
