@@ -1,0 +1,6 @@
+id,from,to,subject,body,attachment_filename,attachment_path,attachment_mode,expected_status,batch
+MSG-BATCH-001,sender@test.com,recipient1@test.com,Batch 1 Message 1,First batch first message,,,,sent,1
+MSG-BATCH-002,sender@test.com,recipient2@test.com,Batch 1 Message 2,First batch second message,,,,sent,1
+MSG-BATCH-003,sender@test.com,recipient3@test.com,Batch 2 Message 1,Second batch first message,,,,sent,2
+MSG-BATCH-004,sender@test.com,recipient4@test.com,Batch 2 Message 2,Second batch second message,,,,sent,2
+MSG-BATCH-005,sender@test.com,recipient5@test.com,Batch 3 Message 1,Third batch only message,,,,sent,3

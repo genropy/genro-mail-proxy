@@ -54,5 +54,5 @@ def main() -> None:
     """CLI entry point. Creates a MailProxy and runs the CLI."""
     from .proxy import MailProxy
     proxy = MailProxy()
-    proxy.cli()
+    proxy.cli()()
 

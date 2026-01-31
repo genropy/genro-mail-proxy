@@ -1,0 +1,5 @@
+id,from,to,subject,body,attachment_filename,attachment_path,attachment_mode,expected_status
+MSG-INV-001,sender@test.com,valid@test.com,Valid email,This should succeed,,,,sent
+MSG-INV-002,sender@test.com,invalid-no-at,Invalid email,This should fail on validation,,,,error
+MSG-INV-003,sender@test.com,missing-domain@,Invalid email 2,This should also fail,,,,error
+MSG-INV-004,sender@test.com,@no-local-part.com,Invalid email 3,Missing local part,,,,error

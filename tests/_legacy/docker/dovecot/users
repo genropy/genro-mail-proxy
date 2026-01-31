@@ -1,9 +1,0 @@
-# Dovecot passwd-file format users for testing
-# Format: user:password:uid:gid:gecos:home:shell:extra_fields
-# Password is plaintext for testing (use {PLAIN} prefix)
-
-# Bounce mailbox user
-bounces@localhost:{PLAIN}bouncepass:1000:1000:Bounce Mailbox:/var/mail/bounces::
-
-# Test user for general IMAP testing
-testuser@localhost:{PLAIN}testpass:1001:1001:Test User:/var/mail/testuser::

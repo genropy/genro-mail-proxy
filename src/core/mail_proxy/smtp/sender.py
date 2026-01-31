@@ -276,7 +276,7 @@ class SmtpSender:
                 # If messages were sent, trigger immediate client report sync
                 if processed:
                     self.logger.debug("Messages sent, triggering client report sync")
-                    self.proxy._wake_client_event.set()
+                    self.proxy.client_reporter._wake_event.set()
             except Exception as exc:  # pragma: no cover - defensive
                 self.logger.exception("Unhandled error in SMTP dispatch loop: %s", exc)
                 processed = False
@@ -330,7 +330,8 @@ class SmtpSender:
         # Group messages by account_id and apply per-account batch limit
         messages_by_account: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for entry in batch:
-            account_id = entry.get("message", {}).get("account_id") or "default"
+            # account_id is at entry level from fetch_ready, not in message payload
+            account_id = entry.get("account_id") or "default"
             messages_by_account[account_id].append(entry)
 
         # Collect all messages to send, respecting per-account batch limits
@@ -451,7 +452,8 @@ class SmtpSender:
             )
             return
 
-        event = await self._send_with_limits(email_msg, envelope_from, pk, msg_id, message)
+        # Pass entry (with tenant_id, account_id at top level) not just message payload
+        event = await self._send_with_limits(email_msg, envelope_from, pk, msg_id, entry)
         if event:
             await self._publish_result(event)
 
@@ -674,8 +676,11 @@ class SmtpSender:
             AccountConfigurationError: If no account found and no defaults.
         """
         if account_id:
-            acc = await self.db.table("accounts").get(tenant_id, account_id)
-            return acc["host"], int(acc["port"]), acc.get("user"), acc.get("password"), acc
+            try:
+                acc = await self.db.table("accounts").get(tenant_id, account_id)
+                return acc["host"], int(acc["port"]), acc.get("user"), acc.get("password"), acc
+            except ValueError as e:
+                raise AccountConfigurationError(str(e)) from e
         if self.default_host and self.default_port:
             return (
                 self.default_host,

@@ -1,0 +1,5 @@
+id,from,to,subject,body,attachment_filename,attachment_path,attachment_mode,expected_status
+MSG-MIX-001,sender@test.com,recipient@test.com,No attachment,Simple message without attachment,,,,sent
+MSG-MIX-002,sender@test.com,recipient@test.com,Base64 attachment,With inline data,data.txt,VGVzdCBkYXRhIGNvbnRlbnQ=,base64,sent
+MSG-MIX-003,sender@test.com,recipient@test.com,Filesystem attachment,From mounted storage,report.pdf,testmount:docs/report.pdf,storage,sent
+MSG-MIX-004,sender@test.com,recipient@test.com,Endpoint attachment,Fetched on demand,invoice.pdf,doc_id=123,endpoint,sent

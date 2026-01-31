@@ -1,3 +1,0 @@
-This is a small test attachment file.
-Used for integration testing of genro-mail-proxy.
-Size: less than 1KB

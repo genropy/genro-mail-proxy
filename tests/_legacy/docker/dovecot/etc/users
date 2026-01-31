@@ -1,8 +1,0 @@
-# Dovecot passwd-file format users for testing
-# Format: user:password:uid:gid:gecos:home:shell:extra_fields
-
-# Bounce mailbox user (uid/gid 1000 = vmail)
-bounces@localhost:{PLAIN}bouncepass:1000:1000:::/srv/vmail/bounces@localhost::
-
-# Test user for general IMAP testing (uid/gid 1000 = vmail)
-testuser@localhost:{PLAIN}testpass:1000:1000:::/srv/vmail/testuser@localhost::

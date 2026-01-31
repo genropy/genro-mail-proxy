@@ -1,0 +1,86 @@
+# Docker Compose for fullstack SMTP/IMAP/Storage tests
+#
+# Services:
+#   - mailpit: SMTP server (1025) + IMAP (1143) + Web API (8025)
+#   - minio: S3-compatible storage (9000 API, 9001 Console)
+#   - proxy: Mail proxy service with FastAPI
+#
+# Usage:
+#   docker compose up -d
+#   pytest tests/fullstack/ -v
+#   docker compose down
+
+services:
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "1025:1025"   # SMTP
+      - "1143:1143"   # IMAP (for bounce injection)
+      - "8025:8025"   # Web UI + REST API
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8025/api/v1/info"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Console
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  # Create test bucket on startup
+  minio-setup:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set minio http://minio:9000 minioadmin minioadmin;
+      mc mb --ignore-existing minio/test-attachments;
+      mc anonymous set download minio/test-attachments;
+      exit 0;
+      "
+
+  proxy:
+    build:
+      context: ../..
+      dockerfile: tests/fullstack/Dockerfile.proxy
+    ports:
+      - "8000:8000"
+    environment:
+      MAIL_PROXY_DB_PATH: /data/mail.db
+      MAIL_PROXY_SMTP_HOST: mailpit
+      MAIL_PROXY_SMTP_PORT: 1025
+      MAIL_PROXY_IMAP_HOST: mailpit
+      MAIL_PROXY_IMAP_PORT: 1143
+      MAIL_PROXY_TEST_MODE: "true"
+    volumes:
+      - proxy-data:/data
+    depends_on:
+      mailpit:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/instance/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  proxy-data:
+  minio-data:

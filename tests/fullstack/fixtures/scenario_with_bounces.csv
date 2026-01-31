@@ -1,0 +1,6 @@
+id,from,to,subject,body,expected_status,simulate_bounce
+MSG-001,sender@test.com,valid@test.com,Test OK 1,This should be delivered,sent,
+MSG-002,sender@test.com,valid2@test.com,Test OK 2,This should also be delivered,sent,
+MSG-003,sender@test.com,bounce@test.com,Test Bounce Hard,This will hard bounce,bounced,hard
+MSG-004,sender@test.com,soft@test.com,Test Bounce Soft,This will soft bounce,bounced,soft
+MSG-005,sender@test.com,valid3@test.com,Test OK 3,After bounces - should work,sent,

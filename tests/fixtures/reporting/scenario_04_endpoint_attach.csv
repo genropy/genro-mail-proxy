@@ -1,0 +1,3 @@
+id,from,to,subject,body,attachment_filename,attachment_path,attachment_mode,expected_status
+MSG-EP-001,sender@test.com,recipient@test.com,Invoice attached,Your invoice is attached,invoice.pdf,doc_id=INV-2025-001,endpoint,sent
+MSG-EP-002,sender@test.com,recipient@test.com,Contract attached,Please review the contract,contract.pdf,doc_id=CONTRACT-123,endpoint,sent

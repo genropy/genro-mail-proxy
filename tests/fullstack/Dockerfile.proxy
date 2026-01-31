@@ -1,0 +1,39 @@
+# Dockerfile for genro-mail-proxy fullstack tests
+#
+# Builds a minimal image with the proxy service configured
+# to connect to Mailpit for SMTP delivery.
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy project files
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
+
+# Install the package with minimal dependencies
+RUN pip install --no-cache-dir -e .
+
+# Create data directory
+RUN mkdir -p /data
+
+# Environment defaults (overridden by docker-compose)
+ENV MAIL_PROXY_DB_PATH=/data/mail.db
+ENV MAIL_PROXY_SMTP_HOST=mailpit
+ENV MAIL_PROXY_SMTP_PORT=1025
+ENV MAIL_PROXY_TEST_MODE=true
+
+# Expose FastAPI port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=5s --timeout=3s --retries=5 \
+    CMD curl -f http://localhost:8000/instance/health || exit 1
+
+# Start the proxy server using the entry point
+CMD ["mail-proxy", "serve", "--host", "0.0.0.0", "--port", "8000"]
