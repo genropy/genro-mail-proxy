@@ -6,12 +6,13 @@ import time
 import pytest
 
 from core.mail_proxy.proxy_base import MailProxyBase
+from core.mail_proxy.proxy_config import ProxyConfig
 
 
 @pytest.fixture
 async def db(tmp_path):
     """Create database with schema and tenant/account for FK constraints."""
-    proxy = MailProxyBase(db_path=str(tmp_path / "test.db"))
+    proxy = MailProxyBase(ProxyConfig(db_path=str(tmp_path / "test.db")))
     await proxy.db.connect()
     await proxy.db.check_structure()
     # Create tenant and account for FK constraints
@@ -28,7 +29,7 @@ async def db(tmp_path):
 
 async def insert_message(db, msg_id, tenant_id="t1", account_id="a1", **kwargs):
     """Helper to insert a message."""
-    from tools.uid import get_uuid
+    from genro_toolbox import get_uuid
     pk = kwargs.pop("pk", get_uuid())
     await db.table("messages").insert({
         "pk": pk,

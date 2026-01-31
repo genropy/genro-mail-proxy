@@ -52,20 +52,20 @@ Module Constants:
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Any
 
-from .smtp import AttachmentManager, TieredCache
-from .interface import EndpointDispatcher
-import logging
-from .proxy_base import MailProxyBase
-from .reporting import DEFAULT_SYNC_INTERVAL, ClientReporter
-from .proxy_config import ProxyConfig
-from .smtp import AccountConfigurationError, AttachmentTooLargeError, SmtpSender
-from .smtp.retry import DEFAULT_MAX_RETRIES, DEFAULT_RETRY_DELAYS, RetryStrategy
 from tools.prometheus import MailMetrics
+
+from .interface import EndpointDispatcher
+from .proxy_base import MailProxyBase
+from .proxy_config import ProxyConfig
+from .reporting import DEFAULT_SYNC_INTERVAL, ClientReporter
+from .smtp import AccountConfigurationError, AttachmentManager, AttachmentTooLargeError, SmtpSender, TieredCache
+from .smtp.retry import RetryStrategy
 
 PRIORITY_LABELS = {
     0: "immediate",
@@ -145,103 +145,25 @@ class MailProxy(MailProxyBase):
 
     def __init__(
         self,
-        *,
         config: ProxyConfig | None = None,
-        # Legacy parameters for backwards compatibility (deprecated)
-        db_path: str | None = None,
-        logger=None,
+        *,
+        logger: logging.Logger | None = None,
         metrics: MailMetrics | None = None,
-        start_active: bool | None = None,
-        result_queue_size: int | None = None,
-        message_queue_size: int | None = None,
-        queue_put_timeout: float | None = None,
-        max_enqueue_batch: int | None = None,
-        attachment_timeout: int | None = None,
-        client_sync_url: str | None = None,
-        client_sync_user: str | None = None,
-        client_sync_password: str | None = None,
-        client_sync_token: str | None = None,
-        default_priority: int | str | None = None,
-        report_delivery_callable: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
-        send_loop_interval: float | None = None,
-        report_retention_seconds: int | None = None,
-        batch_size_per_account: int = 50,
-        test_mode: bool | None = None,
-        log_delivery_activity: bool | None = None,
-        retry_strategy: RetryStrategy | None = None,
-        max_retries: int | None = None,
-        retry_delays: list[int] | None = None,
-        max_concurrent_sends: int | None = None,
-        max_concurrent_per_account: int | None = None,
-        max_concurrent_attachments: int | None = None,
     ):
-        """Initialize the mail dispatcher core with configuration options.
-
-        Recommended: Use the config parameter with a ProxyConfig instance.
-        Legacy parameters are still supported for backwards compatibility.
+        """Initialize the mail dispatcher with ProxyConfig.
 
         Args:
-            config: ProxyConfig instance with all configuration. If provided,
-                legacy parameters are used as overrides only.
-
-        Legacy Args (deprecated - use config instead):
-            db_path: SQLite database path for persistence.
-            config_path: Optional path to INI config file for attachment settings.
+            config: ProxyConfig instance with all configuration.
+                If None, creates default config.
             logger: Custom logger instance. If None, uses default logger.
             metrics: Prometheus metrics collector. If None, creates new instance.
-            start_active: Whether to start processing messages immediately.
-            result_queue_size: Maximum size of the delivery result queue.
-            message_queue_size: Maximum messages to fetch per SMTP cycle.
-            queue_put_timeout: Timeout in seconds for queue operations.
-            max_enqueue_batch: Maximum messages allowed in single addMessages call.
-            attachment_timeout: Timeout in seconds for fetching attachments.
-            client_sync_url: URL for posting delivery reports to upstream service.
-            client_sync_user: Username for client sync authentication.
-            client_sync_password: Password for client sync authentication.
-            client_sync_token: Bearer token for client sync authentication.
-            default_priority: Default priority for messages without explicit priority.
-            report_delivery_callable: Optional async callable for custom report delivery.
-            send_loop_interval: Seconds between SMTP dispatch loop iterations.
-            report_retention_seconds: How long to retain reported messages.
-            batch_size_per_account: Max messages to send per account per cycle.
-            test_mode: Enable test mode (disables automatic loop processing).
-            log_delivery_activity: Enable verbose delivery activity logging.
-            retry_strategy: RetryStrategy instance for configuring retry behavior.
-            max_retries: Maximum retry attempts.
-            retry_delays: Custom retry delays.
-            max_concurrent_sends: Maximum concurrent SMTP sends globally.
-            max_concurrent_per_account: Maximum concurrent sends per SMTP account.
-            max_concurrent_attachments: Maximum concurrent attachment fetches.
         """
         import math
 
-        # Use provided config or create default
         cfg = config or ProxyConfig()
 
-        # Apply legacy parameter overrides (backwards compatibility)
-        _db_path = db_path if db_path is not None else cfg.db_path
-        _start_active = start_active if start_active is not None else cfg.start_active
-        _result_queue_size = result_queue_size if result_queue_size is not None else cfg.queue.result_size
-        _message_queue_size = message_queue_size if message_queue_size is not None else cfg.queue.message_size
-        _queue_put_timeout = queue_put_timeout if queue_put_timeout is not None else cfg.queue.put_timeout
-        _max_enqueue_batch = max_enqueue_batch if max_enqueue_batch is not None else cfg.queue.max_enqueue_batch
-        _attachment_timeout = attachment_timeout if attachment_timeout is not None else cfg.timing.attachment_timeout
-        _send_loop_interval = send_loop_interval if send_loop_interval is not None else cfg.timing.send_loop_interval
-        _report_retention = report_retention_seconds if report_retention_seconds is not None else cfg.timing.report_retention_seconds
-        _test_mode = test_mode if test_mode is not None else cfg.test_mode
-        _log_activity = log_delivery_activity if log_delivery_activity is not None else cfg.log_delivery_activity
-        _max_sends = max_concurrent_sends if max_concurrent_sends is not None else cfg.concurrency.max_sends
-        _max_per_account = max_concurrent_per_account if max_concurrent_per_account is not None else cfg.concurrency.max_per_account
-        _max_attachments = max_concurrent_attachments if max_concurrent_attachments is not None else cfg.concurrency.max_attachments
-        _default_priority = default_priority if default_priority is not None else cfg.default_priority
-        _client_url = client_sync_url if client_sync_url is not None else cfg.client_sync.url
-        _client_user = client_sync_user if client_sync_user is not None else cfg.client_sync.user
-        _client_password = client_sync_password if client_sync_password is not None else cfg.client_sync.password
-        _client_token = client_sync_token if client_sync_token is not None else cfg.client_sync.token
-        _report_callable = report_delivery_callable if report_delivery_callable is not None else cfg.report_delivery_callable
-
         # Initialize base class (config, db with autodiscovered tables, endpoints)
-        MailProxyBase.__init__(self, config=cfg, db_path=_db_path)
+        MailProxyBase.__init__(self, config=cfg)
 
         self.default_host: str | None = None
         self.default_port: int | None = None
@@ -254,54 +176,47 @@ class MailProxy(MailProxyBase):
 
         # SmtpSender manages pool, rate_limiter, dispatch loop, email building
         self.smtp_sender = SmtpSender(self)
-        self._queue_put_timeout = _queue_put_timeout
-        self._max_enqueue_batch = _max_enqueue_batch
-        self._attachment_timeout = _attachment_timeout
-        base_send_interval = max(0.05, float(_send_loop_interval))
-        self._smtp_batch_size = max(1, int(_message_queue_size))
-        self._report_retention_seconds = _report_retention
-        self._test_mode = bool(_test_mode)
+        self._queue_put_timeout = cfg.queue.put_timeout
+        self._max_enqueue_batch = cfg.queue.max_enqueue_batch
+        self._attachment_timeout = cfg.timing.attachment_timeout
+        base_send_interval = max(0.05, float(cfg.timing.send_loop_interval))
+        self._smtp_batch_size = max(1, int(cfg.queue.message_size))
+        self._report_retention_seconds = cfg.timing.report_retention_seconds
+        self._test_mode = bool(cfg.test_mode)
 
         self._stop = asyncio.Event()
-        self._active = _start_active
+        self._active = cfg.start_active
 
         self._send_loop_interval = math.inf if self._test_mode else base_send_interval
-        self._result_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=_result_queue_size)
+        self._result_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
+            maxsize=cfg.queue.result_size
+        )
 
         # ClientReporter manages delivery report sync loop
         self.client_reporter = ClientReporter(self)
 
-        self._client_sync_url = _client_url
-        self._client_sync_user = _client_user
-        self._client_sync_password = _client_password
-        self._client_sync_token = _client_token
-        self._report_delivery_callable = _report_callable
+        self._client_sync_url = cfg.client_sync.url
+        self._client_sync_user = cfg.client_sync.user
+        self._client_sync_password = cfg.client_sync.password
+        self._client_sync_token = cfg.client_sync.token
+        self._report_delivery_callable = cfg.report_delivery_callable
 
         # Attachments and cache will be initialized in init()
         self._attachment_cache: TieredCache | None = None
         self.attachments: AttachmentManager | None = None
-        priority_value, _ = self._normalise_priority(_default_priority, DEFAULT_PRIORITY)
+        priority_value, _ = self._normalise_priority(cfg.default_priority, DEFAULT_PRIORITY)
         self._default_priority = priority_value
-        self._log_delivery_activity = bool(_log_activity)
+        self._log_delivery_activity = bool(cfg.log_delivery_activity)
 
-        # Build retry strategy from explicit param or config
-        if retry_strategy is not None:
-            self._retry_strategy = retry_strategy
-        elif max_retries is not None or retry_delays is not None:
-            self._retry_strategy = RetryStrategy(
-                max_retries=max_retries if max_retries is not None else DEFAULT_MAX_RETRIES,
-                delays=tuple(retry_delays) if retry_delays else DEFAULT_RETRY_DELAYS,
-            )
-        else:
-            self._retry_strategy = RetryStrategy(
-                max_retries=cfg.retry.max_retries,
-                delays=cfg.retry.delays,
-            )
+        self._retry_strategy = RetryStrategy(
+            max_retries=cfg.retry.max_retries,
+            delays=cfg.retry.delays,
+        )
 
-        self._batch_size_per_account = max(1, int(batch_size_per_account))
-        self._max_concurrent_sends = max(1, int(_max_sends))
-        self._max_concurrent_per_account = max(1, int(_max_per_account))
-        self._max_concurrent_attachments = max(1, int(_max_attachments))
+        self._batch_size_per_account = 50
+        self._max_concurrent_sends = max(1, int(cfg.concurrency.max_sends))
+        self._max_concurrent_per_account = max(1, int(cfg.concurrency.max_per_account))
+        self._max_concurrent_attachments = max(1, int(cfg.concurrency.max_attachments))
         self._attachment_semaphore: asyncio.Semaphore | None = None
 
         # Initialize endpoint dispatcher for command routing

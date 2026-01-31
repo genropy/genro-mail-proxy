@@ -5,12 +5,13 @@ import pytest
 
 from core.mail_proxy.entities.account import AccountEndpoint
 from core.mail_proxy.proxy_base import MailProxyBase
+from core.mail_proxy.proxy_config import ProxyConfig
 
 
 @pytest.fixture
 async def db(tmp_path):
     """Create database with all tables initialized."""
-    proxy = MailProxyBase(db_path=str(tmp_path / "test.db"))
+    proxy = MailProxyBase(ProxyConfig(db_path=str(tmp_path / "test.db")))
     await proxy.init()
     # Create tenant for FK constraint
     await proxy.db.table("tenants").add({"id": "t1", "name": "Test Tenant"})

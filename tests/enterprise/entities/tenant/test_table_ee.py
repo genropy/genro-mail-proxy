@@ -7,12 +7,13 @@ import time
 import pytest
 
 from core.mail_proxy.proxy_base import MailProxyBase
+from core.mail_proxy.proxy_config import ProxyConfig
 
 
 @pytest.fixture
 async def db(tmp_path):
     """Create database with schema only (no init logic)."""
-    proxy = MailProxyBase(db_path=str(tmp_path / "test.db"))
+    proxy = MailProxyBase(ProxyConfig(db_path=str(tmp_path / "test.db")))
     await proxy.db.connect()
     await proxy.db.check_structure()
     yield proxy.db

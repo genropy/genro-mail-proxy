@@ -336,8 +336,21 @@ class TestStorageNodeURL:
         assert node.verify_url_token("") is False
 
 
+# Check if EE is installed
+try:
+    from enterprise.mail_proxy.storage.node_ee import StorageNode_EE
+    _HAS_EE = True
+except ImportError:
+    _HAS_EE = False
+
+
+@pytest.mark.skipif(_HAS_EE, reason="Test only valid when EE is not installed")
 class TestStorageNodeCloudProtocolsRaiseInCE:
-    """Tests that cloud protocols raise NotImplementedError in CE."""
+    """Tests that cloud protocols raise NotImplementedError in CE.
+
+    These tests are only valid when EE is NOT installed.
+    When EE is installed, cloud protocols are supported via the mixin.
+    """
 
     @pytest.fixture
     def storage(self):

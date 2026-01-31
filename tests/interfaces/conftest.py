@@ -33,7 +33,14 @@ async def proxy(tmp_path) -> AsyncGenerator[MailProxy, None]:
     test_mode=True disables automatic background loops (SMTP dispatch, sync).
     start_active=False prevents starting until explicitly requested.
     """
-    p = MailProxy(db_path=str(tmp_path / "test.db"), test_mode=True, start_active=False)
+    from core.mail_proxy.proxy_config import ProxyConfig
+
+    config = ProxyConfig(
+        db_path=str(tmp_path / "test.db"),
+        test_mode=True,
+        start_active=False,
+    )
+    p = MailProxy(config)
     await p.db.connect()
     await p.db.check_structure()
     yield p

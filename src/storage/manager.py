@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from .node import StorageNode
+if TYPE_CHECKING:
+    from .node import StorageNode
 
 
 class StorageManager:
@@ -139,7 +140,7 @@ class StorageManager:
         """Get configuration for a mount point."""
         return self._mounts.get(name)
 
-    def node(self, mount_or_path: str, *parts: str) -> StorageNode:
+    def node(self, mount_or_path: str, *parts: str) -> "StorageNode":
         """Create a StorageNode for a file or directory.
 
         Args:
@@ -147,12 +148,15 @@ class StorageManager:
             *parts: Additional path components.
 
         Returns:
-            StorageNode for the specified path.
+            StorageNode for the specified path (composed with EE mixin if available).
 
         Examples:
             storage.node('data:files/report.pdf')
             storage.node('data', 'files', 'report.pdf')
         """
+        # Import from package to get composed class (CE + EE mixin if available)
+        from . import StorageNode as StorageNodeClass
+
         if ":" in mount_or_path:
             mount_name, path = mount_or_path.split(":", 1)
         else:
@@ -166,7 +170,7 @@ class StorageManager:
         if not config:
             raise ValueError(f"Mount point '{mount_name}' not configured")
 
-        return StorageNode(self, mount_name, path, config)
+        return StorageNodeClass(self, mount_name, path, config)
 
 
 __all__ = ["StorageManager"]

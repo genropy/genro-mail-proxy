@@ -77,25 +77,18 @@ class MailProxyBase:
     Subclassed by MailProxy which adds SMTP sender, background loops, etc.
     """
 
-    def __init__(
-        self,
-        *,
-        config: ProxyConfig | None = None,
-        db_path: str | None = None,
-    ):
+    def __init__(self, config: ProxyConfig | None = None):
         """Initialize base proxy with config and database.
 
         Args:
             config: ProxyConfig instance. If None, creates default.
-            db_path: Database path override. If provided, overrides config.db_path.
         """
         self.config = config or ProxyConfig()
-        _db_path = db_path if db_path is not None else self.config.db_path
 
         self._encryption_key: bytes | None = None
         self._load_encryption_key()
 
-        self.db = SqlDb(_db_path or ":memory:", parent=self)
+        self.db = SqlDb(self.config.db_path or ":memory:", parent=self)
         self._discover_tables()
 
         self.endpoints: dict[str, BaseEndpoint] = {}
