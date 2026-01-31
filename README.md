@@ -131,7 +131,7 @@ A two-tiered cache (memory + disk) reduces redundant fetches. Filenames can incl
 For attachments exceeding a size threshold, the proxy can upload them to external storage (S3, GCS, Azure, or local filesystem) and replace them with download links in the email body.
 
 ```bash
-pip install genro-mail-proxy[large-files]
+pip install genro-mail-proxy[enterprise-s3]  # or [enterprise-gcs], [enterprise-azure]
 ```
 
 Configure per-tenant via `large_file_config`:

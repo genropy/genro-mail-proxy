@@ -271,7 +271,11 @@ Installation
 
 .. code-block:: bash
 
-   pip install genro-mail-proxy[large-files]
+   # Install the appropriate storage backend:
+   pip install genro-mail-proxy[enterprise-s3]    # Amazon S3 / MinIO
+   pip install genro-mail-proxy[enterprise-gcs]   # Google Cloud Storage
+   pip install genro-mail-proxy[enterprise-azure] # Azure Blob Storage
+   pip install genro-mail-proxy[enterprise]       # All cloud backends
 
 Configuration
 ~~~~~~~~~~~~~
