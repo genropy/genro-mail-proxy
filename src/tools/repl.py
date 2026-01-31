@@ -28,7 +28,8 @@ Usage:
 
 from __future__ import annotations
 
-from typing import Any, Callable, TypeVar
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 T = TypeVar("T")
 
@@ -71,9 +72,7 @@ class REPLWrapper:
 
         # Check if it's a reserved method
         if callable(attr) and is_reserved(attr):
-            raise AttributeError(
-                f"'{name}' is reserved and not accessible in REPL"
-            )
+            raise AttributeError(f"'{name}' is reserved and not accessible in REPL")
 
         # If the attribute is an object with its own methods, wrap it too
         # (for nested access like proxy.db.get_secret())

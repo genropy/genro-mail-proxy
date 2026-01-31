@@ -81,14 +81,7 @@ class StorageNode_EE:
         path = self._path  # type: ignore[attr-defined]
         protocol = config.get("protocol")
 
-        if protocol == "s3":
-            bucket = config.get("bucket", "")
-            prefix = config.get("prefix", "").strip("/")
-            if prefix:
-                return f"{bucket}/{prefix}/{path}"
-            return f"{bucket}/{path}"
-
-        elif protocol == "gcs":
+        if protocol == "s3" or protocol == "gcs":
             bucket = config.get("bucket", "")
             prefix = config.get("prefix", "").strip("/")
             if prefix:

@@ -70,9 +70,7 @@ class SqliteAdapter(DbAdapter):
             await db.commit()
             return cursor.lastrowid
 
-    async def execute_many(
-        self, query: str, params_list: Sequence[dict[str, Any]]
-    ) -> int:
+    async def execute_many(self, query: str, params_list: Sequence[dict[str, Any]]) -> int:
         """Execute query multiple times with different params (batch insert)."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.executemany(query, params_list)

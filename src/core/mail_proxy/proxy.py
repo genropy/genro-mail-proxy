@@ -64,7 +64,11 @@ from .interface import EndpointDispatcher
 from .proxy_base import MailProxyBase
 from .proxy_config import ProxyConfig
 from .reporting import DEFAULT_SYNC_INTERVAL, ClientReporter
-from .smtp import AccountConfigurationError, AttachmentManager, AttachmentTooLargeError, SmtpSender, TieredCache
+from .smtp import (
+    AttachmentManager,
+    SmtpSender,
+    TieredCache,
+)
 from .smtp.retry import RetryStrategy
 
 PRIORITY_LABELS = {
@@ -226,7 +230,7 @@ class MailProxy(MailProxyBase):
         self.__init_proxy_ee__()
 
     @classmethod
-    async def create(cls, **kwargs) -> "MailProxy":
+    async def create(cls, **kwargs) -> MailProxy:
         """Create and initialize a MailProxy instance.
 
         This is the recommended way to create instances. It ensures proper
@@ -384,17 +388,27 @@ class MailProxy(MailProxyBase):
         return preview or "-"
 
     # Commands that modify state and should be logged for audit trail
-    _LOGGED_COMMANDS = frozenset({
-        "addMessages", "deleteMessages", "cleanupMessages",
-        "addAccount", "deleteAccount",
-        "addTenant", "updateTenant", "deleteTenant",
-        "suspend", "activate",
-    })
+    _LOGGED_COMMANDS = frozenset(
+        {
+            "addMessages",
+            "deleteMessages",
+            "cleanupMessages",
+            "addAccount",
+            "deleteAccount",
+            "addTenant",
+            "updateTenant",
+            "deleteTenant",
+            "suspend",
+            "activate",
+        }
+    )
 
     # -------------------------------------------------------------------------
     # Command handling (public API)
     # -------------------------------------------------------------------------
-    async def handle_command(self, cmd: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def handle_command(
+        self, cmd: str, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Execute an external control command.
 
         Dispatches the command to the appropriate handler method. Supported commands:
@@ -428,7 +442,7 @@ class MailProxy(MailProxyBase):
         if should_log:
             try:
                 ok = result.get("ok", False) if isinstance(result, dict) else False
-                await self.db.table('command_log').log_command(
+                await self.db.table("command_log").log_command(
                     endpoint=cmd,
                     payload=payload,
                     tenant_id=tenant_id,
@@ -456,7 +470,7 @@ class MailProxy(MailProxyBase):
 
             case "listTenantsSyncStatus":
                 # Requires client_reporter._last_sync runtime state
-                tenants = await self.db.table('tenants').list_all()
+                tenants = await self.db.table("tenants").list_all()
                 now = time.time()
                 result_tenants = []
                 for tenant in tenants:
@@ -471,15 +485,17 @@ class MailProxy(MailProxyBase):
                             next_sync_due = True
                     else:
                         next_sync_due = True
-                    result_tenants.append({
-                        "id": tenant_id,
-                        "name": tenant.get("name"),
-                        "active": tenant.get("active", True),
-                        "client_base_url": tenant.get("client_base_url"),
-                        "last_sync_ts": last_sync_ts,
-                        "next_sync_due": next_sync_due,
-                        "in_dnd": in_dnd,
-                    })
+                    result_tenants.append(
+                        {
+                            "id": tenant_id,
+                            "name": tenant.get("name"),
+                            "active": tenant.get("active", True),
+                            "client_base_url": tenant.get("client_base_url"),
+                            "last_sync_ts": last_sync_ts,
+                            "next_sync_due": next_sync_due,
+                            "in_dnd": in_dnd,
+                        }
+                    )
                 return {
                     "ok": True,
                     "tenants": result_tenants,
@@ -497,13 +513,20 @@ class MailProxy(MailProxyBase):
                 ids = payload.get("ids") if isinstance(payload, dict) else []
                 removed, not_found, unauthorized = await self._delete_messages(ids or [], tenant_id)
                 await self._refresh_queue_gauge()
-                return {"ok": True, "removed": removed, "not_found": not_found, "unauthorized": unauthorized}
+                return {
+                    "ok": True,
+                    "removed": removed,
+                    "not_found": not_found,
+                    "unauthorized": unauthorized,
+                }
 
             case "cleanupMessages":
                 tenant_id = payload.get("tenant_id") if isinstance(payload, dict) else None
                 if not tenant_id:
                     return {"ok": False, "error": "tenant_id is required"}
-                older_than = payload.get("older_than_seconds") if isinstance(payload, dict) else None
+                older_than = (
+                    payload.get("older_than_seconds") if isinstance(payload, dict) else None
+                )
                 removed = await self._cleanup_reported_messages(older_than, tenant_id)
                 return {"ok": True, "removed": removed}
 
@@ -513,10 +536,10 @@ class MailProxy(MailProxyBase):
                     return {"ok": False, "error": "tenant_id is required"}
                 account_id = payload.get("id")
                 try:
-                    await self.db.table('accounts').get(tenant_id, account_id)
+                    await self.db.table("accounts").get(tenant_id, account_id)
                 except ValueError:
                     return {"ok": False, "error": "account not found or not owned by tenant"}
-                await self.db.table('accounts').remove(tenant_id, account_id)
+                await self.db.table("accounts").remove(tenant_id, account_id)
                 await self._refresh_queue_gauge()
                 return {"ok": True}
 
@@ -541,7 +564,10 @@ class MailProxy(MailProxyBase):
         if not isinstance(messages, list):
             return {"ok": False, "error": "messages must be a list"}
         if len(messages) > self._max_enqueue_batch:
-            return {"ok": False, "error": f"Cannot enqueue more than {self._max_enqueue_batch} messages at once"}
+            return {
+                "ok": False,
+                "error": f"Cannot enqueue more than {self._max_enqueue_batch} messages at once",
+            }
 
         default_priority_value = 2
         if "default_priority" in payload:
@@ -562,7 +588,9 @@ class MailProxy(MailProxyBase):
                 rejected.append({"id": msg_id, "reason": reason})
                 if msg_id:
                     # Insert rejected message into DB with error for proxy_sync notification
-                    priority, _ = self._normalise_priority(item.get("priority"), default_priority_value)
+                    priority, _ = self._normalise_priority(
+                        item.get("priority"), default_priority_value
+                    )
                     entry = {
                         "id": msg_id,
                         "tenant_id": item.get("tenant_id"),
@@ -572,17 +600,21 @@ class MailProxy(MailProxyBase):
                         "deferred_ts": None,
                         "batch_code": item.get("batch_code"),
                     }
-                    inserted_items = await self.db.table('messages').insert_batch([entry])
+                    inserted_items = await self.db.table("messages").insert_batch([entry])
                     if inserted_items:
                         pk = inserted_items[0]["pk"]
-                        await self.db.table('message_events').add_event(pk, "error", now_ts, description=reason or "validation error")
-                    rejected_for_sync.append({
-                        "id": msg_id,
-                        "status": "error",
-                        "error": reason,
-                        "timestamp": self._utc_now_iso(),
-                        "account": item.get("account_id"),
-                    })
+                        await self.db.table("message_events").add_event(
+                            pk, "error", now_ts, description=reason or "validation error"
+                        )
+                    rejected_for_sync.append(
+                        {
+                            "id": msg_id,
+                            "status": "error",
+                            "error": reason,
+                            "timestamp": self._utc_now_iso(),
+                            "account": item.get("account_id"),
+                        }
+                    )
                 continue
 
             priority, _ = self._normalise_priority(item.get("priority"), default_priority_value)
@@ -607,7 +639,7 @@ class MailProxy(MailProxyBase):
                 }
                 for msg in validated
             ]
-            inserted = await self.db.table('messages').insert_batch(entries)
+            inserted = await self.db.table("messages").insert_batch(entries)
             # Messages not inserted were already sent (sent_ts IS NOT NULL)
             inserted_ids = {item["id"] for item in inserted}
             for msg in validated:
@@ -650,7 +682,7 @@ class MailProxy(MailProxyBase):
             return 0, [], []
 
         # Get messages that belong to this tenant (via account relationship)
-        authorized_ids = await self.db.table('messages').get_ids_for_tenant(list(ids), tenant_id)
+        authorized_ids = await self.db.table("messages").get_ids_for_tenant(list(ids), tenant_id)
 
         removed = 0
         missing: list[str] = []
@@ -660,7 +692,7 @@ class MailProxy(MailProxyBase):
             if mid not in authorized_ids:
                 unauthorized.append(mid)
                 continue
-            if await self.db.table('messages').delete(mid, tenant_id):
+            if await self.db.table("messages").delete(mid, tenant_id):
                 removed += 1
             else:
                 missing.append(mid)
@@ -687,11 +719,11 @@ class MailProxy(MailProxyBase):
         threshold = self._utc_now_epoch() - retention
 
         if tenant_id:
-            removed = await self.db.table('messages').remove_fully_reported_before_for_tenant(
+            removed = await self.db.table("messages").remove_fully_reported_before_for_tenant(
                 threshold, tenant_id
             )
         else:
-            removed = await self.db.table('messages').remove_fully_reported_before(threshold)
+            removed = await self.db.table("messages").remove_fully_reported_before(threshold)
 
         if removed:
             await self._refresh_queue_gauge()
@@ -733,7 +765,7 @@ class MailProxy(MailProxyBase):
             return False, "missing subject"
         # Verify account exists and belongs to tenant
         try:
-            await self.db.table('accounts').get(tenant_id, account_id)
+            await self.db.table("accounts").get(tenant_id, account_id)
         except Exception:
             return False, "account not found for tenant"
         return True, None
@@ -787,7 +819,9 @@ class MailProxy(MailProxyBase):
             event = await self._result_queue.get()
             yield event
 
-    async def _put_with_backpressure(self, queue: asyncio.Queue[Any], item: Any, queue_name: str) -> None:
+    async def _put_with_backpressure(
+        self, queue: asyncio.Queue[Any], item: Any, queue_name: str
+    ) -> None:
         """Push an item to a queue with timeout-based backpressure.
 
         Args:
@@ -798,7 +832,9 @@ class MailProxy(MailProxyBase):
         try:
             await asyncio.wait_for(queue.put(item), timeout=self._queue_put_timeout)
         except asyncio.TimeoutError:  # pragma: no cover - defensive
-            self.logger.error("Timed out while enqueuing item into %s queue; dropping item", queue_name)
+            self.logger.error(
+                "Timed out while enqueuing item into %s queue; dropping item", queue_name
+            )
 
     def _log_delivery_event(self, event: dict[str, Any]) -> None:
         """Log a delivery outcome when verbose logging is enabled.
@@ -840,7 +876,9 @@ class MailProxy(MailProxyBase):
                     reason,
                 )
             case _:
-                self.logger.info("Delivery event for message %s (account=%s): %s", msg_id, account, status)
+                self.logger.info(
+                    "Delivery event for message %s (account=%s): %s", msg_id, account, status
+                )
 
     async def _publish_result(self, event: dict[str, Any]) -> None:
         """Publish a delivery event to the result queue.
@@ -858,7 +896,7 @@ class MailProxy(MailProxyBase):
         and updates the metrics collector.
         """
         try:
-            count = await self.db.table('messages').count_active()
+            count = await self.db.table("messages").count_active()
         except Exception:  # pragma: no cover - defensive
             self.logger.exception("Failed to refresh queue gauge")
             return
@@ -882,10 +920,10 @@ class MailProxy(MailProxyBase):
             self.metrics.set_pending(0)
 
             # Get all tenants to map tenant_id -> tenant_name
-            tenants = await self.db.table('tenants').list_all()
+            tenants = await self.db.table("tenants").list_all()
             tenant_names = {t["id"]: t.get("name", t["id"]) for t in tenants}
 
-            accounts = await self.db.table('accounts').list_all()
+            accounts = await self.db.table("accounts").list_all()
             for account in accounts:
                 tenant_id = account.get("tenant_id", "default")
                 account_id = account.get("id", "default")

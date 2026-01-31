@@ -38,9 +38,7 @@ try:
     from enterprise.mail_proxy.storage.node_ee import StorageNode_EE
 
     StorageNode = type(
-        "StorageNode",
-        (StorageNode_EE, _StorageNodeCE),
-        {"__module__": _StorageNodeCE.__module__}
+        "StorageNode", (StorageNode_EE, _StorageNodeCE), {"__module__": _StorageNodeCE.__module__}
     )
 except ImportError:
     StorageNode = _StorageNodeCE

@@ -46,8 +46,9 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 import click
 from rich.console import Console
@@ -105,13 +106,15 @@ def add_connect_command(
             mail-proxy myserver connect --url http://remote:8000 --token secret
         """
         import code
+
         try:
             import readline  # noqa: F401
             import rlcompleter  # noqa: F401
         except ImportError:
             pass  # readline not available on all platforms
 
-        from tools.http_client import MailProxyClient, connect as client_connect
+        from tools.http_client import MailProxyClient
+        from tools.http_client import connect as client_connect
         from tools.repl import repl_wrap
 
         # Get URL and token
@@ -187,12 +190,12 @@ def add_stats_command(
         """Show queue statistics for this instance."""
 
         async def _stats() -> dict[str, Any]:
-            tenants = await db.table('tenants').list_all()
-            accounts = await db.table('accounts').list_all()
+            tenants = await db.table("tenants").list_all()
+            accounts = await db.table("accounts").list_all()
 
             all_messages: list[dict] = []
             for tenant in tenants:
-                tenant_messages = await db.table('messages').list_all(tenant["id"])
+                tenant_messages = await db.table("messages").list_all(tenant["id"])
                 all_messages.extend(tenant_messages)
 
             pending = sum(1 for m in all_messages if not m.get("smtp_ts") and not m.get("error_ts"))
@@ -216,7 +219,7 @@ def add_stats_command(
             click.echo(json.dumps(data, indent=2))
             return
 
-        console.print(f"\n[bold]Queue Statistics[/bold]\n")
+        console.print("\n[bold]Queue Statistics[/bold]\n")
         console.print(f"  Tenants:    {data['tenants']}")
         console.print(f"  Accounts:   {data['accounts']}")
         console.print("  Messages:")
@@ -251,7 +254,9 @@ def add_send_command(
     @group.command("send")
     @click.argument("file", type=click.Path(exists=True))
     @click.option("--account", "-a", help="Account ID to use (default: first available).")
-    @click.option("--priority", "-p", type=int, default=2, help="Priority (1=high, 2=normal, 3=low).")
+    @click.option(
+        "--priority", "-p", type=int, default=2, help="Priority (1=high, 2=normal, 3=low)."
+    )
     def send_cmd(file: str, account: str | None, priority: int) -> None:
         """Send an email from a .eml file.
 
@@ -266,7 +271,7 @@ def add_send_command(
             msg = email.message_from_binary_file(f)
 
         async def _send() -> tuple[bool, str]:
-            accounts = await db.table('accounts').list_all(tenant_id=tenant_id)
+            accounts = await db.table("accounts").list_all(tenant_id=tenant_id)
             if not accounts:
                 return False, f"No accounts found for tenant '{tenant_id}'."
 
@@ -311,7 +316,7 @@ def add_send_command(
                 },
             }
 
-            message_id = await db.table('messages').add(tenant_id, message_data)
+            message_id = await db.table("messages").add(tenant_id, message_data)
             return True, message_id
 
         success, result = _run_async(_send())
@@ -349,7 +354,7 @@ def add_token_command(
         import secrets
 
         async def _token() -> tuple[str | None, bool]:
-            instance_table = db.table('instance')
+            instance_table = db.table("instance")
             if regenerate:
                 new_token = secrets.token_urlsafe(32)
                 await instance_table.set_config("api_token", new_token)
@@ -360,7 +365,9 @@ def add_token_command(
 
         if is_new:
             console.print("[green]Token regenerated.[/green]")
-            console.print("[yellow]Note:[/yellow] Restart the instance for the new token to take effect.")
+            console.print(
+                "[yellow]Note:[/yellow] Restart the instance for the new token to take effect."
+            )
             console.print(f"\n{token}")
         else:
             if not token:
@@ -420,7 +427,9 @@ def add_run_now_command(
 
             if result.get("ok"):
                 if tenant_id:
-                    console.print(f"[green]Dispatch cycle triggered for tenant '{tenant_id}'.[/green]")
+                    console.print(
+                        f"[green]Dispatch cycle triggered for tenant '{tenant_id}'.[/green]"
+                    )
                 else:
                     console.print("[green]Dispatch cycle triggered.[/green]")
             else:

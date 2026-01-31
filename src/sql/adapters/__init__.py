@@ -100,7 +100,4 @@ def get_adapter(connection_string: str) -> DbAdapter:
             dsn = connection_info
         return PostgresAdapter(dsn)
 
-    raise ValueError(
-        f"Unknown database type: '{db_type}'. "
-        "Supported: sqlite, postgresql"
-    )
+    raise ValueError(f"Unknown database type: '{db_type}'. Supported: sqlite, postgresql")

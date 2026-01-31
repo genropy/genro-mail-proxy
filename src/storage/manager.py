@@ -65,6 +65,7 @@ class StorageManager:
         if file_path.suffix in (".yaml", ".yml"):
             try:
                 import yaml
+
                 return yaml.safe_load(content)
             except ImportError:
                 raise ImportError("PyYAML required for YAML config: pip install pyyaml")
@@ -140,7 +141,7 @@ class StorageManager:
         """Get configuration for a mount point."""
         return self._mounts.get(name)
 
-    def node(self, mount_or_path: str, *parts: str) -> "StorageNode":
+    def node(self, mount_or_path: str, *parts: str) -> StorageNode:
         """Create a StorageNode for a file or directory.
 
         Args:

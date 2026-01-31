@@ -245,7 +245,7 @@ class AccountsTable(Table):
                            :created_at, :updated_at, :is_pec_account,
                            :imap_host, :imap_port, :imap_user, :imap_password, :imap_folder,
                            :imap_last_uid, :imap_last_sync, :imap_uidvalidity)""",
-                {"pk": pk, **row_dict}
+                {"pk": pk, **row_dict},
             )
 
         # Swap tables
@@ -382,11 +382,25 @@ class AccountsTable(Table):
                 all_accounts = await accounts.list_all()
         """
         columns = [
-            "pk", "id", "tenant_id", "host", "port", "user", "ttl",
-            "limit_per_minute", "limit_per_hour", "limit_per_day",
-            "limit_behavior", "use_tls", "batch_size", "created_at", "updated_at",
+            "pk",
+            "id",
+            "tenant_id",
+            "host",
+            "port",
+            "user",
+            "ttl",
+            "limit_per_minute",
+            "limit_per_hour",
+            "limit_per_day",
+            "limit_behavior",
+            "use_tls",
+            "batch_size",
+            "created_at",
+            "updated_at",
             # PEC/IMAP fields
-            "is_pec_account", "imap_host", "imap_port",
+            "is_pec_account",
+            "imap_host",
+            "imap_port",
         ]
 
         if tenant_id:
@@ -446,7 +460,7 @@ class AccountsTable(Table):
         # Ensure UNIQUE index for tenant isolation
         try:
             await self.execute(
-                'CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_tenant_id '
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_tenant_id "
                 'ON accounts ("tenant_id", "id")'
             )
         except Exception:

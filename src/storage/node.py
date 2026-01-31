@@ -187,6 +187,7 @@ class StorageNode:
                 return True
             elif path.is_dir():
                 import shutil
+
                 shutil.rmtree(path)
                 return True
             return False
@@ -205,10 +206,7 @@ class StorageNode:
             path = self._get_local_path()
             if not path.is_dir():
                 return []
-            return [
-                self.child(child.name)
-                for child in sorted(path.iterdir())
-            ]
+            return [self.child(child.name) for child in sorted(path.iterdir())]
         return await self._cloud_children()
 
     async def md5hash(self) -> str:
@@ -245,9 +243,7 @@ class StorageNode:
         secret_key = self._config.get("secret_key", "genro-storage-default-secret")
         expires_at = int(time.time()) + expires_in
         message = f"{self._path}:{expires_at}"
-        signature = hmac.new(
-            secret_key.encode(), message.encode(), hashlib.sha256
-        ).hexdigest()[:16]
+        signature = hmac.new(secret_key.encode(), message.encode(), hashlib.sha256).hexdigest()[:16]
 
         token = f"{expires_at}-{signature}"
         return f"{public_base_url.rstrip('/')}/{self._path}?token={token}"

@@ -26,11 +26,11 @@ Note:
 from __future__ import annotations
 
 from enum import Enum
-from typing import Annotated, Any, Literal, TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ...interface.endpoint_base import BaseEndpoint, POST
+from ...interface.endpoint_base import POST, BaseEndpoint
 
 if TYPE_CHECKING:
     from .table import MessagesTable
@@ -45,6 +45,7 @@ class FetchMode(str, Enum):
         BASE64: Inline base64-encoded content.
         FILESYSTEM: Fetch from local filesystem path.
     """
+
     ENDPOINT = "endpoint"
     HTTP_URL = "http_url"
     BASE64 = "base64"
@@ -60,6 +61,7 @@ class MessageStatus(str, Enum):
         SENT: Successfully delivered to SMTP server.
         ERROR: Delivery failed with permanent error.
     """
+
     PENDING = "pending"
     DEFERRED = "deferred"
     SENT = "sent"
@@ -90,13 +92,16 @@ class AttachmentPayload(BaseModel):
                 fetch_mode=FetchMode.HTTP_URL,
             )
     """
+
     model_config = ConfigDict(extra="forbid")
 
     filename: Annotated[str, Field(min_length=1, max_length=255, description="Attachment filename")]
     storage_path: Annotated[str, Field(min_length=1, description="Storage path")]
     mime_type: Annotated[str | None, Field(default=None, description="MIME type override")]
     fetch_mode: Annotated[FetchMode | None, Field(default=None, description="Fetch mode")]
-    content_md5: Annotated[str | None, Field(default=None, pattern=r"^[a-fA-F0-9]{32}$", description="MD5 hash")]
+    content_md5: Annotated[
+        str | None, Field(default=None, pattern=r"^[a-fA-F0-9]{32}$", description="MD5 hash")
+    ]
     auth: Annotated[dict[str, Any] | None, Field(default=None, description="Auth override")]
 
 
@@ -385,7 +390,15 @@ class MessageEndpoint(BaseEndpoint):
                 "body": msg.get("body", ""),
                 "content_type": msg.get("content_type", "plain"),
             }
-            for field in ("cc", "bcc", "reply_to", "return_path", "message_id", "attachments", "headers"):
+            for field in (
+                "cc",
+                "bcc",
+                "reply_to",
+                "return_path",
+                "message_id",
+                "attachments",
+                "headers",
+            ):
                 if msg.get(field):
                     payload[field] = msg[field]
 
@@ -395,15 +408,17 @@ class MessageEndpoint(BaseEndpoint):
             if priority is None:
                 priority = 2
 
-            entries.append({
-                "id": msg_id,
-                "tenant_id": tenant_id,
-                "account_id": account_id,
-                "priority": priority,
-                "deferred_ts": msg.get("deferred_ts"),
-                "batch_code": msg.get("batch_code"),
-                "payload": payload,
-            })
+            entries.append(
+                {
+                    "id": msg_id,
+                    "tenant_id": tenant_id,
+                    "account_id": account_id,
+                    "priority": priority,
+                    "deferred_ts": msg.get("deferred_ts"),
+                    "batch_code": msg.get("batch_code"),
+                    "payload": payload,
+                }
+            )
 
         if entries:
             result = await self.table.insert_batch(entries)
@@ -479,6 +494,7 @@ class MessageEndpoint(BaseEndpoint):
             Dict with ok=True and removed count.
         """
         import time
+
         retention = older_than_seconds if older_than_seconds is not None else 86400
         threshold_ts = int(time.time()) - retention
         removed = await self.table.remove_fully_reported_before_for_tenant(threshold_ts, tenant_id)

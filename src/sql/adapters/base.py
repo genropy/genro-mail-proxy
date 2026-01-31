@@ -48,9 +48,7 @@ class DbAdapter(ABC):
         ...
 
     @abstractmethod
-    async def execute_many(
-        self, query: str, params_list: Sequence[dict[str, Any]]
-    ) -> int:
+    async def execute_many(self, query: str, params_list: Sequence[dict[str, Any]]) -> int:
         """Execute query multiple times with different params (batch insert)."""
         ...
 
@@ -182,9 +180,7 @@ class DbAdapter(ABC):
         results = await self.select(table, columns, where, limit=1)
         return results[0] if results else None
 
-    async def update(
-        self, table: str, values: dict[str, Any], where: dict[str, Any]
-    ) -> int:
+    async def update(self, table: str, values: dict[str, Any], where: dict[str, Any]) -> int:
         """Update rows, return rowcount.
 
         Args:

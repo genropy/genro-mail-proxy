@@ -154,9 +154,7 @@ class Table:
         """Called before update. Can modify record. Return the record to update."""
         return record
 
-    async def trigger_on_updated(
-        self, record: dict[str, Any], old_record: dict[str, Any]
-    ) -> None:
+    async def trigger_on_updated(self, record: dict[str, Any], old_record: dict[str, Any]) -> None:
         """Called after successful update."""
         pass
 
@@ -208,9 +206,7 @@ class Table:
             raise ValueError(f"Column '{column_name}' not defined in {self.name}")
 
         try:
-            await self.db.adapter.execute(
-                f"ALTER TABLE {self.name} ADD COLUMN {col.to_sql()}"
-            )
+            await self.db.adapter.execute(f"ALTER TABLE {self.name} ADD COLUMN {col.to_sql()}")
         except Exception:
             pass  # Column already exists
 
@@ -228,9 +224,7 @@ class Table:
             if col.name == self.pkey:
                 continue  # Skip primary key, it's created with the table
             try:
-                await self.db.adapter.execute(
-                    f"ALTER TABLE {self.name} ADD COLUMN {col.to_sql()}"
-                )
+                await self.db.adapter.execute(f"ALTER TABLE {self.name} ADD COLUMN {col.to_sql()}")
             except Exception:
                 pass  # Column already exists
 
@@ -329,9 +323,7 @@ class Table:
         # Check if pk is autoincrement (new_pkey_value returns None)
         if self.pkey and self.pkey not in record:
             # Autoincrement: use insert_returning_id to get the generated id
-            generated_id = await self.db.adapter.insert_returning_id(
-                self.name, encoded, self.pkey
-            )
+            generated_id = await self.db.adapter.insert_returning_id(self.name, encoded, self.pkey)
             if generated_id is not None:
                 data[self.pkey] = generated_id
                 record[self.pkey] = generated_id
@@ -353,9 +345,7 @@ class Table:
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """Select rows."""
-        rows = await self.db.adapter.select(
-            self.name, columns, where, order_by, limit
-        )
+        rows = await self.db.adapter.select(self.name, columns, where, order_by, limit)
         return [self._decrypt_fields(self._decode_json_fields(row)) for row in rows]
 
     async def select_one(
@@ -384,7 +374,7 @@ class Table:
         cols_sql = ", ".join(columns) if columns else "*"
         adapter = self.db.adapter
 
-        conditions = [f"{k} = {adapter._placeholder(k)}" for k in where.keys()]
+        conditions = [f"{k} = {adapter._placeholder(k)}" for k in where]
         where_sql = " AND ".join(conditions)
         lock_clause = adapter.for_update_clause()
 
@@ -527,7 +517,7 @@ class Table:
         adapter = self.db.adapter
 
         # Build SET clause
-        set_parts = [f"{k} = {adapter._placeholder(k)}" for k in updater.keys()]
+        set_parts = [f"{k} = {adapter._placeholder(k)}" for k in updater]
         set_clause = ", ".join(set_parts)
 
         # Build IN clause
@@ -575,9 +565,7 @@ class Table:
         rows = await self.db.adapter.fetch_all(query, params)
         return self._decode_rows(rows)
 
-    async def execute(
-        self, query: str, params: dict[str, Any] | None = None
-    ) -> int:
+    async def execute(self, query: str, params: dict[str, Any] | None = None) -> int:
         """Execute raw query, return affected row count."""
         return await self.db.adapter.execute(query, params)
 

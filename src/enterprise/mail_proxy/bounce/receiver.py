@@ -169,7 +169,7 @@ class BounceReceiver:
                 if bounce_info.original_message_id:
                     # Found a bounce with our tracking header
                     # original_message_id contains the pk (UUID) from the Message-ID header
-                    await self.db.table('message_events').add_event(
+                    await self.db.table("message_events").add_event(
                         bounce_info.original_message_id,
                         "bounce",
                         int(time.time()),

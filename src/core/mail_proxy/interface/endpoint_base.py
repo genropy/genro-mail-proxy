@@ -41,7 +41,8 @@ from __future__ import annotations
 import importlib
 import inspect
 import pkgutil
-from typing import TYPE_CHECKING, Any, Callable, get_origin, get_type_hints
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, get_origin, get_type_hints
 
 from pydantic import create_model
 
@@ -254,7 +255,7 @@ class BaseEndpoint:
         return (annotation, default)
 
     @classmethod
-    def discover(cls) -> list[type["BaseEndpoint"]]:
+    def discover(cls) -> list[type[BaseEndpoint]]:
         """Autodiscover all endpoint classes from entities/ directories.
 
         Scans CE and EE packages for endpoint.py and endpoint_ee.py modules.
@@ -285,9 +286,7 @@ class BaseEndpoint:
                 ee_mixin = cls._get_ee_mixin_from_module(ee_module, "_EE")
                 if ee_mixin:
                     composed_class = type(
-                        ce_class.__name__,
-                        (ee_mixin, ce_class),
-                        {"__module__": ce_class.__module__}
+                        ce_class.__name__, (ee_mixin, ce_class), {"__module__": ce_class.__module__}
                     )
                     endpoints.append(composed_class)
                     continue
@@ -408,7 +407,7 @@ class EndpointDispatcher:
         "listMessages": "messages",
     }
 
-    def __init__(self, db: "SqlDb", proxy: Any = None):
+    def __init__(self, db: SqlDb, proxy: Any = None):
         """Initialize dispatcher with database and optional proxy.
 
         Args:

@@ -150,7 +150,9 @@ class MailMetrics:
         account_name: str | None = None,
     ) -> None:
         """Increment the rate-limited counter."""
-        self.rate_limited.labels(**self._labels(tenant_id, tenant_name, account_id, account_name)).inc()
+        self.rate_limited.labels(
+            **self._labels(tenant_id, tenant_name, account_id, account_name)
+        ).inc()
 
     def set_pending(self, value: int) -> None:
         """Set the pending messages gauge to a specific value.

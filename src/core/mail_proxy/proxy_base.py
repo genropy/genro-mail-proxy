@@ -155,9 +155,7 @@ class MailProxyBase:
                 ee_mixin = self._get_ee_mixin_from_module(ee_module, "_EE")
                 if ee_mixin:
                     composed_class = type(
-                        ce_class.__name__,
-                        (ee_mixin, ce_class),
-                        {"__module__": ce_class.__module__}
+                        ce_class.__name__, (ee_mixin, ce_class), {"__module__": ce_class.__module__}
                     )
                     self.db.add_table(composed_class)
                     continue
@@ -188,21 +186,21 @@ class MailProxyBase:
         logger = logging.getLogger("mail_proxy")
 
         # Run legacy schema migrations
-        accounts = self.db.table('accounts')
+        accounts = self.db.table("accounts")
         if await accounts.migrate_from_legacy_schema():
             logger.info("Migrated accounts table from legacy schema")
 
-        messages = self.db.table('messages')
+        messages = self.db.table("messages")
         if await messages.migrate_from_legacy_schema():
             logger.info("Migrated messages table from legacy schema")
 
         # Sync schema for all tables
-        await self.db.table('tenants').sync_schema()
-        await self.db.table('accounts').sync_schema()
-        await self.db.table('messages').sync_schema()
-        await self.db.table('message_events').sync_schema()
-        await self.db.table('command_log').sync_schema()
-        await self.db.table('instance').sync_schema()
+        await self.db.table("tenants").sync_schema()
+        await self.db.table("accounts").sync_schema()
+        await self.db.table("messages").sync_schema()
+        await self.db.table("message_events").sync_schema()
+        await self.db.table("command_log").sync_schema()
+        await self.db.table("instance").sync_schema()
 
         # Populate account_pk for existing messages
         if await messages.migrate_account_pk():
@@ -215,8 +213,8 @@ class MailProxyBase:
         """Detect CE/EE mode based on existing data and installed modules."""
         from . import HAS_ENTERPRISE
 
-        tenants_table = self.db.table('tenants')
-        instance_table = self.db.table('instance')
+        tenants_table = self.db.table("tenants")
+        instance_table = self.db.table("instance")
 
         tenants = await tenants_table.list_all()
         count = len(tenants)
@@ -292,7 +290,7 @@ class MailProxyBase:
     # -------------------------------------------------------------------------
 
     @property
-    def api(self) -> "FastAPI":
+    def api(self) -> FastAPI:
         """FastAPI app with all endpoints, auth middleware, and lifespan.
 
         Created on first access. Includes default lifespan that calls
@@ -303,11 +301,12 @@ class MailProxyBase:
         """
         if not hasattr(self, "_api") or self._api is None:
             from .interface import create_app
+
             self._api = create_app(self, api_token=self.config.api_token)
         return self._api
 
     @property
-    def cli(self) -> "click.Group":
+    def cli(self) -> click.Group:
         """Click CLI group with endpoint commands and service commands.
 
         Created on first access. Includes:
@@ -321,14 +320,13 @@ class MailProxyBase:
             self._cli = self._create_cli()
         return self._cli
 
-    def _create_cli(self) -> "click.Group":
+    def _create_cli(self) -> click.Group:
         """Build Click CLI: endpoint commands + service commands (serve, etc.)."""
         import click
 
         from .interface import (
             add_connect_command,
             add_run_now_command,
-            add_send_command,
             add_stats_command,
             add_token_command,
             register_cli_endpoint,
@@ -364,6 +362,7 @@ class MailProxyBase:
         def serve_cmd(host: str, port: int, reload: bool) -> None:
             """Start the API server."""
             import uvicorn
+
             uvicorn.run(
                 "core.mail_proxy.server:app",
                 host=host,

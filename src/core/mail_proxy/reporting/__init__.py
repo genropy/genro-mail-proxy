@@ -12,6 +12,6 @@ Usage:
     proxy.client_reporter.stop()
 """
 
-from .client_reporter import ClientReporter, DEFAULT_SYNC_INTERVAL
+from .client_reporter import DEFAULT_SYNC_INTERVAL, ClientReporter
 
 __all__ = ["ClientReporter", "DEFAULT_SYNC_INTERVAL"]

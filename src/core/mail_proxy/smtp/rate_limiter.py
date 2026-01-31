@@ -170,19 +170,30 @@ class RateLimiter:
             in_flight = self._in_flight.get(account_id, 0)
             logger.debug(
                 "Rate check for %s: in_flight=%d, per_min=%s, per_hour=%s, per_day=%s",
-                account_id, in_flight, per_min, per_hour, per_day
+                account_id,
+                in_flight,
+                per_min,
+                per_hour,
+                per_day,
             )
 
             if per_min is not None:
                 c = self._count_since(account_id, now - WINDOW_MINUTE)
                 logger.debug(
                     "Rate check %s: count=%d + in_flight=%d vs limit=%d",
-                    account_id, c, in_flight, per_min
+                    account_id,
+                    c,
+                    in_flight,
+                    per_min,
                 )
                 if c + in_flight >= per_min:
                     logger.info(
                         "Rate limit (minute) hit for %s: %d+%d >= %d, behavior=%s",
-                        account_id, c, in_flight, per_min, behavior
+                        account_id,
+                        c,
+                        in_flight,
+                        per_min,
+                        behavior,
                     )
                     return ((now // WINDOW_MINUTE + 1) * WINDOW_MINUTE, behavior == "reject")
 
@@ -191,7 +202,10 @@ class RateLimiter:
                 if c + in_flight >= per_hour:
                     logger.info(
                         "Rate limit (hour) hit for %s: %d+%d >= %d",
-                        account_id, c, in_flight, per_hour
+                        account_id,
+                        c,
+                        in_flight,
+                        per_hour,
                     )
                     return ((now // WINDOW_HOUR + 1) * WINDOW_HOUR, behavior == "reject")
 
@@ -200,7 +214,10 @@ class RateLimiter:
                 if c + in_flight >= per_day:
                     logger.info(
                         "Rate limit (day) hit for %s: %d+%d >= %d",
-                        account_id, c, in_flight, per_day
+                        account_id,
+                        c,
+                        in_flight,
+                        per_day,
                     )
                     return ((now // WINDOW_DAY + 1) * WINDOW_DAY, behavior == "reject")
 

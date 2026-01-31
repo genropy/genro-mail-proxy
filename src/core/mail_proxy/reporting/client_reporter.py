@@ -180,9 +180,7 @@ class ClientReporter:
 
                 # If client has queued messages, sync again immediately
                 if queued and queued > 0:
-                    self.logger.debug(
-                        "Client has %d queued messages, syncing immediately", queued
-                    )
+                    self.logger.debug("Client has %d queued messages, syncing immediately", queued)
                     continue  # Loop immediately without waiting
 
             except Exception as exc:  # pragma: no cover - defensive
@@ -214,7 +212,7 @@ class ClientReporter:
         sync_interval = DEFAULT_SYNC_INTERVAL
 
         # Fetch unreported events
-        events = await self.db.table('message_events').fetch_unreported(self._smtp_batch_size)
+        events = await self.db.table("message_events").fetch_unreported(self._smtp_batch_size)
 
         # Group events by tenant_id
         events_by_tenant: dict[str | None, list[dict[str, Any]]] = defaultdict(list)
@@ -237,15 +235,14 @@ class ClientReporter:
                         acked, queued, next_sync = await self._send_delivery_reports(payloads)
                         total_queued += queued
                         acked_event_ids.extend(
-                            e["event_id"] for e in tenant_events
-                            if e.get("message_id") in acked
+                            e["event_id"] for e in tenant_events if e.get("message_id") in acked
                         )
                     except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                         self.logger.warning("Client sync failed: %s", exc)
                 continue
 
             called_tenant_ids.add(tenant_id)
-            tenant = await self.db.table('tenants').get(tenant_id)
+            tenant = await self.db.table("tenants").get(tenant_id)
             if not tenant:
                 continue
 
@@ -255,22 +252,20 @@ class ClientReporter:
                     total_queued += queued
                     self._last_sync[tenant_id] = next_sync if next_sync else now
                     acked_event_ids.extend(
-                        e["event_id"] for e in tenant_events
-                        if e.get("message_id") in acked
+                        e["event_id"] for e in tenant_events if e.get("message_id") in acked
                     )
                 elif self._client_sync_url:
                     acked, queued, next_sync = await self._send_delivery_reports(payloads)
                     total_queued += queued
                     self._last_sync[tenant_id] = next_sync if next_sync else now
                     acked_event_ids.extend(
-                        e["event_id"] for e in tenant_events
-                        if e.get("message_id") in acked
+                        e["event_id"] for e in tenant_events if e.get("message_id") in acked
                     )
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 self.logger.warning("Client sync failed for tenant %s: %s", tenant_id, exc)
 
         # 2. Call tenants WITHOUT events if sync interval exceeded
-        tenants = await self.db.table('tenants').list_all()
+        tenants = await self.db.table("tenants").list_all()
         for tenant in tenants:
             tenant_id = tenant.get("id")
             if not tenant_id or not tenant.get("active"):
@@ -301,7 +296,7 @@ class ClientReporter:
         # Mark acknowledged events as reported
         if acked_event_ids:
             reported_ts = self._utc_now_epoch()
-            await self.db.table('message_events').mark_reported(acked_event_ids, reported_ts)
+            await self.db.table("message_events").mark_reported(acked_event_ids, reported_ts)
 
         await self._apply_retention()
         return total_queued
@@ -351,7 +346,7 @@ class ClientReporter:
         if self._report_retention_seconds <= 0:
             return
         threshold = self._utc_now_epoch() - self._report_retention_seconds
-        removed = await self.db.table('messages').remove_fully_reported_before(threshold)
+        removed = await self.db.table("messages").remove_fully_reported_before(threshold)
         if removed:
             await self.proxy._refresh_queue_gauge()
 
@@ -434,12 +429,15 @@ class ClientReporter:
                 batch_size,
             )
 
-        async with aiohttp.ClientSession() as session, session.post(
-            self._client_sync_url,
-            json={"delivery_report": payloads},
-            auth=auth,
-            headers=headers or None,
-        ) as resp:
+        async with (
+            aiohttp.ClientSession() as session,
+            session.post(
+                self._client_sync_url,
+                json={"delivery_report": payloads},
+                auth=auth,
+                headers=headers or None,
+            ) as resp,
+        ):
             resp.raise_for_status()
             processed_ids: list[str] = [p["id"] for p in payloads]
             error_ids: list[str] = []
@@ -540,12 +538,15 @@ class ClientReporter:
                 batch_size,
             )
 
-        async with aiohttp.ClientSession() as session, session.post(
-            sync_url,
-            json={"delivery_report": payloads},
-            auth=auth,
-            headers=headers or None,
-        ) as resp:
+        async with (
+            aiohttp.ClientSession() as session,
+            session.post(
+                sync_url,
+                json={"delivery_report": payloads},
+                auth=auth,
+                headers=headers or None,
+            ) as resp,
+        ):
             resp.raise_for_status()
             processed_ids: list[str] = [p["id"] for p in payloads]
             error_ids: list[str] = []

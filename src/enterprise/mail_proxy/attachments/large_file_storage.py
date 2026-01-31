@@ -119,9 +119,7 @@ class LargeFileStorage:
                 "Install with: pip install genro-mail-proxy[large-files]"
             ) from e
 
-        self._fs, self._base_path = fsspec.core.url_to_fs(
-            self.storage_url, **self._storage_options
-        )
+        self._fs, self._base_path = fsspec.core.url_to_fs(self.storage_url, **self._storage_options)
 
     @property
     def fs(self) -> AbstractFileSystem:
@@ -170,9 +168,7 @@ class LargeFileStorage:
         except Exception as e:
             raise UploadError(f"Failed to upload {filename} to {path}: {e}") from e
 
-    def get_download_url(
-        self, file_id: str, filename: str, expires_in: int = 86400
-    ) -> str:
+    def get_download_url(self, file_id: str, filename: str, expires_in: int = 86400) -> str:
         """Generate a download URL for a file.
 
         For cloud storage backends (S3, GCS, Azure), uses the backend's
@@ -209,9 +205,7 @@ class LargeFileStorage:
         token = self._generate_signed_token(file_id, filename, expires_in)
         return f"{self.public_base_url.rstrip('/')}/download/{token}/{filename}"
 
-    def _generate_signed_token(
-        self, file_id: str, filename: str, expires_in: int
-    ) -> str:
+    def _generate_signed_token(self, file_id: str, filename: str, expires_in: int) -> str:
         """Generate a signed token for secure download URLs.
 
         The token contains the file_id, expiration timestamp, and a signature

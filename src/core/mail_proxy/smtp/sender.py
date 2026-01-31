@@ -30,8 +30,8 @@ from datetime import datetime, timezone
 from email.message import EmailMessage
 from typing import TYPE_CHECKING, Any
 
-from .attachments import AttachmentManager
 from ..entities.tenant import LargeFileAction, get_tenant_attachment_url
+from .attachments import AttachmentManager
 from .pool import SMTPPool
 from .rate_limiter import RateLimiter
 from .retry import RetryStrategy
@@ -53,9 +53,11 @@ except ImportError:
 
         pass
 
+
 if TYPE_CHECKING:
-    from ..proxy import MailProxy
     from tools.prometheus import MailMetrics
+
+    from ..proxy import MailProxy
 
 
 class AccountConfigurationError(RuntimeError):
@@ -233,14 +235,10 @@ class SmtpSender:
         """Start background dispatch and cleanup loops."""
         self._stop.clear()
         self.logger.debug("Starting SmtpSender dispatch loop...")
-        self._task_dispatch = asyncio.create_task(
-            self._dispatch_loop(), name="smtp-dispatch-loop"
-        )
+        self._task_dispatch = asyncio.create_task(self._dispatch_loop(), name="smtp-dispatch-loop")
         if not self._test_mode:
             self.logger.debug("Starting SmtpSender cleanup loop...")
-            self._task_cleanup = asyncio.create_task(
-                self._cleanup_loop(), name="smtp-cleanup-loop"
-            )
+            self._task_cleanup = asyncio.create_task(self._cleanup_loop(), name="smtp-cleanup-loop")
 
     async def stop(self) -> None:
         """Stop all background tasks gracefully."""
@@ -391,7 +389,9 @@ class SmtpSender:
     def _get_account_semaphore(self, account_id: str) -> asyncio.Semaphore:
         """Get or create a semaphore for per-account concurrency limiting."""
         if account_id not in self._account_semaphores:
-            self._account_semaphores[account_id] = asyncio.Semaphore(self._max_concurrent_per_account)
+            self._account_semaphores[account_id] = asyncio.Semaphore(
+                self._max_concurrent_per_account
+            )
         return self._account_semaphores[account_id]
 
     async def _dispatch_message(self, entry: dict[str, Any], now_ts: int) -> None:
@@ -545,7 +545,9 @@ class SmtpSender:
             if pk:
                 now_ts = self._utc_now_epoch()
                 await self.db.table("message_events").add_event(
-                    pk, "deferred", now_ts,
+                    pk,
+                    "deferred",
+                    now_ts,
                     description="rate_limit",
                     metadata={"deferred_ts": deferred_until},
                 )
@@ -585,7 +587,9 @@ class SmtpSender:
                 if pk:
                     await self.db.table("messages").update_payload(pk, updated_payload)
                     await self.db.table("message_events").add_event(
-                        pk, "deferred", now_ts,
+                        pk,
+                        "deferred",
+                        now_ts,
                         description=error_info,
                         metadata={"deferred_ts": deferred_until, "retry_count": retry_count + 1},
                     )
@@ -632,7 +636,9 @@ class SmtpSender:
 
                 if pk:
                     await self.db.table("message_events").add_event(
-                        pk, "error", error_ts,
+                        pk,
+                        "error",
+                        error_ts,
                         description=error_info,
                         metadata={"smtp_code": smtp_code, "retry_count": retry_count},
                     )
@@ -709,6 +715,7 @@ class SmtpSender:
             ValueError: If attachment fetching fails.
             AttachmentTooLargeError: If attachment exceeds limit and action is 'reject'.
         """
+
         def _format_addresses(value: Any) -> str | None:
             if not value:
                 return None
@@ -814,7 +821,9 @@ class SmtpSender:
                     else:  # warn
                         self.logger.warning(
                             "Large attachment %s (%.1f MB) exceeds limit (%.1f MB) - sending anyway",
-                            resolved_filename, size_mb, max_size_mb
+                            resolved_filename,
+                            size_mb,
+                            max_size_mb,
                         )
 
             if should_rewrite and large_file_storage:
@@ -826,19 +835,23 @@ class SmtpSender:
                     download_url = large_file_storage.get_download_url(
                         file_id, resolved_filename, expires_in=ttl_days * 86400
                     )
-                    rewritten_attachments.append({
-                        "filename": resolved_filename,
-                        "size_mb": size_mb,
-                        "url": download_url,
-                    })
+                    rewritten_attachments.append(
+                        {
+                            "filename": resolved_filename,
+                            "size_mb": size_mb,
+                            "url": download_url,
+                        }
+                    )
                     self.logger.info(
                         "Large attachment %s (%.1f MB) uploaded to storage",
-                        resolved_filename, size_mb
+                        resolved_filename,
+                        size_mb,
                     )
                 except LargeFileStorageError as e:
                     self.logger.error(
                         "Failed to upload large attachment %s: %s - attaching normally",
-                        resolved_filename, e
+                        resolved_filename,
+                        e,
                     )
                     should_rewrite = False
 
@@ -849,7 +862,9 @@ class SmtpSender:
                     maintype, subtype = mime_type_override.split("/", 1)
                 else:
                     maintype, subtype = self.attachments.guess_mime(resolved_filename)
-                msg.add_attachment(content, maintype=maintype, subtype=subtype, filename=resolved_filename)
+                msg.add_attachment(
+                    content, maintype=maintype, subtype=subtype, filename=resolved_filename
+                )
 
         # If we have rewritten attachments, append download links to the body
         if rewritten_attachments:
@@ -867,13 +882,13 @@ class SmtpSender:
             for att in rewritten_attachments:
                 links_html.append(
                     f'<li><a href="{att["url"]}">{att["filename"]}</a> '
-                    f'({att["size_mb"]:.1f} MB)</li>'
+                    f"({att['size_mb']:.1f} MB)</li>"
                 )
             footer = (
                 '<hr style="margin-top: 20px;">'
-                '<p><strong>Large attachments available for download:</strong></p>'
-                f'<ul>{"".join(links_html)}</ul>'
-                '<p><em>Links will expire after the configured retention period.</em></p>'
+                "<p><strong>Large attachments available for download:</strong></p>"
+                f"<ul>{''.join(links_html)}</ul>"
+                "<p><em>Links will expire after the configured retention period.</em></p>"
             )
         else:
             links_text = []
@@ -888,7 +903,9 @@ class SmtpSender:
 
         # Get current body and append footer
         if msg.is_multipart():
-            body_part = msg.get_body(preferencelist=('html', 'plain') if content_subtype == 'html' else ('plain', 'html'))
+            body_part = msg.get_body(
+                preferencelist=("html", "plain") if content_subtype == "html" else ("plain", "html")
+            )
             if body_part is not None:
                 current_body = body_part.get_content()
                 new_body = current_body + footer
@@ -901,7 +918,9 @@ class SmtpSender:
             new_body = current_body + footer
             msg.set_content(new_body, subtype=content_subtype)
 
-    async def _get_large_file_config_for_message(self, data: dict[str, Any]) -> dict[str, Any] | None:
+    async def _get_large_file_config_for_message(
+        self, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
         """Get the large file configuration for a message's tenant."""
         tenant_id = data.get("tenant_id")
         if not tenant_id:
@@ -970,12 +989,18 @@ class SmtpSender:
     ) -> tuple[bytes, str] | None:
         """Fetch an attachment using the configured timeout budget."""
         manager = attachment_manager or self.attachments
-        semaphore = self._attachment_semaphore or asyncio.Semaphore(self._max_concurrent_attachments)
+        semaphore = self._attachment_semaphore or asyncio.Semaphore(
+            self._max_concurrent_attachments
+        )
         async with semaphore:
             try:
-                result = await asyncio.wait_for(manager.fetch(att), timeout=self._attachment_timeout)
+                result = await asyncio.wait_for(
+                    manager.fetch(att), timeout=self._attachment_timeout
+                )
             except asyncio.TimeoutError as exc:
-                raise TimeoutError(f"Attachment {att.get('filename', 'file.bin')} fetch timed out") from exc
+                raise TimeoutError(
+                    f"Attachment {att.get('filename', 'file.bin')} fetch timed out"
+                ) from exc
             return result
 
     # ----------------------------------------------------------------- cleanup loop

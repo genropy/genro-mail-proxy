@@ -30,8 +30,8 @@ from pathlib import Path
 
 # AES-GCM constants
 NONCE_SIZE = 12  # 96 bits recommended for GCM
-TAG_SIZE = 16    # 128 bits authentication tag
-KEY_SIZE = 32    # 256 bits for AES-256
+TAG_SIZE = 16  # 128 bits authentication tag
+KEY_SIZE = 32  # 256 bits for AES-256
 
 # Prefix to identify encrypted values
 ENCRYPTED_PREFIX = "ENC:"
@@ -41,11 +41,13 @@ _encryption_key: bytes | None = None
 
 class EncryptionError(Exception):
     """Raised when encryption/decryption fails."""
+
     pass
 
 
 class EncryptionKeyNotConfigured(EncryptionError):
     """Raised when encryption key is not available."""
+
     pass
 
 
@@ -79,9 +81,7 @@ def _get_key() -> bytes:
     if secrets_path.exists():
         _encryption_key = secrets_path.read_bytes().strip()
         if len(_encryption_key) != KEY_SIZE:
-            raise EncryptionError(
-                f"Encryption key in {secrets_path} must be {KEY_SIZE} bytes"
-            )
+            raise EncryptionError(f"Encryption key in {secrets_path} must be {KEY_SIZE} bytes")
         return _encryption_key
 
     # 3. No key configured
@@ -141,8 +141,7 @@ def encrypt_value(plaintext: str) -> str:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     except ImportError as e:
         raise EncryptionError(
-            "Encryption requires 'cryptography' package. "
-            "Install with: pip install cryptography"
+            "Encryption requires 'cryptography' package. Install with: pip install cryptography"
         ) from e
 
     key = _get_key()
@@ -182,14 +181,13 @@ def decrypt_value(encrypted: str) -> str:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     except ImportError as e:
         raise EncryptionError(
-            "Decryption requires 'cryptography' package. "
-            "Install with: pip install cryptography"
+            "Decryption requires 'cryptography' package. Install with: pip install cryptography"
         ) from e
 
     key = _get_key()
 
     # Remove prefix and decode
-    encoded = encrypted[len(ENCRYPTED_PREFIX):]
+    encoded = encrypted[len(ENCRYPTED_PREFIX) :]
     try:
         encrypted_data = base64.b64decode(encoded)
     except Exception as e:
@@ -234,9 +232,7 @@ def encrypt_value_with_key(plaintext: str, key: bytes) -> str:
     try:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     except ImportError as e:
-        raise EncryptionError(
-            "Encryption requires 'cryptography' package"
-        ) from e
+        raise EncryptionError("Encryption requires 'cryptography' package") from e
 
     nonce = secrets.token_bytes(NONCE_SIZE)
     aesgcm = AESGCM(key)
@@ -273,11 +269,9 @@ def decrypt_value_with_key(encrypted: str, key: bytes) -> str:
     try:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     except ImportError as e:
-        raise EncryptionError(
-            "Decryption requires 'cryptography' package"
-        ) from e
+        raise EncryptionError("Decryption requires 'cryptography' package") from e
 
-    encoded = encrypted[len(ENCRYPTED_PREFIX):]
+    encoded = encrypted[len(ENCRYPTED_PREFIX) :]
     try:
         encrypted_data = base64.b64decode(encoded)
     except Exception as e:

@@ -43,9 +43,10 @@ from __future__ import annotations
 import inspect
 import logging
 import secrets
+from collections.abc import Callable
 from collections.abc import Callable as CallableType
 from contextlib import AbstractAsyncContextManager
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -111,6 +112,7 @@ def _create_model_fallback(method: Callable, method_name: str) -> type:
         Dynamically created Pydantic model class.
     """
     from typing import get_type_hints
+
     from pydantic import create_model
 
     sig = inspect.signature(method)
@@ -188,11 +190,7 @@ def register_endpoint(app: FastAPI | APIRouter, endpoint: Any, prefix: str = "")
 
 
 def _register_query_route(
-    app: FastAPI | APIRouter,
-    path: str,
-    method: Callable,
-    http_method: str,
-    doc: str
+    app: FastAPI | APIRouter, path: str, method: Callable, http_method: str, doc: str
 ) -> None:
     """Register route with query parameters."""
     sig = inspect.signature(method)
@@ -229,6 +227,7 @@ def _register_query_route(
 
 def _make_body_handler(method: Callable, RequestModel: type) -> Callable:
     """Create handler that accepts body and calls method."""
+
     async def handler(data: RequestModel) -> Any:  # type: ignore
         return await method(**data.model_dump())
 
@@ -309,7 +308,9 @@ async def verify_tenant_token(
         token_tenant = await _service.db.table("tenants").get_tenant_by_token(api_token)
         if token_tenant:
             if tenant_id and token_tenant["id"] != tenant_id:
-                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token not authorized for this tenant")
+                raise HTTPException(
+                    status.HTTP_401_UNAUTHORIZED, "Token not authorized for this tenant"
+                )
             return
 
     raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing API token")
@@ -436,8 +437,8 @@ def create_app(
     _service = svc
 
     if lifespan is None:
-        from contextlib import asynccontextmanager
         from collections.abc import AsyncGenerator
+        from contextlib import asynccontextmanager
 
         @asynccontextmanager
         async def default_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -513,7 +514,9 @@ def _register_instance_endpoints(app: FastAPI, svc: MailProxy) -> None:
     @app.get("/metrics")
     async def metrics() -> Response:
         """Export Prometheus metrics in text exposition format."""
-        return Response(content=svc.metrics.generate_latest(), media_type="text/plain; version=0.0.4")
+        return Response(
+            content=svc.metrics.generate_latest(), media_type="text/plain; version=0.0.4"
+        )
 
     router = APIRouter(dependencies=[auth_dependency])
     register_endpoint(router, instance_endpoint)

@@ -22,13 +22,12 @@ from dataclasses import dataclass
 from email.message import Message
 from typing import Literal
 
-
 PecReceiptType = Literal[
-    "accettazione",      # Acceptance by sender's PEC provider
-    "consegna",          # Delivery to recipient's mailbox
+    "accettazione",  # Acceptance by sender's PEC provider
+    "consegna",  # Delivery to recipient's mailbox
     "mancata_consegna",  # Delivery failure
     "non_accettazione",  # Rejected by PEC system
-    "presa_in_carico",   # Taken in charge (intermediate step)
+    "presa_in_carico",  # Taken in charge (intermediate step)
 ]
 
 
@@ -89,7 +88,11 @@ class PecReceiptParser:
 
         original_id = self._extract_original_id(msg)
         timestamp = self._extract_timestamp(msg)
-        error_reason = self._extract_error_reason(msg) if receipt_type in ("mancata_consegna", "non_accettazione") else None
+        error_reason = (
+            self._extract_error_reason(msg)
+            if receipt_type in ("mancata_consegna", "non_accettazione")
+            else None
+        )
         recipient = self._extract_recipient(msg)
 
         return PecReceiptInfo(

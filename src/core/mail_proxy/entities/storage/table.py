@@ -5,8 +5,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from sql import String, Table, Timestamp
 from genro_toolbox import get_uuid
+
+from sql import String, Table, Timestamp
 
 
 class StoragesTable(Table):
@@ -76,6 +77,7 @@ class StoragesTable(Table):
         """Check if Enterprise Edition is available."""
         try:
             from enterprise.mail_proxy import is_ee_enabled
+
             return is_ee_enabled()
         except ImportError:
             return False

@@ -46,33 +46,39 @@ from .instance.table_ee import InstanceTable_EE
 from .message.table_ee import MessagesTable_EE
 from .tenant.table_ee import TenantsTable_EE
 
-
 # --- Composed Tables ---
+
 
 class TenantsTable(TenantsTable_EE, CoreTenantsTable):
     """Enterprise Edition TenantsTable with multi-tenant management."""
+
     pass
 
 
 class AccountsTable(AccountsTable_EE, CoreAccountsTable):
     """Enterprise Edition AccountsTable with PEC/IMAP support."""
+
     pass
 
 
 class MessagesTable(MessagesTable_EE, CoreMessagesTable):
     """Enterprise Edition MessagesTable with PEC tracking."""
+
     pass
 
 
 class InstanceTable(InstanceTable_EE, CoreInstanceTable):
     """Enterprise Edition InstanceTable with bounce detection config."""
+
     pass
 
 
 # --- Composed Endpoints ---
 
+
 class AccountEndpoint(AccountEndpoint_EE, CoreAccountEndpoint):
     """Enterprise Edition AccountEndpoint with PEC account management."""
+
     pass
 
 

@@ -39,7 +39,8 @@ Note:
 from __future__ import annotations
 
 import inspect
-from typing import TYPE_CHECKING, Any, Callable, get_args, get_origin, get_type_hints
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel, ValidationError, create_model
 from pydantic.fields import FieldInfo
@@ -261,6 +262,7 @@ class DynamicForm:
         default = None
         if field_info and field_info.default is not None:
             from pydantic_core import PydanticUndefined
+
             if field_info.default is not PydanticUndefined:
                 default = field_info.default
         if current_value is not None:
@@ -463,16 +465,12 @@ class DynamicForm:
 
             if is_valid:
                 action = Prompt.ask(
-                    "[bold]Action[/bold]",
-                    choices=["save", "edit", "cancel"],
-                    default="save"
+                    "[bold]Action[/bold]", choices=["save", "edit", "cancel"], default="save"
                 )
             else:
                 console.print("[red]Please fix the errors above[/red]")
                 action = Prompt.ask(
-                    "[bold]Action[/bold]",
-                    choices=["edit", "cancel"],
-                    default="edit"
+                    "[bold]Action[/bold]", choices=["edit", "cancel"], default="edit"
                 )
 
             match action:
@@ -482,7 +480,7 @@ class DynamicForm:
                     return self.model(**filtered).model_dump(mode="json", exclude_none=True)
 
                 case "edit":
-                    field_choices = {str(i+1): f for i, f in enumerate(self._expanded_fields)}
+                    field_choices = {str(i + 1): f for i, f in enumerate(self._expanded_fields)}
                     console.print("\n[bold]Fields:[/bold]")
                     for num, field_name in field_choices.items():
                         label = field_name.replace("_", " ").title()
@@ -526,7 +524,7 @@ def _create_model_from_method(method: Callable) -> type[BaseModel]:
 
 
 def create_form(
-    endpoint: "BaseEndpoint",
+    endpoint: BaseEndpoint,
     method_name: str,
     title: str | None = None,
     field_groups: dict[str, list[str]] | None = None,
@@ -602,7 +600,7 @@ def new_tenant() -> dict[str, Any] | None:
             "Authentication": ["client_auth"],
             "Endpoints": ["client_base_url", "client_sync_path", "client_attachment_path"],
             "Rate Limits": ["rate_limits"],
-        }
+        },
     )
     data = form.run()
 
@@ -631,8 +629,13 @@ def new_account() -> dict[str, Any] | None:
             "SMTP Server": ["host", "port", "use_tls"],
             "Authentication": ["user", "password"],
             "Settings": ["batch_size", "ttl"],
-            "Rate Limits": ["limit_per_minute", "limit_per_hour", "limit_per_day", "limit_behavior"],
-        }
+            "Rate Limits": [
+                "limit_per_minute",
+                "limit_per_hour",
+                "limit_per_day",
+                "limit_behavior",
+            ],
+        },
     )
     data = form.run()
 
@@ -661,7 +664,7 @@ def new_message() -> dict[str, Any] | None:
             "Addressing": ["from_addr", "to", "cc", "bcc", "reply_to", "return_path"],
             "Content": ["subject", "body", "content_type"],
             "Settings": ["priority", "deferred_ts"],
-        }
+        },
     )
     data = form.run()
 

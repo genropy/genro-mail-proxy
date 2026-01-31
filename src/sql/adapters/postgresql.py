@@ -108,9 +108,7 @@ class PostgresAdapter(DbAdapter):
                 row = await cur.fetchone()
                 return row[pk_col] if row else None
 
-    async def execute_many(
-        self, query: str, params_list: Sequence[dict[str, Any]]
-    ) -> int:
+    async def execute_many(self, query: str, params_list: Sequence[dict[str, Any]]) -> int:
         """Execute query multiple times with different params (batch insert)."""
         query = self._convert_placeholders(query)
         async with self._pool.connection() as conn, conn.cursor() as cur:

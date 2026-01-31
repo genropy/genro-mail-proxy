@@ -40,7 +40,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-from typing import Any, Callable, Literal, get_args, get_origin
+from collections.abc import Callable
+from typing import Any, Literal, get_args, get_origin
 
 import click
 
@@ -126,9 +127,7 @@ def _create_click_command(method: Callable, run_async: Callable) -> click.Comman
                 )
             )
         else:
-            arguments.append(
-                click.argument(param_name, type=click_type)
-            )
+            arguments.append(click.argument(param_name, type=click_type))
 
     def cmd_func(**kwargs: Any) -> None:
         py_kwargs = {k.replace("-", "_"): v for k, v in kwargs.items()}
@@ -149,9 +148,7 @@ def _create_click_command(method: Callable, run_async: Callable) -> click.Comman
 
 
 def register_endpoint(
-    group: click.Group,
-    endpoint: Any,
-    run_async: Callable | None = None
+    group: click.Group, endpoint: Any, run_async: Callable | None = None
 ) -> click.Group:
     """Register all methods of an endpoint as Click commands.
 

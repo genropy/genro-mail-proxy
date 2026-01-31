@@ -51,8 +51,8 @@ class MailProxy_EE:
         _stop_proxy_ee(): Stop BounceReceiver
     """
 
-    bounce_receiver: "BounceReceiver | None"
-    _bounce_config: "BounceConfig | None"
+    bounce_receiver: BounceReceiver | None
+    _bounce_config: BounceConfig | None
 
     # -------------------------------------------------------------------------
     # Initialization (override CE stub)
@@ -67,7 +67,7 @@ class MailProxy_EE:
     # Configuration
     # -------------------------------------------------------------------------
 
-    def configure_bounce_receiver(self, config: "BounceConfig") -> None:
+    def configure_bounce_receiver(self, config: BounceConfig) -> None:
         """Configure bounce detection.
 
         Call this before start() to enable bounce detection. The bounce receiver
@@ -108,7 +108,9 @@ class MailProxy_EE:
         """True if BounceReceiver is active and polling."""
         return self.bounce_receiver is not None and self.bounce_receiver._running
 
-    async def handle_bounce_command(self, cmd: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def handle_bounce_command(
+        self, cmd: str, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Handle bounce-related commands.
 
         Supported commands:

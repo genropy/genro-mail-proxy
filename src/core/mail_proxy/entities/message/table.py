@@ -55,8 +55,9 @@ import json
 from collections.abc import Iterable, Sequence
 from typing import Any
 
-from sql import Integer, String, Table, Timestamp
 from genro_toolbox import get_uuid
+
+from sql import Integer, String, Table, Timestamp
 
 
 class MessagesTable(Table):
@@ -202,7 +203,7 @@ class MessagesTable(Table):
                    VALUES (:pk, :id, :tenant_id, :account_id, :priority, :payload,
                            :batch_code, :created_at, :updated_at, :deferred_ts,
                            :smtp_ts, :is_pec)""",
-                {"pk": pk, **dict(row)}
+                {"pk": pk, **dict(row)},
             )
 
         await self.db.adapter.execute("DROP TABLE messages")
@@ -293,7 +294,7 @@ class MessagesTable(Table):
             return []
 
         if pec_account_ids is None and auto_pec:
-            pec_account_ids = await self.db.table('accounts').get_pec_account_ids()
+            pec_account_ids = await self.db.table("accounts").get_pec_account_ids()
 
         pec_accounts = pec_account_ids or set()
         result: list[dict[str, str]] = []
@@ -340,18 +341,20 @@ class MessagesTable(Table):
                     rec["is_pec"] = is_pec
             else:
                 pk = get_uuid()
-                await self.insert({
-                    "pk": pk,
-                    "id": msg_id,
-                    "tenant_id": entry_tenant_id,
-                    "account_id": account_id,
-                    "account_pk": account_pk,
-                    "priority": priority,
-                    "payload": payload,
-                    "batch_code": batch_code,
-                    "deferred_ts": deferred_ts,
-                    "is_pec": is_pec,
-                })
+                await self.insert(
+                    {
+                        "pk": pk,
+                        "id": msg_id,
+                        "tenant_id": entry_tenant_id,
+                        "account_id": account_id,
+                        "account_pk": account_pk,
+                        "priority": priority,
+                        "payload": payload,
+                        "batch_code": batch_code,
+                        "deferred_ts": deferred_ts,
+                        "is_pec": is_pec,
+                    }
+                )
 
             result.append({"id": msg_id, "pk": pk})
 
@@ -419,7 +422,7 @@ class MessagesTable(Table):
             FROM messages m
             LEFT JOIN accounts a ON m.account_pk = a.pk
             LEFT JOIN tenants t ON m.tenant_id = t.id
-            WHERE {' AND '.join(conditions)}
+            WHERE {" AND ".join(conditions)}
             ORDER BY m.priority ASC, m.created_at ASC, m.pk ASC
             LIMIT :limit
         """
@@ -778,9 +781,7 @@ class MessagesTable(Table):
         )
         return int(row["cnt"]) if row else 0
 
-    async def count_pending_for_tenant(
-        self, tenant_id: str, batch_code: str | None = None
-    ) -> int:
+    async def count_pending_for_tenant(self, tenant_id: str, batch_code: str | None = None) -> int:
         """Count pending messages for a tenant.
 
         Args:

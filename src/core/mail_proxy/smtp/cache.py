@@ -94,7 +94,8 @@ class MemoryCache:
     def cleanup_expired(self) -> int:
         now = time.time()
         expired = [
-            key for key, (_, timestamp) in self._cache.items()
+            key
+            for key, (_, timestamp) in self._cache.items()
             if now - timestamp > self._ttl_seconds
         ]
         for key in expired:

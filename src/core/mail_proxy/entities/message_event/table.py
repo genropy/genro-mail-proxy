@@ -183,13 +183,15 @@ class MessageEventTable(Table):
             Triggers are called automatically after insert,
             updating message status based on event_type.
         """
-        return await self.insert({
-            "message_pk": message_pk,
-            "event_type": event_type,
-            "event_ts": event_ts,
-            "description": description,
-            "metadata": json.dumps(metadata) if metadata else None,
-        })
+        return await self.insert(
+            {
+                "message_pk": message_pk,
+                "event_type": event_type,
+                "event_ts": event_ts,
+                "description": description,
+                "metadata": json.dumps(metadata) if metadata else None,
+            }
+        )
 
     async def fetch_unreported(self, limit: int) -> list[dict[str, Any]]:
         """Fetch events not yet reported to clients.

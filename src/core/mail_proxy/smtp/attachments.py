@@ -33,7 +33,7 @@ import aiohttp
 
 from .cache import TieredCache
 
-MD5_MARKER_PATTERN = re.compile(r'\{MD5:([a-fA-F0-9]+)\}')
+MD5_MARKER_PATTERN = re.compile(r"\{MD5:([a-fA-F0-9]+)\}")
 
 
 class Base64Fetcher:
@@ -97,16 +97,12 @@ class StorageFetcher:
         if path.startswith("/"):
             return await self._fetch_absolute(path)
 
-        raise ValueError(
-            f"Invalid path format: '{path}'. Use 'mount:path' or absolute path."
-        )
+        raise ValueError(f"Invalid path format: '{path}'. Use 'mount:path' or absolute path.")
 
     async def _fetch_from_mount(self, path: str) -> bytes:
         """Fetch from a configured mount point."""
         if not self._storage_manager:
-            raise ValueError(
-                "StorageManager not configured. Cannot resolve mount paths."
-            )
+            raise ValueError("StorageManager not configured. Cannot resolve mount paths.")
 
         node = self._storage_manager.node(path)
 
@@ -149,7 +145,7 @@ class HttpFetcher:
 
     def _parse_path(self, path: str) -> tuple[str, str]:
         if path.startswith("["):
-            match = re.match(r'\[([^\]]+)\](.*)', path)
+            match = re.match(r"\[([^\]]+)\](.*)", path)
             if not match:
                 raise ValueError(f"Invalid HTTP path format: {path}")
             return match.group(1), match.group(2)
@@ -158,14 +154,10 @@ class HttpFetcher:
             return path, ""
 
         if not self._default_endpoint:
-            raise ValueError(
-                "No default endpoint configured and path doesn't specify one"
-            )
+            raise ValueError("No default endpoint configured and path doesn't specify one")
         return self._default_endpoint, path
 
-    def _get_auth_headers(
-        self, auth_override: dict[str, str] | None = None
-    ) -> dict[str, str]:
+    def _get_auth_headers(self, auth_override: dict[str, str] | None = None) -> dict[str, str]:
         auth_config = auth_override if auth_override is not None else self._auth_config
         method = auth_config.get("method", "none")
 
@@ -181,9 +173,7 @@ class HttpFetcher:
 
         return {}
 
-    async def fetch(
-        self, path: str, auth_override: dict[str, str] | None = None
-    ) -> bytes:
+    async def fetch(self, path: str, auth_override: dict[str, str] | None = None) -> bytes:
         server_url, params = self._parse_path(path)
         headers = self._get_auth_headers(auth_override)
 
@@ -232,16 +222,14 @@ class AttachmentManager:
             return filename, None
 
         md5_hash = match.group(1).lower()
-        clean_filename = MD5_MARKER_PATTERN.sub('', filename)
-        clean_filename = re.sub(r'_+', '_', clean_filename)
-        clean_filename = clean_filename.strip('_')
-        clean_filename = re.sub(r'_\.', '.', clean_filename)
+        clean_filename = MD5_MARKER_PATTERN.sub("", filename)
+        clean_filename = re.sub(r"_+", "_", clean_filename)
+        clean_filename = clean_filename.strip("_")
+        clean_filename = re.sub(r"_\.", ".", clean_filename)
 
         return clean_filename, md5_hash
 
-    def _parse_storage_path(
-        self, path: str, fetch_mode: str | None = None
-    ) -> tuple[str, str]:
+    def _parse_storage_path(self, path: str, fetch_mode: str | None = None) -> tuple[str, str]:
         if not path:
             raise ValueError("Empty storage_path")
 

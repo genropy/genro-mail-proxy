@@ -26,9 +26,9 @@ Note:
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from ...interface.endpoint_base import BaseEndpoint, POST
+from ...interface.endpoint_base import POST, BaseEndpoint
 
 if TYPE_CHECKING:
     from .table import TenantsTable
@@ -42,6 +42,7 @@ class AuthMethod(str, Enum):
         BEARER: Bearer token authentication.
         BASIC: HTTP Basic authentication.
     """
+
     NONE = "none"
     BEARER = "bearer"
     BASIC = "basic"
@@ -55,6 +56,7 @@ class LargeFileAction(str, Enum):
         REJECT: Reject the message entirely.
         REWRITE: Store file externally and rewrite attachment URL.
     """
+
     WARN = "warn"
     REJECT = "reject"
     REWRITE = "rewrite"
@@ -256,7 +258,9 @@ class TenantEndpoint(BaseEndpoint):
         Returns:
             Updated tenant configuration dict.
         """
-        fields = {k: v for k, v in locals().items() if k not in ("self", "tenant_id") and v is not None}
+        fields = {
+            k: v for k, v in locals().items() if k not in ("self", "tenant_id") and v is not None
+        }
         await self.table.update_fields(tenant_id, fields)
         return await self.table.get(tenant_id)
 
@@ -311,7 +315,9 @@ class TenantEndpoint(BaseEndpoint):
             tenant = await self.table.get(tenant_id)
             if not tenant:
                 raise ValueError(f"Tenant '{tenant_id}' not found")
-            raise ValueError("Cannot remove single batch when all suspended. Use activate_batch(None) first.")
+            raise ValueError(
+                "Cannot remove single batch when all suspended. Use activate_batch(None) first."
+            )
         suspended = await self.table.get_suspended_batches(tenant_id)
         return {"ok": True, "tenant_id": tenant_id, "suspended_batches": list(suspended)}
 

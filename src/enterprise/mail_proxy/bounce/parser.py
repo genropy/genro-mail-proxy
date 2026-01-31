@@ -25,23 +25,77 @@ class BounceParser:
     """Parse bounce messages (DSN RFC 3464 + heuristics)."""
 
     # Hard bounce codes (5xx permanent failures)
-    HARD_BOUNCE_CODES = frozenset([
-        "500", "501", "502", "503", "504", "510", "511", "512", "513",
-        "521", "522", "523", "530", "531", "532", "541", "542", "543",
-        "550", "551", "552", "553", "554", "555", "556", "557",
-    ])
+    HARD_BOUNCE_CODES = frozenset(
+        [
+            "500",
+            "501",
+            "502",
+            "503",
+            "504",
+            "510",
+            "511",
+            "512",
+            "513",
+            "521",
+            "522",
+            "523",
+            "530",
+            "531",
+            "532",
+            "541",
+            "542",
+            "543",
+            "550",
+            "551",
+            "552",
+            "553",
+            "554",
+            "555",
+            "556",
+            "557",
+        ]
+    )
 
     # Soft bounce codes (4xx temporary failures)
-    SOFT_BOUNCE_CODES = frozenset([
-        "400", "401", "402", "403", "404", "405", "407", "408", "409",
-        "410", "411", "412", "413", "414", "421", "422", "431", "432",
-        "441", "442", "450", "451", "452", "453", "454", "455", "456",
-        "471", "472",
-    ])
+    SOFT_BOUNCE_CODES = frozenset(
+        [
+            "400",
+            "401",
+            "402",
+            "403",
+            "404",
+            "405",
+            "407",
+            "408",
+            "409",
+            "410",
+            "411",
+            "412",
+            "413",
+            "414",
+            "421",
+            "422",
+            "431",
+            "432",
+            "441",
+            "442",
+            "450",
+            "451",
+            "452",
+            "453",
+            "454",
+            "455",
+            "456",
+            "471",
+            "472",
+        ]
+    )
 
     # Patterns for extracting bounce info from non-standard bounces
     BOUNCE_SUBJECT_PATTERNS = [
-        re.compile(r"(?:mail|message|delivery)\s*(?:delivery|failure|failed|returned|undeliverable)", re.I),
+        re.compile(
+            r"(?:mail|message|delivery)\s*(?:delivery|failure|failed|returned|undeliverable)", re.I
+        ),
         re.compile(r"undelivered\s*mail\s*returned", re.I),
         re.compile(r"(?:returned|bounced)\s*mail", re.I),
         re.compile(r"failure\s*notice", re.I),
@@ -57,8 +111,8 @@ class BounceParser:
 
         # Check if this is a DSN (RFC 3464)
         if content_type == "multipart/report":
-            report_type = msg.get_param("report-type", "").lower()
-            if report_type == "delivery-status":
+            report_type = msg.get_param("report-type") or ""
+            if isinstance(report_type, str) and report_type.lower() == "delivery-status":
                 return self._parse_dsn(msg)
 
         # Fallback: heuristic parsing
@@ -82,19 +136,15 @@ class BounceParser:
                 if isinstance(payload, list):
                     for status_part in payload:
                         status_text = str(status_part)
-                        self._extract_dsn_fields(
-                            status_text,
-                            lambda r: setattr(self, "_tmp_recipient", r),
-                            lambda c: setattr(self, "_tmp_code", c),
-                            lambda t: setattr(self, "_tmp_type", t),
-                            lambda m: setattr(self, "_tmp_reason", m),
-                        )
-                        recipient = getattr(self, "_tmp_recipient", None)
-                        bounce_code = getattr(self, "_tmp_code", None)
-                        bounce_type = getattr(self, "_tmp_type", None)
-                        bounce_reason = getattr(self, "_tmp_reason", None)
+                        r, c, t, m = self._extract_dsn_info(status_text)
+                        recipient = r or recipient
+                        bounce_code = c or bounce_code
+                        bounce_type = t or bounce_type
+                        bounce_reason = m or bounce_reason
                 elif isinstance(payload, str):
-                    recipient, bounce_code, bounce_type, bounce_reason = self._extract_dsn_info(payload)
+                    recipient, bounce_code, bounce_type, bounce_reason = self._extract_dsn_info(
+                        payload
+                    )
 
             # Extract original message ID from attached original message
             # RFC 3464 uses message/rfc822 for full message or text/rfc822-headers for headers only
@@ -110,7 +160,9 @@ class BounceParser:
             recipient=recipient,
         )
 
-    def _extract_dsn_info(self, status_text: str) -> tuple[str | None, str | None, Literal["hard", "soft"] | None, str | None]:
+    def _extract_dsn_info(
+        self, status_text: str
+    ) -> tuple[str | None, str | None, Literal["hard", "soft"] | None, str | None]:
         """Extract bounce info from DSN status text."""
         recipient: str | None = None
         bounce_code: str | None = None

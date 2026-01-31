@@ -6,9 +6,9 @@ Designed for introspection by api_base/cli_base to auto-generate routes/commands
 
 from __future__ import annotations
 
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from ...interface.endpoint_base import BaseEndpoint, POST
+from ...interface.endpoint_base import POST, BaseEndpoint
 
 if TYPE_CHECKING:
     from .table import StoragesTable

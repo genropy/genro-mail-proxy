@@ -85,7 +85,7 @@ class PecReceiver:
 
     async def _process_all_pec_accounts(self) -> None:
         """Process receipts for all PEC accounts."""
-        pec_accounts = await self._db.table('accounts').list_pec_accounts()
+        pec_accounts = await self._db.table("accounts").list_pec_accounts()
 
         if not pec_accounts:
             return
@@ -153,7 +153,7 @@ class PecReceiver:
             if not messages:
                 # Update uidvalidity even if no messages
                 if uidvalidity != stored_uidvalidity:
-                    await self._db.table('accounts').update_imap_sync_state(
+                    await self._db.table("accounts").update_imap_sync_state(
                         tenant_id,
                         account_id,
                         last_uid=last_uid,
@@ -191,7 +191,7 @@ class PecReceiver:
                     max_uid = msg.uid
 
             # Update sync state
-            await self._db.table('accounts').update_imap_sync_state(
+            await self._db.table("accounts").update_imap_sync_state(
                 tenant_id,
                 account_id,
                 last_uid=max_uid,
@@ -236,7 +236,7 @@ class PecReceiver:
 
         # Create event
         now_ts = int(time.time())
-        await self._db.table('message_events').add_event(
+        await self._db.table("message_events").add_event(
             message_pk=message_pk,
             event_type=event_type,
             event_ts=now_ts,
@@ -248,7 +248,7 @@ class PecReceiver:
         # For errors, mark the message accordingly
         if receipt_type in ("mancata_consegna", "non_accettazione"):
             # Clear PEC flag on error - it won't get delivered via PEC
-            await self._db.table('messages').clear_pec_flag(message_pk)
+            await self._db.table("messages").clear_pec_flag(message_pk)
 
     async def _check_pec_timeouts(self) -> None:
         """Check for PEC messages that timed out waiting for acceptance."""
@@ -257,7 +257,7 @@ class PecReceiver:
         now_ts = int(time.time())
         cutoff_ts = now_ts - self._acceptance_timeout
 
-        timed_out_messages = await self._db.table('messages').get_pec_without_acceptance(cutoff_ts)
+        timed_out_messages = await self._db.table("messages").get_pec_without_acceptance(cutoff_ts)
 
         for msg in timed_out_messages:
             message_pk = msg["pk"]
@@ -269,10 +269,10 @@ class PecReceiver:
                 )
 
             # Clear the PEC flag
-            await self._db.table('messages').clear_pec_flag(message_pk)
+            await self._db.table("messages").clear_pec_flag(message_pk)
 
             # Create timeout event
-            await self._db.table('message_events').add_event(
+            await self._db.table("message_events").add_event(
                 message_pk=message_pk,
                 event_type="pec_timeout",
                 event_ts=now_ts,

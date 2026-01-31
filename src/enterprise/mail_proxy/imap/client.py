@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import ssl
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -23,7 +23,7 @@ class IMAPClient:
     """Async IMAP client wrapper using aioimaplib."""
 
     def __init__(self, logger: Logger | None = None):
-        self._client: "aioimaplib.IMAP4_SSL | aioimaplib.IMAP4 | None" = None
+        self._client: Any = None
         self._logger = logger
         self._uidvalidity: int | None = None
 
@@ -68,6 +68,7 @@ class IMAPClient:
             if "UIDVALIDITY" in line:
                 # Format: [UIDVALIDITY 123456]
                 import re
+
                 match = re.search(r"UIDVALIDITY\s+(\d+)", line)
                 if match:
                     self._uidvalidity = int(match.group(1))

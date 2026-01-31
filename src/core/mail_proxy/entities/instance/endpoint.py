@@ -35,7 +35,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ...interface.endpoint_base import BaseEndpoint, POST
+from ...interface.endpoint_base import POST, BaseEndpoint
 
 if TYPE_CHECKING:
     from .table import InstanceTable
@@ -152,10 +152,13 @@ class InstanceEndpoint(BaseEndpoint):
             Dict with suspended batches list and pending message count.
         """
         if self.proxy is not None:
-            result = await self.proxy.handle_command("suspend", {
-                "tenant_id": tenant_id,
-                "batch_code": batch_code,
-            })
+            result = await self.proxy.handle_command(
+                "suspend",
+                {
+                    "tenant_id": tenant_id,
+                    "batch_code": batch_code,
+                },
+            )
             return result
         return {"ok": True, "tenant_id": tenant_id, "batch_code": batch_code}
 
@@ -178,10 +181,13 @@ class InstanceEndpoint(BaseEndpoint):
             Dict with remaining suspended batches list.
         """
         if self.proxy is not None:
-            result = await self.proxy.handle_command("activate", {
-                "tenant_id": tenant_id,
-                "batch_code": batch_code,
-            })
+            result = await self.proxy.handle_command(
+                "activate",
+                {
+                    "tenant_id": tenant_id,
+                    "batch_code": batch_code,
+                },
+            )
             return result
         return {"ok": True, "tenant_id": tenant_id, "batch_code": batch_code}
 
@@ -264,7 +270,9 @@ class InstanceEndpoint(BaseEndpoint):
         from ... import HAS_ENTERPRISE
 
         if not HAS_ENTERPRISE:
-            raise ValueError("Enterprise modules not installed. Install with: pip install genro-mail-proxy[ee]")
+            raise ValueError(
+                "Enterprise modules not installed. Install with: pip install genro-mail-proxy[ee]"
+            )
 
         # Check if already EE
         if await self.table.is_enterprise():

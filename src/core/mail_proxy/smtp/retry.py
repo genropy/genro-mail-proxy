@@ -109,40 +109,40 @@ class RetryStrategy:
     def _extract_smtp_code(self, exc: Exception) -> int | None:
         """Extract SMTP code from exception if available."""
         if isinstance(exc, aiosmtplib.SMTPException):
-            return getattr(exc, 'smtp_code', None) or getattr(exc, 'code', None)
+            return getattr(exc, "smtp_code", None) or getattr(exc, "code", None)
         return None
 
     def _matches_temporary_pattern(self, error_msg: str) -> bool:
         """Check if error message matches temporary error patterns."""
         temporary_patterns = (
-            '421',  # Service not available
-            '450',  # Mailbox unavailable
-            '451',  # Local error in processing
-            '452',  # Insufficient system storage
-            'timeout',
-            'connection refused',
-            'connection reset',
-            'temporarily unavailable',
-            'try again',
-            'throttl',  # throttled/throttling
+            "421",  # Service not available
+            "450",  # Mailbox unavailable
+            "451",  # Local error in processing
+            "452",  # Insufficient system storage
+            "timeout",
+            "connection refused",
+            "connection reset",
+            "temporarily unavailable",
+            "try again",
+            "throttl",  # throttled/throttling
         )
         return any(pattern in error_msg for pattern in temporary_patterns)
 
     def _matches_permanent_pattern(self, error_msg: str) -> bool:
         """Check if error message matches permanent error patterns."""
         permanent_patterns = (
-            'wrong_version_number',  # TLS/STARTTLS mismatch
-            'certificate verify failed',
-            'ssl handshake',
-            'certificate_unknown',
-            'unknown_ca',
-            'certificate has expired',
-            'self signed certificate',
-            'authentication failed',
-            'auth',  # Authentication errors
-            '535',  # Authentication credentials invalid
-            '534',  # Authentication mechanism too weak
-            '530',  # Authentication required
+            "wrong_version_number",  # TLS/STARTTLS mismatch
+            "certificate verify failed",
+            "ssl handshake",
+            "certificate_unknown",
+            "unknown_ca",
+            "certificate has expired",
+            "self signed certificate",
+            "authentication failed",
+            "auth",  # Authentication errors
+            "535",  # Authentication credentials invalid
+            "534",  # Authentication mechanism too weak
+            "530",  # Authentication required
         )
         return any(pattern in error_msg for pattern in permanent_patterns)
 

@@ -70,18 +70,20 @@ class TenantsTable_EE:
         raw_key = secrets.token_urlsafe(32)
         key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
 
-        await self.insert({  # type: ignore[attr-defined]
-            "id": tenant_id,
-            "name": tenant.get("name"),
-            "client_auth": tenant.get("client_auth"),
-            "client_base_url": tenant.get("client_base_url"),
-            "client_sync_path": tenant.get("client_sync_path"),
-            "client_attachment_path": tenant.get("client_attachment_path"),
-            "rate_limits": tenant.get("rate_limits"),
-            "large_file_config": tenant.get("large_file_config"),
-            "active": 1 if tenant.get("active", True) else 0,
-            "api_key_hash": key_hash,
-        })
+        await self.insert(
+            {  # type: ignore[attr-defined]
+                "id": tenant_id,
+                "name": tenant.get("name"),
+                "client_auth": tenant.get("client_auth"),
+                "client_base_url": tenant.get("client_base_url"),
+                "client_sync_path": tenant.get("client_sync_path"),
+                "client_attachment_path": tenant.get("client_attachment_path"),
+                "rate_limits": tenant.get("rate_limits"),
+                "large_file_config": tenant.get("large_file_config"),
+                "active": 1 if tenant.get("active", True) else 0,
+                "api_key_hash": key_hash,
+            }
+        )
         return raw_key
 
     async def list_all(self, active_only: bool = False) -> list[dict[str, Any]]:
@@ -124,7 +126,12 @@ class TenantsTable_EE:
                     rec[key] = value  # Will be JSON-encoded by Table.update()
                 elif key == "active":
                     rec["active"] = 1 if value else 0
-                elif key in ("name", "client_base_url", "client_sync_path", "client_attachment_path"):
+                elif key in (
+                    "name",
+                    "client_base_url",
+                    "client_sync_path",
+                    "client_attachment_path",
+                ):
                     rec[key] = value
         return True
 
@@ -144,13 +151,11 @@ class TenantsTable_EE:
         """
         # Delete messages for this tenant
         await self.db.adapter.execute(  # type: ignore[attr-defined]
-            "DELETE FROM messages WHERE tenant_id = :tenant_id",
-            {"tenant_id": tenant_id}
+            "DELETE FROM messages WHERE tenant_id = :tenant_id", {"tenant_id": tenant_id}
         )
         # Delete accounts for this tenant
         await self.db.adapter.execute(  # type: ignore[attr-defined]
-            "DELETE FROM accounts WHERE tenant_id = :tenant_id",
-            {"tenant_id": tenant_id}
+            "DELETE FROM accounts WHERE tenant_id = :tenant_id", {"tenant_id": tenant_id}
         )
         # Delete the tenant
         rowcount = await self.delete(where={"id": tenant_id})  # type: ignore[attr-defined]
@@ -158,9 +163,7 @@ class TenantsTable_EE:
 
     # ----------------------------------------------------------------- API Keys
 
-    async def create_api_key(
-        self, tenant_id: str, expires_at: int | None = None
-    ) -> str | None:
+    async def create_api_key(self, tenant_id: str, expires_at: int | None = None) -> str | None:
         """Create a new API key for a tenant.
 
         Generates a new random API key, replacing any existing key.

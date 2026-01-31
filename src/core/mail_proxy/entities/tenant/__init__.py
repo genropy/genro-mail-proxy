@@ -47,9 +47,9 @@ Note:
 """
 
 from .endpoint import (
-    AuthMethod,
     DEFAULT_ATTACHMENT_PATH,
     DEFAULT_SYNC_PATH,
+    AuthMethod,
     LargeFileAction,
     TenantEndpoint,
     get_tenant_attachment_url,
