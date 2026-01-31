@@ -6,7 +6,6 @@ Singleton table (id=1) for instance-level configuration.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any
 
 from sql import Integer, String, Table, Timestamp
@@ -25,11 +24,12 @@ class InstanceTable(Table):
     """
 
     name = "instance"
+    pkey = "id"
 
     def configure(self) -> None:
         c = self.columns
         # Singleton ID (always 1)
-        c.column("id", Integer, primary_key=True)
+        c.column("id", Integer)
 
         # General instance config (migrated from key-value)
         c.column("name", String, default="mail-proxy")
@@ -61,10 +61,9 @@ class InstanceTable(Table):
     async def update_instance(self, updates: dict[str, Any]) -> None:
         """Update the singleton instance configuration."""
         await self.ensure_instance()
-        await self.update(
-            updates | {"updated_at": datetime.now(timezone.utc)},
-            where={"id": 1},
-        )
+        async with self.record(1) as rec:
+            for key, value in updates.items():
+                rec[key] = value
 
     # Convenience methods for common config access
 

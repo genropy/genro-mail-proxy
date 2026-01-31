@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import Any
 
 from sql import Integer, String, Table, Timestamp
-from tools.uid import get_uuid
+from genro_toolbox import get_uuid
 
 
 class AccountsTable(Table):
@@ -21,6 +21,7 @@ class AccountsTable(Table):
     """
 
     name = "accounts"
+    pkey = "pk"
 
     def create_table_sql(self) -> str:
         """Generate CREATE TABLE with UNIQUE (tenant_id, id) for multi-tenant isolation."""
@@ -31,13 +32,13 @@ class AccountsTable(Table):
 
     def configure(self) -> None:
         c = self.columns
-        c.column("pk", String, primary_key=True)  # UUID generated internally
+        c.column("pk", String)  # UUID generated internally
         c.column("id", String, nullable=False)  # account_id from client
         c.column("tenant_id", String, nullable=False).relation("tenants", sql=True)
         c.column("host", String, nullable=False)
         c.column("port", Integer, nullable=False)
         c.column("user", String)
-        c.column("password", String)
+        c.column("password", String, encrypted=True)
         c.column("ttl", Integer, default=300)
         c.column("limit_per_minute", Integer)
         c.column("limit_per_hour", Integer)
@@ -156,64 +157,37 @@ class AccountsTable(Table):
         is_pec = acc.get("is_pec_account")
         is_pec_val = 1 if is_pec else 0
 
-        # Check if account exists
-        existing = await self.db.adapter.fetch_one(
-            "SELECT pk FROM accounts WHERE tenant_id = :tenant_id AND id = :id",
+        # Use composite key for upsert
+        async with self.record(
             {"tenant_id": tenant_id, "id": account_id},
-        )
+            insert_missing=True,
+        ) as rec:
+            # Generate pk only for new records
+            if "pk" not in rec:
+                rec["pk"] = get_uuid()
 
-        if existing:
-            # Update existing account
-            pk = existing["pk"]
-            async with self.record(pk) as rec:
-                rec["host"] = acc["host"]
-                rec["port"] = int(acc["port"])
-                rec["user"] = acc.get("user")
-                rec["password"] = acc.get("password")
-                rec["ttl"] = int(acc.get("ttl", 300))
-                rec["limit_per_minute"] = acc.get("limit_per_minute")
-                rec["limit_per_hour"] = acc.get("limit_per_hour")
-                rec["limit_per_day"] = acc.get("limit_per_day")
-                rec["limit_behavior"] = acc.get("limit_behavior", "defer")
-                rec["use_tls"] = use_tls_val
-                rec["batch_size"] = acc.get("batch_size")
-                rec["is_pec_account"] = is_pec_val
-                # Add PEC/IMAP fields if present
-                if acc.get("imap_host"):
-                    rec["imap_host"] = acc["imap_host"]
-                    rec["imap_port"] = int(acc.get("imap_port") or 993)
-                    rec["imap_user"] = acc.get("imap_user") or acc.get("user")
-                    rec["imap_password"] = acc.get("imap_password") or acc.get("password")
-                    rec["imap_folder"] = acc.get("imap_folder", "INBOX")
-        else:
-            # Insert new account
-            pk = get_uuid()
-            data = {
-                "pk": pk,
-                "id": account_id,
-                "tenant_id": tenant_id,
-                "host": acc["host"],
-                "port": int(acc["port"]),
-                "user": acc.get("user"),
-                "password": acc.get("password"),
-                "ttl": int(acc.get("ttl", 300)),
-                "limit_per_minute": acc.get("limit_per_minute"),
-                "limit_per_hour": acc.get("limit_per_hour"),
-                "limit_per_day": acc.get("limit_per_day"),
-                "limit_behavior": acc.get("limit_behavior", "defer"),
-                "use_tls": use_tls_val,
-                "batch_size": acc.get("batch_size"),
-                "is_pec_account": is_pec_val,
-            }
+            rec["host"] = acc["host"]
+            rec["port"] = int(acc["port"])
+            rec["user"] = acc.get("user")
+            rec["password"] = acc.get("password")
+            rec["ttl"] = int(acc.get("ttl", 300))
+            rec["limit_per_minute"] = acc.get("limit_per_minute")
+            rec["limit_per_hour"] = acc.get("limit_per_hour")
+            rec["limit_per_day"] = acc.get("limit_per_day")
+            rec["limit_behavior"] = acc.get("limit_behavior", "defer")
+            rec["use_tls"] = use_tls_val
+            rec["batch_size"] = acc.get("batch_size")
+            rec["is_pec_account"] = is_pec_val
+
             # Add PEC/IMAP fields if present
             if acc.get("imap_host"):
-                data["imap_host"] = acc["imap_host"]
-                data["imap_port"] = int(acc.get("imap_port") or 993)
-                data["imap_user"] = acc.get("imap_user") or acc.get("user")
-                data["imap_password"] = acc.get("imap_password") or acc.get("password")
-                data["imap_folder"] = acc.get("imap_folder", "INBOX")
+                rec["imap_host"] = acc["imap_host"]
+                rec["imap_port"] = int(acc.get("imap_port") or 993)
+                rec["imap_user"] = acc.get("imap_user") or acc.get("user")
+                rec["imap_password"] = acc.get("imap_password") or acc.get("password")
+                rec["imap_folder"] = acc.get("imap_folder", "INBOX")
 
-            await self.insert(data)
+            pk = rec["pk"]
 
         return pk
 

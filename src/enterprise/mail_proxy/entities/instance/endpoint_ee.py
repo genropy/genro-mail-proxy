@@ -15,6 +15,8 @@ Usage:
 
 from __future__ import annotations
 
+from core.mail_proxy.interface.endpoint_base import POST
+
 
 class InstanceEndpoint_EE:
     """Enterprise Edition: Bounce detection configuration.
@@ -45,6 +47,7 @@ class InstanceEndpoint_EE:
         config.pop("uidvalidity", None)
         return {"ok": True, **config}
 
+    @POST
     async def set_bounce_config(
         self,
         enabled: bool | None = None,
@@ -89,6 +92,7 @@ class InstanceEndpoint_EE:
         )
         return {"ok": True, "message": "Bounce config updated. Use reload_bounce() to apply."}
 
+    @POST
     async def reload_bounce(self) -> dict:
         """Reload bounce detection configuration at runtime.
 
@@ -98,12 +102,16 @@ class InstanceEndpoint_EE:
         Returns:
             Dict with ok=True and enabled status.
         """
-        if self.proxy is not None:  # type: ignore[attr-defined]
-            result = await self.proxy.handle_command("reloadBounce", {})  # type: ignore[attr-defined]
-            return result
-        # If no proxy, just report current enabled state
         config = await self.table.get_bounce_config()  # type: ignore[attr-defined]
-        return {"ok": True, "enabled": config["enabled"], "message": "Config reloaded"}
+        enabled = config.get("enabled", False)
+
+        # If proxy has bounce_receiver (EE runtime), reload it
+        if self.proxy is not None:  # type: ignore[attr-defined]
+            bounce_receiver = getattr(self.proxy, "bounce_receiver", None)  # type: ignore[attr-defined]
+            if bounce_receiver is not None:
+                await bounce_receiver.reload_config()
+
+        return {"ok": True, "enabled": enabled, "message": "Config reloaded"}
 
 
 __all__ = ["InstanceEndpoint_EE"]

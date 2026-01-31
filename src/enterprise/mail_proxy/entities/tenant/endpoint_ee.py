@@ -15,6 +15,8 @@ Usage:
 
 from __future__ import annotations
 
+from core.mail_proxy.interface.endpoint_base import POST
+
 
 class TenantEndpoint_EE:
     """Enterprise Edition: API key management for tenants.
@@ -24,6 +26,7 @@ class TenantEndpoint_EE:
     - Revoking API keys
     """
 
+    @POST
     async def create_api_key(
         self,
         tenant_id: str,
@@ -55,6 +58,7 @@ class TenantEndpoint_EE:
             "message": "Save this API key - it will not be shown again.",
         }
 
+    @POST
     async def revoke_api_key(self, tenant_id: str) -> dict:
         """Revoke the API key for a tenant.
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ...interface.endpoint_base import BaseEndpoint
+from ...interface.endpoint_base import BaseEndpoint, POST
 
 if TYPE_CHECKING:
     from .table import InstanceTable
@@ -55,6 +55,7 @@ class InstanceEndpoint(BaseEndpoint):
             active = getattr(self.proxy, "_active", True)
         return {"ok": True, "active": active}
 
+    @POST
     async def run_now(self, tenant_id: str | None = None) -> dict:
         """Trigger immediate dispatch cycle.
 
@@ -69,6 +70,7 @@ class InstanceEndpoint(BaseEndpoint):
             return result
         return {"ok": True}
 
+    @POST
     async def suspend(
         self,
         tenant_id: str,
@@ -91,6 +93,7 @@ class InstanceEndpoint(BaseEndpoint):
             return result
         return {"ok": True, "tenant_id": tenant_id, "batch_code": batch_code}
 
+    @POST
     async def activate(
         self,
         tenant_id: str,
@@ -124,6 +127,7 @@ class InstanceEndpoint(BaseEndpoint):
             return {"ok": True, "id": 1, "name": "mail-proxy", "edition": "ce"}
         return {"ok": True, **instance}
 
+    @POST
     async def update(
         self,
         name: str | None = None,
@@ -170,6 +174,7 @@ class InstanceEndpoint(BaseEndpoint):
             return result
         return {"ok": True, "tenants": []}
 
+    @POST
     async def upgrade_to_ee(self) -> dict:
         """Upgrade instance from Community Edition to Enterprise Edition.
 

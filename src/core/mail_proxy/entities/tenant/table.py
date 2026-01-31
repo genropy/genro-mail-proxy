@@ -24,10 +24,11 @@ class TenantsTable(Table):
     """
 
     name = "tenants"
+    pkey = "id"
 
     def configure(self) -> None:
         c = self.columns
-        c.column("id", String, primary_key=True)
+        c.column("id", String)
         c.column("name", String)
         c.column("client_auth", String, json_encoded=True)
         c.column("client_base_url", String)
@@ -81,16 +82,12 @@ class TenantsTable(Table):
         use the instance token. When upgrading to EE, the admin can generate
         a tenant token via POST /tenant/default/api-key.
         """
-        existing = await self.get("default")
-        if existing:
-            return
-
-        # Create without API key - CE uses instance token only
-        await self.insert({
-            "id": "default",
-            "name": "Default Tenant",
-            "active": 1,
-        })
+        # Use RecordUpdater with insert_missing=True for upsert behavior
+        async with self.record("default", insert_missing=True) as rec:
+            if not rec.get("name"):
+                # Only set defaults on new record (don't overwrite existing)
+                rec["name"] = "Default Tenant"
+                rec["active"] = 1
 
     # ----------------------------------------------------------------- Batch Suspension
 
@@ -108,33 +105,24 @@ class TenantsTable(Table):
         Returns:
             True if tenant was found and updated.
         """
-        tenant = await self.get(tenant_id)
-        if not tenant:
-            return False
+        async with self.record(tenant_id) as rec:
+            if not rec:
+                return False
 
-        if batch_code is None:
-            # Suspend all
-            new_value = "*"
-        else:
-            # Add batch to suspended list
-            current = tenant.get("suspended_batches") or ""
-            if current == "*":
-                # Already fully suspended
-                return True
-            batches = set(current.split(",")) if current else set()
-            batches.discard("")  # Remove empty string if present
-            batches.add(batch_code)
-            new_value = ",".join(sorted(batches))
+            if batch_code is None:
+                # Suspend all
+                rec["suspended_batches"] = "*"
+            else:
+                # Add batch to suspended list
+                current = rec.get("suspended_batches") or ""
+                if current == "*":
+                    # Already fully suspended
+                    return True
+                batches = set(current.split(",")) if current else set()
+                batches.discard("")  # Remove empty string if present
+                batches.add(batch_code)
+                rec["suspended_batches"] = ",".join(sorted(batches))
 
-        await self.execute(
-            """
-            UPDATE tenants
-            SET suspended_batches = :suspended_batches,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = :tenant_id
-            """,
-            {"tenant_id": tenant_id, "suspended_batches": new_value},
-        )
         return True
 
     async def activate_batch(self, tenant_id: str, batch_code: str | None = None) -> bool:
@@ -154,34 +142,25 @@ class TenantsTable(Table):
             True if tenant was found and updated.
             False if tenant not found or trying to remove single batch from "*".
         """
-        tenant = await self.get(tenant_id)
-        if not tenant:
-            return False
-
-        if batch_code is None:
-            # Clear all suspensions
-            new_value = None
-        else:
-            # Remove batch from suspended list
-            current = tenant.get("suspended_batches") or ""
-            if current == "*":
-                # Cannot remove single batch from full suspension
-                # User must activate all first
+        async with self.record(tenant_id) as rec:
+            if not rec:
                 return False
-            batches = set(current.split(",")) if current else set()
-            batches.discard("")
-            batches.discard(batch_code)
-            new_value = ",".join(sorted(batches)) if batches else None
 
-        await self.execute(
-            """
-            UPDATE tenants
-            SET suspended_batches = :suspended_batches,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = :tenant_id
-            """,
-            {"tenant_id": tenant_id, "suspended_batches": new_value},
-        )
+            if batch_code is None:
+                # Clear all suspensions
+                rec["suspended_batches"] = None
+            else:
+                # Remove batch from suspended list
+                current = rec.get("suspended_batches") or ""
+                if current == "*":
+                    # Cannot remove single batch from full suspension
+                    # User must activate all first
+                    return False
+                batches = set(current.split(",")) if current else set()
+                batches.discard("")
+                batches.discard(batch_code)
+                rec["suspended_batches"] = ",".join(sorted(batches)) if batches else None
+
         return True
 
     async def get_suspended_batches(self, tenant_id: str) -> set[str]:

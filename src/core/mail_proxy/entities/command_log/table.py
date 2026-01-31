@@ -32,10 +32,15 @@ class CommandLogTable(Table):
     """
 
     name = "command_log"
+    pkey = "id"
+
+    def new_pkey_value(self) -> None:
+        """INTEGER PRIMARY KEY uses SQLite autoincrement - no value needed."""
+        return None
 
     def configure(self) -> None:
         c = self.columns
-        c.column("id", Integer, primary_key=True)  # autoincrement
+        c.column("id", Integer)
         c.column("command_ts", Integer, nullable=False)  # Unix timestamp
         c.column("endpoint", String, nullable=False)  # e.g., "POST /commands/add-messages"
         c.column("tenant_id", String)  # Tenant context (if applicable)
@@ -67,44 +72,18 @@ class CommandLogTable(Table):
             The ID of the inserted log entry.
         """
         ts = command_ts if command_ts is not None else int(time.time())
-        payload_json = json.dumps(payload)
-        response_json = json.dumps(response_body) if response_body else None
 
-        params = {
+        record: dict[str, Any] = {
             "command_ts": ts,
             "endpoint": endpoint,
             "tenant_id": tenant_id,
-            "payload": payload_json,
+            "payload": json.dumps(payload),
             "response_status": response_status,
-            "response_body": response_json,
+            "response_body": json.dumps(response_body) if response_body else None,
         }
 
-        # Check if using PostgreSQL
-        is_postgres = hasattr(self.db.adapter, "_pool") and self.db.adapter._pool is not None  # type: ignore[attr-defined]
-
-        if is_postgres:
-            row = await self.db.adapter.fetch_one(
-                """
-                INSERT INTO command_log (command_ts, endpoint, tenant_id, payload, response_status, response_body)
-                VALUES (:command_ts, :endpoint, :tenant_id, :payload, :response_status, :response_body)
-                RETURNING id
-                """,
-                params,
-            )
-            return int(row["id"]) if row else 0
-        else:
-            # SQLite: insert and get max id (last_insert_rowid doesn't work across connections)
-            await self.execute(
-                """
-                INSERT INTO command_log (command_ts, endpoint, tenant_id, payload, response_status, response_body)
-                VALUES (:command_ts, :endpoint, :tenant_id, :payload, :response_status, :response_body)
-                """,
-                params,
-            )
-            row = await self.db.adapter.fetch_one(
-                "SELECT MAX(id) as id FROM command_log", {}
-            )
-            return int(row["id"]) if row else 0
+        await self.insert(record)
+        return int(record.get("id", 0))
 
     async def list_commands(
         self,

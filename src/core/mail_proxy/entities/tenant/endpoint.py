@@ -10,7 +10,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, TYPE_CHECKING
 
-from ...interface.endpoint_base import BaseEndpoint
+from ...interface.endpoint_base import BaseEndpoint, POST
 
 if TYPE_CHECKING:
     from .table import TenantsTable
@@ -64,6 +64,7 @@ class TenantEndpoint(BaseEndpoint):
     def __init__(self, table: TenantsTable):
         super().__init__(table)
 
+    @POST
     async def add(
         self,
         id: str,
@@ -95,10 +96,12 @@ class TenantEndpoint(BaseEndpoint):
         """List all tenants."""
         return await self.table.list_all(active_only=active_only)
 
+    @POST
     async def delete(self, tenant_id: str) -> bool:
         """Delete a tenant and all associated data."""
         return await self.table.remove(tenant_id)
 
+    @POST
     async def update(
         self,
         tenant_id: str,
@@ -116,6 +119,7 @@ class TenantEndpoint(BaseEndpoint):
         await self.table.update_fields(tenant_id, fields)
         return await self.table.get(tenant_id)
 
+    @POST
     async def suspend_batch(
         self,
         tenant_id: str,
@@ -136,6 +140,7 @@ class TenantEndpoint(BaseEndpoint):
         suspended = await self.table.get_suspended_batches(tenant_id)
         return {"ok": True, "tenant_id": tenant_id, "suspended_batches": list(suspended)}
 
+    @POST
     async def activate_batch(
         self,
         tenant_id: str,

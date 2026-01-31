@@ -55,7 +55,7 @@ class TenantsTable_EE:
 
         if existing:
             # Update existing tenant - don't change API key
-            async with self.record(tenant_id, pkey="id") as rec:  # type: ignore[attr-defined]
+            async with self.record(tenant_id) as rec:  # type: ignore[attr-defined]
                 rec["name"] = tenant.get("name")
                 rec["client_auth"] = tenant.get("client_auth")
                 rec["client_base_url"] = tenant.get("client_base_url")
@@ -116,29 +116,17 @@ class TenantsTable_EE:
         if not updates:
             return False
 
-        values: dict[str, Any] = {}
-        for key, value in updates.items():
-            if key in ("client_auth", "rate_limits", "large_file_config"):
-                values[key] = value  # Will be JSON-encoded by Table.update()
-            elif key == "active":
-                values["active"] = 1 if value else 0
-            elif key in ("name", "client_base_url", "client_sync_path", "client_attachment_path"):
-                values[key] = value
-
-        if not values:
-            return False
-
-        # Add updated_at via raw query to use CURRENT_TIMESTAMP
-        set_parts = [f"{k} = :val_{k}" for k in values]
-        set_parts.append("updated_at = CURRENT_TIMESTAMP")
-        params = {f"val_{k}": v for k, v in self._encode_json_fields(values).items()}  # type: ignore[attr-defined]
-        params["tenant_id"] = tenant_id
-
-        rowcount = await self.execute(  # type: ignore[attr-defined]
-            f"UPDATE tenants SET {', '.join(set_parts)} WHERE id = :tenant_id",
-            params,
-        )
-        return rowcount > 0
+        async with self.record(tenant_id) as rec:  # type: ignore[attr-defined]
+            if not rec:
+                return False
+            for key, value in updates.items():
+                if key in ("client_auth", "rate_limits", "large_file_config"):
+                    rec[key] = value  # Will be JSON-encoded by Table.update()
+                elif key == "active":
+                    rec["active"] = 1 if value else 0
+                elif key in ("name", "client_base_url", "client_sync_path", "client_attachment_path"):
+                    rec[key] = value
+        return True
 
     async def remove(self, tenant_id: str) -> bool:
         """Delete a tenant and cascade to related accounts and messages.

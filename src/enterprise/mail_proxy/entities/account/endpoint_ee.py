@@ -9,10 +9,13 @@ from __future__ import annotations
 
 from typing import Literal
 
+from core.mail_proxy.interface.endpoint_base import POST
+
 
 class AccountEndpoint_EE:
     """EE mixin: adds PEC account methods to AccountEndpoint."""
 
+    @POST
     async def add_pec(
         self,
         id: str,

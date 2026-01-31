@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Literal, TYPE_CHECKING
 
-from ...interface.endpoint_base import BaseEndpoint
+from ...interface.endpoint_base import BaseEndpoint, POST
 
 if TYPE_CHECKING:
     from .table import AccountsTable
@@ -23,6 +23,7 @@ class AccountEndpoint(BaseEndpoint):
     def __init__(self, table: AccountsTable):
         super().__init__(table)
 
+    @POST
     async def add(
         self,
         id: str,
@@ -52,6 +53,7 @@ class AccountEndpoint(BaseEndpoint):
         """List all SMTP accounts for a tenant."""
         return await self.table.list_all(tenant_id=tenant_id)
 
+    @POST
     async def delete(self, tenant_id: str, account_id: str) -> None:
         """Delete an SMTP account."""
         await self.table.remove(tenant_id, account_id)

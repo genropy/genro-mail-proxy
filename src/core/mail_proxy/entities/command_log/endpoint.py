@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, TYPE_CHECKING
 
-from ...interface.endpoint_base import BaseEndpoint
+from ...interface.endpoint_base import BaseEndpoint, POST
 
 if TYPE_CHECKING:
     from .table import CommandLogTable
@@ -93,6 +93,7 @@ class CommandLogEndpoint(BaseEndpoint):
             until_ts=until_ts,
         )
 
+    @POST
     async def purge(self, threshold_ts: int) -> dict[str, Any]:
         """Delete command logs older than threshold.
 
@@ -103,7 +104,7 @@ class CommandLogEndpoint(BaseEndpoint):
             Dict with deleted count.
         """
         count = await self.table.purge_before(threshold_ts)
-        return {"deleted": count}
+        return {"ok": True, "deleted": count}
 
 
 __all__ = ["CommandLogEndpoint"]

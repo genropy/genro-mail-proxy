@@ -8,7 +8,7 @@ from collections.abc import Iterable, Sequence
 from typing import Any
 
 from sql import Integer, String, Table, Timestamp
-from tools.uid import get_uuid
+from genro_toolbox import get_uuid
 
 
 class MessagesTable(Table):
@@ -23,6 +23,7 @@ class MessagesTable(Table):
     """
 
     name = "messages"
+    pkey = "pk"
 
     def create_table_sql(self) -> str:
         """Generate CREATE TABLE with UNIQUE (tenant_id, id) for multi-tenant isolation."""
@@ -33,7 +34,7 @@ class MessagesTable(Table):
 
     def configure(self) -> None:
         c = self.columns
-        c.column("pk", String, primary_key=True)  # get_uuid() generated
+        c.column("pk", String)  # get_uuid() generated
         c.column("id", String, nullable=False)  # message_id from client
         c.column("tenant_id", String, nullable=False)  # denormalized for isolation
         c.column("account_id", String)  # Legacy: business key (tenant_id, account_id)
@@ -306,7 +307,7 @@ class MessagesTable(Table):
         query = f"""
             SELECT m.pk, m.id, m.tenant_id, m.account_id, m.priority, m.payload, m.batch_code, m.deferred_ts, m.is_pec
             FROM messages m
-            LEFT JOIN accounts a ON m.account_id = a.id AND m.tenant_id = a.tenant_id
+            LEFT JOIN accounts a ON m.account_pk = a.pk
             LEFT JOIN tenants t ON m.tenant_id = t.id
             WHERE {' AND '.join(conditions)}
             ORDER BY m.priority ASC, m.created_at ASC, m.pk ASC
@@ -325,14 +326,9 @@ class MessagesTable(Table):
             pk: Internal primary key of the message (UUID string).
             deferred_ts: Timestamp when message can be retried.
         """
-        await self.execute(
-            """
-            UPDATE messages
-            SET deferred_ts = :deferred_ts, smtp_ts = NULL, updated_at = CURRENT_TIMESTAMP
-            WHERE pk = :pk
-            """,
-            {"deferred_ts": deferred_ts, "pk": pk},
-        )
+        async with self.record(pk) as rec:
+            rec["deferred_ts"] = deferred_ts
+            rec["smtp_ts"] = None
 
     async def clear_deferred(self, pk: str) -> None:
         """Clear the deferred timestamp for a message.
@@ -340,14 +336,8 @@ class MessagesTable(Table):
         Args:
             pk: Internal primary key of the message (UUID string).
         """
-        await self.execute(
-            """
-            UPDATE messages
-            SET deferred_ts = NULL, updated_at = CURRENT_TIMESTAMP
-            WHERE pk = :pk
-            """,
-            {"pk": pk},
-        )
+        async with self.record(pk) as rec:
+            rec["deferred_ts"] = None
 
     async def mark_sent(self, pk: str, smtp_ts: int) -> None:
         """Mark a message as processed (SMTP attempted successfully).
@@ -356,14 +346,9 @@ class MessagesTable(Table):
             pk: Internal primary key of the message (UUID string).
             smtp_ts: Timestamp when SMTP send was attempted.
         """
-        await self.execute(
-            """
-            UPDATE messages
-            SET smtp_ts = :smtp_ts, deferred_ts = NULL, updated_at = CURRENT_TIMESTAMP
-            WHERE pk = :pk
-            """,
-            {"smtp_ts": smtp_ts, "pk": pk},
-        )
+        async with self.record(pk) as rec:
+            rec["smtp_ts"] = smtp_ts
+            rec["deferred_ts"] = None
 
     async def mark_error(self, pk: str, smtp_ts: int) -> None:
         """Mark a message as processed (SMTP attempted with error).
@@ -372,14 +357,9 @@ class MessagesTable(Table):
             pk: Internal primary key of the message (UUID string).
             smtp_ts: Timestamp when SMTP send was attempted.
         """
-        await self.execute(
-            """
-            UPDATE messages
-            SET smtp_ts = :smtp_ts, deferred_ts = NULL, updated_at = CURRENT_TIMESTAMP
-            WHERE pk = :pk
-            """,
-            {"smtp_ts": smtp_ts, "pk": pk},
-        )
+        async with self.record(pk) as rec:
+            rec["smtp_ts"] = smtp_ts
+            rec["deferred_ts"] = None
 
     async def update_payload(self, pk: str, payload: dict[str, Any]) -> None:
         """Update the payload field of a message.
@@ -388,14 +368,8 @@ class MessagesTable(Table):
             pk: Internal primary key of the message (UUID string).
             payload: New payload data.
         """
-        await self.execute(
-            """
-            UPDATE messages
-            SET payload = :payload, updated_at = CURRENT_TIMESTAMP
-            WHERE pk = :pk
-            """,
-            {"payload": json.dumps(payload), "pk": pk},
-        )
+        async with self.record(pk) as rec:
+            rec["payload"] = json.dumps(payload)
 
     async def get(self, msg_id: str, tenant_id: str) -> dict[str, Any] | None:
         """Get a single message by ID. Returns None if not found.
@@ -476,7 +450,7 @@ class MessagesTable(Table):
             f"""
             SELECT m.id
             FROM messages m
-            JOIN accounts a ON m.account_id = a.id AND m.tenant_id = a.tenant_id
+            JOIN accounts a ON m.account_pk = a.pk
             WHERE m.id IN ({placeholders})
               AND a.tenant_id = :tenant_id
             """,
@@ -528,7 +502,7 @@ class MessagesTable(Table):
             DELETE FROM messages
             WHERE pk IN (
                 SELECT m.pk FROM messages m
-                JOIN accounts a ON m.account_id = a.id AND m.tenant_id = a.tenant_id
+                JOIN accounts a ON m.account_pk = a.pk
                 WHERE a.tenant_id = :tenant_id
                   AND m.smtp_ts IS NOT NULL
                   AND NOT EXISTS (
@@ -587,7 +561,7 @@ class MessagesTable(Table):
                        t.name as tenant_name,
                        err.error_ts, err.error
                 FROM messages m
-                LEFT JOIN accounts a ON m.account_id = a.id AND m.tenant_id = a.tenant_id
+                LEFT JOIN accounts a ON m.account_pk = a.pk
                 LEFT JOIN tenants t ON m.tenant_id = t.id
                 LEFT JOIN ({error_subquery}) err ON m.pk = err.message_pk
             """
@@ -685,7 +659,7 @@ class MessagesTable(Table):
             query = """
                 SELECT COUNT(*) as cnt
                 FROM messages m
-                JOIN accounts a ON m.account_id = a.id AND m.tenant_id = a.tenant_id
+                JOIN accounts a ON m.account_pk = a.pk
                 WHERE a.tenant_id = :tenant_id
                   AND m.batch_code = :batch_code
                   AND m.smtp_ts IS NULL
@@ -695,7 +669,7 @@ class MessagesTable(Table):
             query = """
                 SELECT COUNT(*) as cnt
                 FROM messages m
-                JOIN accounts a ON m.account_id = a.id AND m.tenant_id = a.tenant_id
+                JOIN accounts a ON m.account_pk = a.pk
                 WHERE a.tenant_id = :tenant_id
                   AND m.smtp_ts IS NULL
             """

@@ -80,7 +80,7 @@ class AccountsTable_EE:
             """
             SELECT pk, id, tenant_id, host, port, user, ttl,
                    limit_per_minute, limit_per_hour, limit_per_day,
-                   limit_behavior, use_tls, batch_size,
+                   limit_behavior, use_tls, batch_size, is_pec_account,
                    imap_host, imap_port, imap_user, imap_password, imap_folder,
                    imap_last_uid, imap_last_sync, imap_uidvalidity,
                    created_at, updated_at

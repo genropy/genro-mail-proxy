@@ -33,10 +33,15 @@ class MessageEventTable(Table):
     """
 
     name = "message_events"
+    pkey = "id"
+
+    def new_pkey_value(self) -> None:
+        """INTEGER PRIMARY KEY uses SQLite autoincrement - no value needed."""
+        return None
 
     def configure(self) -> None:
         c = self.columns
-        c.column("id", Integer, primary_key=True)  # autoincrement
+        c.column("id", Integer)  # autoincrement
         c.column("message_pk", String, nullable=False)  # FK to messages.pk (UUID)
         c.column("event_type", String, nullable=False)
         c.column("event_ts", Integer, nullable=False)
@@ -126,7 +131,7 @@ class MessageEventTable(Table):
                 m.tenant_id
             FROM message_events e
             JOIN messages m ON e.message_pk = m.pk
-            LEFT JOIN accounts a ON m.account_id = a.id AND m.tenant_id = a.tenant_id
+            LEFT JOIN accounts a ON m.account_pk = a.pk
             WHERE e.reported_ts IS NULL
             ORDER BY e.event_ts ASC, e.id ASC
             LIMIT :limit
@@ -146,19 +151,12 @@ class MessageEventTable(Table):
         return result
 
     async def mark_reported(self, event_ids: list[int], reported_ts: int) -> None:
-        """Mark events as reported to client."""
+        """Mark events as reported to client. No triggers needed."""
         if not event_ids:
             return
-        params: dict[str, Any] = {"reported_ts": reported_ts}
-        params.update({f"id_{i}": eid for i, eid in enumerate(event_ids)})
-        placeholders = ", ".join(f":id_{i}" for i in range(len(event_ids)))
-        await self.execute(
-            f"""
-            UPDATE message_events
-            SET reported_ts = :reported_ts
-            WHERE id IN ({placeholders})
-            """,
-            params,
+        await self.update_batch_raw(
+            pkeys=event_ids,
+            updater={"reported_ts": reported_ts},
         )
 
     async def get_events_for_message(self, message_pk: str) -> list[dict[str, Any]]:

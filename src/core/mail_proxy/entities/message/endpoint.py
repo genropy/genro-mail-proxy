@@ -12,7 +12,7 @@ from typing import Annotated, Any, Literal, TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ...interface.endpoint_base import BaseEndpoint
+from ...interface.endpoint_base import BaseEndpoint, POST
 
 if TYPE_CHECKING:
     from .table import MessagesTable
@@ -82,6 +82,7 @@ class MessageEndpoint(BaseEndpoint):
     def __init__(self, table: MessagesTable):
         super().__init__(table)
 
+    @POST
     async def add(
         self,
         id: str,
@@ -206,6 +207,7 @@ class MessageEndpoint(BaseEndpoint):
         )
         return [self._add_status(m) for m in messages]
 
+    @POST
     async def delete(self, message_pk: str) -> bool:
         """Delete a message by internal primary key.
 
@@ -241,6 +243,7 @@ class MessageEndpoint(BaseEndpoint):
         """
         return await self.table.count_pending_for_tenant(tenant_id, batch_code)
 
+    @POST
     async def add_batch(
         self,
         messages: list[dict[str, Any]],
@@ -333,6 +336,7 @@ class MessageEndpoint(BaseEndpoint):
 
         return {"ok": True, "queued": queued, "rejected": rejected}
 
+    @POST
     async def delete_batch(
         self,
         tenant_id: str,
