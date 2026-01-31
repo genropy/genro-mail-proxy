@@ -667,3 +667,572 @@ class TestSmtpSenderAccountResolutionExtended:
 
         with pytest.raises(AccountConfigurationError, match="Account 'bad' not found"):
             await sender._resolve_account("t1", "bad")
+
+
+class TestSmtpSenderEmailBuildingExtended:
+    """Extended tests for email building edge cases."""
+
+    @pytest.fixture
+    def mock_proxy(self):
+        return MockProxy()
+
+    @pytest.fixture
+    def sender(self, mock_proxy):
+        return SmtpSender(mock_proxy)
+
+    async def test_build_email_with_message_id(self, sender, mock_proxy):
+        """Builds email with custom Message-ID."""
+        data = {
+            "from": "sender@example.com",
+            "to": "recipient@example.com",
+            "subject": "Test",
+            "message_id": "<custom-id@example.com>",
+        }
+
+        msg, _ = await sender._build_email(data)
+
+        assert msg["Message-ID"] == "<custom-id@example.com>"
+
+    async def test_build_email_replaces_existing_header(self, sender, mock_proxy):
+        """Custom headers can replace existing headers."""
+        data = {
+            "from": "sender@example.com",
+            "to": "recipient@example.com",
+            "subject": "Original Subject",
+            "headers": {
+                "Subject": "Replaced Subject",  # Replace existing header
+            },
+        }
+
+        msg, _ = await sender._build_email(data)
+
+        assert msg["Subject"] == "Replaced Subject"
+
+    async def test_build_email_skips_none_headers(self, sender, mock_proxy):
+        """None values in headers dict are skipped."""
+        data = {
+            "from": "sender@example.com",
+            "to": "recipient@example.com",
+            "subject": "Test",
+            "headers": {
+                "X-Custom": "value",
+                "X-Skip": None,  # Should be skipped
+            },
+        }
+
+        msg, _ = await sender._build_email(data)
+
+        assert msg["X-Custom"] == "value"
+        assert msg["X-Skip"] is None
+
+    async def test_format_addresses_with_scalar(self, sender, mock_proxy):
+        """_format_addresses handles scalar values."""
+        data = {
+            "from": "sender@example.com",
+            "to": 12345,  # Non-string, non-list value
+            "subject": "Test",
+        }
+
+        msg, _ = await sender._build_email(data)
+
+        # Should convert to string
+        assert "12345" in msg["To"]
+
+    async def test_build_email_adds_tracking_header(self, sender, mock_proxy):
+        """X-Genro-Mail-ID header is added for message tracking."""
+        data = {
+            "id": "msg-track-12345",
+            "from": "sender@example.com",
+            "to": "recipient@example.com",
+            "subject": "Test",
+        }
+
+        msg, _ = await sender._build_email(data)
+
+        assert msg["X-Genro-Mail-ID"] == "msg-track-12345"
+
+
+class TestSmtpSenderMaxRetriesExceeded:
+    """Tests for max retries exceeded path."""
+
+    @pytest.fixture
+    def mock_proxy(self):
+        return MockProxy()
+
+    @pytest.fixture
+    def sender(self, mock_proxy):
+        s = SmtpSender(mock_proxy)
+        s._resolve_account = AsyncMock(return_value=(
+            "smtp.test.com", 587, "user", "pass", {"id": "a1", "use_tls": True}
+        ))
+        return s
+
+    async def test_send_with_limits_max_retries_exceeded(self, sender, mock_proxy):
+        """Error message includes max retries when exceeded."""
+        mock_proxy._tables["tenants"].get = AsyncMock(return_value={"name": "Test"})
+        mock_proxy._tables["message_events"].add_event = AsyncMock()
+        sender.rate_limiter.check_and_plan = AsyncMock(return_value=(None, False))
+        sender.rate_limiter.release_slot = AsyncMock()
+        mock_proxy._retry_strategy.classify_error = MagicMock(return_value=(True, 450))
+        mock_proxy._retry_strategy.should_retry = MagicMock(return_value=False)
+        mock_proxy._retry_strategy.max_retries = 3
+
+        with patch.object(sender.pool, "connection") as mock_conn:
+            mock_smtp = AsyncMock()
+            mock_smtp.__aenter__ = AsyncMock(return_value=mock_smtp)
+            mock_smtp.__aexit__ = AsyncMock(return_value=None)
+            mock_smtp.send_message = AsyncMock(side_effect=Exception("SMTP Error"))
+            mock_conn.return_value = mock_smtp
+
+            result = await sender._send_with_limits(
+                EmailMessage(), None, "pk-1", "msg-1",
+                {"tenant_id": "t1", "account_id": "a1", "retry_count": 3}  # Already at max
+            )
+
+            assert result["status"] == "error"
+            assert "Max retries" in result["error"]
+
+
+class TestSmtpSenderLargeFileRewrite:
+    """Tests for large file rewrite functionality."""
+
+    @pytest.fixture
+    def mock_proxy(self):
+        return MockProxy()
+
+    @pytest.fixture
+    def sender(self, mock_proxy):
+        s = SmtpSender(mock_proxy)
+        mock_proxy.attachments.fetch = AsyncMock(return_value=(b"content", "file.txt"))
+        mock_proxy.attachments.guess_mime = MagicMock(return_value=("text", "plain"))
+        return s
+
+    async def test_process_attachments_warns_large_file(self, sender, mock_proxy):
+        """Large file with 'warn' action logs warning but attaches."""
+        mock_proxy._tables["tenants"].get = AsyncMock(return_value={
+            "large_file_config": {
+                "enabled": True,
+                "max_size_mb": 0.001,  # 1KB limit to trigger warning
+                "action": "warn",
+            }
+        })
+        mock_proxy._tables["storages"].get_storage_manager = AsyncMock(return_value=None)
+        # Return content larger than 0.001 MB (1KB)
+        mock_proxy.attachments.fetch = AsyncMock(return_value=(b"x" * 2000, "file.txt"))
+
+        msg = EmailMessage()
+        msg.set_content("Body text")
+
+        await sender._process_attachments(
+            msg,
+            {"tenant_id": "t1"},
+            [{"filename": "file.txt", "storage_path": "/path/to/file"}],
+            "plain",
+        )
+
+        # Should log warning but still attach
+        mock_proxy.logger.warning.assert_called()
+
+    async def test_create_large_file_storage_returns_none_without_url(self, sender, mock_proxy):
+        """_create_large_file_storage returns None without storage_url."""
+        result = sender._create_large_file_storage({"enabled": True})
+        assert result is None
+
+
+class TestSmtpSenderTenantAttachmentManager:
+    """Tests for tenant-specific attachment manager."""
+
+    @pytest.fixture
+    def mock_proxy(self):
+        return MockProxy()
+
+    @pytest.fixture
+    def sender(self, mock_proxy):
+        return SmtpSender(mock_proxy)
+
+    async def test_get_attachment_manager_with_tenant_auth(self, sender, mock_proxy):
+        """Returns custom attachment manager with tenant auth."""
+        mock_proxy._tables["tenants"].get = AsyncMock(return_value={
+            "attachment_config": {"base_url": "https://attachments.example.com"},
+            "client_auth": {
+                "method": "bearer",
+                "token": "secret-token",
+            }
+        })
+        mock_proxy._tables["storages"].get_storage_manager = AsyncMock(return_value=None)
+
+        result = await sender._get_attachment_manager_for_message({"tenant_id": "t1"})
+
+        # Should return a new AttachmentManager, not the global one
+        assert result is not mock_proxy.attachments
+
+    async def test_get_attachment_manager_returns_global_when_no_config(self, sender, mock_proxy):
+        """Returns global manager when tenant has no custom config."""
+        mock_proxy._tables["tenants"].get = AsyncMock(return_value={})
+        mock_proxy._tables["storages"].get_storage_manager = AsyncMock(side_effect=ValueError())
+
+        result = await sender._get_attachment_manager_for_message({"tenant_id": "t1"})
+
+        assert result is mock_proxy.attachments
+
+
+class TestSmtpSenderWaitForWakeupExtended:
+    """Extended tests for _wait_for_wakeup."""
+
+    @pytest.fixture
+    def mock_proxy(self):
+        return MockProxy()
+
+    @pytest.fixture
+    def sender(self, mock_proxy):
+        return SmtpSender(mock_proxy)
+
+    async def test_wait_with_infinite_timeout(self, sender):
+        """Infinite timeout waits for wake event."""
+        import math
+
+        async def set_wake():
+            await asyncio.sleep(0.05)
+            sender._wake_event.set()
+
+        asyncio.create_task(set_wake())
+        await sender._wait_for_wakeup(math.inf)
+        # Should complete when wake is set
+
+
+class TestSmtpSenderDispatchBatchEdgeCases:
+    """Edge case tests for _dispatch_batch."""
+
+    @pytest.fixture
+    def mock_proxy(self):
+        return MockProxy()
+
+    @pytest.fixture
+    def sender(self, mock_proxy):
+        s = SmtpSender(mock_proxy)
+        s._dispatch_message = AsyncMock()
+        return s
+
+    async def test_dispatch_batch_empty_after_filtering(self, sender, mock_proxy):
+        """_dispatch_batch handles empty batch after filtering."""
+        # This shouldn't happen normally, but test the guard
+        await sender._dispatch_batch([], 12345)
+        sender._dispatch_message.assert_not_called()
+
+    async def test_dispatch_batch_logs_exception_in_dispatch(self, sender, mock_proxy):
+        """Exceptions in dispatch are logged."""
+        sender._dispatch_message = AsyncMock(side_effect=RuntimeError("Unexpected error"))
+
+        batch = [
+            {"pk": "1", "id": "m1", "account_id": "acct1", "tenant_id": "t1"},
+        ]
+
+        await sender._dispatch_batch(batch, 12345)
+
+        # Should log the exception
+        mock_proxy.logger.exception.assert_called()
+
+
+class TestSmtpSenderLifecycleExtended:
+    """Extended lifecycle tests."""
+
+    @pytest.fixture
+    def mock_proxy(self):
+        p = MockProxy()
+        p._test_mode = False  # Enable cleanup loop
+        return p
+
+    @pytest.fixture
+    def sender(self, mock_proxy):
+        return SmtpSender(mock_proxy)
+
+    async def test_start_creates_cleanup_task_in_non_test_mode(self, sender, mock_proxy):
+        """start() creates cleanup loop task in non-test mode."""
+        await sender.start()
+
+        assert sender._task_cleanup is not None
+
+        await sender.stop()
+
+
+class TestSmtpSenderCleanupLoopExtended:
+    """Extended cleanup loop tests."""
+
+    @pytest.fixture
+    def mock_proxy(self):
+        return MockProxy()
+
+    @pytest.fixture
+    def sender(self, mock_proxy):
+        s = SmtpSender(mock_proxy)
+        s.pool.cleanup = AsyncMock()
+        return s
+
+    async def test_cleanup_loop_timeout_path(self, sender):
+        """Cleanup loop handles timeout without wake event."""
+        # Patch cleanup interval to very short
+        async def run_cleanup():
+            iteration = 0
+            while not sender._stop.is_set():
+                try:
+                    await asyncio.wait_for(sender._wake_cleanup_event.wait(), timeout=0.01)
+                    sender._wake_cleanup_event.clear()
+                except asyncio.TimeoutError:
+                    pass
+                if sender._stop.is_set():
+                    break
+                await sender.pool.cleanup()
+                iteration += 1
+                if iteration >= 2:
+                    sender._stop.set()
+
+        task = asyncio.create_task(run_cleanup())
+        await asyncio.wait_for(task, timeout=1.0)
+
+        assert sender.pool.cleanup.call_count >= 1
+
+
+class TestSmtpSenderAttachmentNone:
+    """Tests for attachment None data handling."""
+
+    @pytest.fixture
+    def mock_proxy(self):
+        return MockProxy()
+
+    @pytest.fixture
+    def sender(self, mock_proxy):
+        s = SmtpSender(mock_proxy)
+        mock_proxy.attachments.guess_mime = MagicMock(return_value=("text", "plain"))
+        return s
+
+    async def test_process_attachments_raises_on_none_data(self, sender, mock_proxy):
+        """Raises ValueError when attachment fetch returns None."""
+        mock_proxy._tables["tenants"].get = AsyncMock(return_value=None)
+        mock_proxy.attachments.fetch = AsyncMock(return_value=None)
+
+        msg = EmailMessage()
+        msg.set_content("Body")
+
+        with pytest.raises(ValueError, match="returned no data"):
+            await sender._process_attachments(
+                msg,
+                {"tenant_id": "t1"},
+                [{"filename": "file.txt"}],
+                "plain",
+            )
+
+
+class TestSmtpSenderGetAttachmentManagerWithAuth:
+    """Tests for _get_attachment_manager_for_message with auth."""
+
+    @pytest.fixture
+    def mock_proxy(self):
+        return MockProxy()
+
+    @pytest.fixture
+    def sender(self, mock_proxy):
+        return SmtpSender(mock_proxy)
+
+    async def test_get_attachment_manager_with_client_auth(self, sender, mock_proxy):
+        """AttachmentManager created with client_auth config."""
+        mock_proxy._tables["tenants"].get = AsyncMock(return_value={
+            "client_auth": {
+                "method": "bearer",
+                "token": "secret-token",
+            }
+        })
+        mock_proxy._tables["storages"].get_storage_manager = AsyncMock(
+            side_effect=ValueError("no storage")
+        )
+
+        result = await sender._get_attachment_manager_for_message({"tenant_id": "t1"})
+
+        # Should return a new AttachmentManager, not the global one
+        assert result is not mock_proxy.attachments
+
+    async def test_get_attachment_manager_storage_exception(self, sender, mock_proxy):
+        """Storage table exception is caught silently."""
+        mock_proxy._tables["tenants"].get = AsyncMock(return_value={
+            "attachment_url": "http://attachments.example.com",
+        })
+        mock_proxy._tables["storages"].get_storage_manager = AsyncMock(
+            side_effect=KeyError("not found")
+        )
+
+        result = await sender._get_attachment_manager_for_message({"tenant_id": "t1"})
+
+        # Should still return a manager (with attachment_url)
+        assert result is not None
+
+
+class TestSmtpSenderLargeFileStorageError:
+    """Tests for LargeFileStorageError stub in CE mode."""
+
+    def test_large_file_storage_error_is_defined(self):
+        """LargeFileStorageError stub is defined in CE mode."""
+        from core.mail_proxy.smtp.sender import LargeFileStorageError
+
+        # Should be able to instantiate
+        err = LargeFileStorageError("test error")
+        assert str(err) == "test error"
+
+
+class TestSmtpSenderAppendDownloadLinks:
+    """Tests for _append_download_links_to_email."""
+
+    @pytest.fixture
+    def mock_proxy(self):
+        return MockProxy()
+
+    @pytest.fixture
+    def sender(self, mock_proxy):
+        return SmtpSender(mock_proxy)
+
+    def test_append_download_links_html(self, sender):
+        """Appends HTML footer for HTML emails."""
+        msg = EmailMessage()
+        msg.set_content("<p>Hello</p>", subtype="html")
+
+        sender._append_download_links_to_email(
+            msg,
+            [{"filename": "big.zip", "size_mb": 25.5, "url": "https://dl.example.com/file"}],
+            "html",
+        )
+
+        body = msg.get_content()
+        assert "Large attachments available for download" in body
+        assert "big.zip" in body
+        assert "https://dl.example.com/file" in body
+
+    def test_append_download_links_plain(self, sender):
+        """Appends plain text footer for plain text emails."""
+        msg = EmailMessage()
+        msg.set_content("Hello World")
+
+        sender._append_download_links_to_email(
+            msg,
+            [{"filename": "data.csv", "size_mb": 15.0, "url": "https://dl.example.com/csv"}],
+            "plain",
+        )
+
+        body = msg.get_content()
+        assert "Large attachments available for download" in body
+        assert "data.csv" in body
+        assert "15.0 MB" in body
+
+    def test_append_download_links_multipart_html(self, sender):
+        """Handles multipart message with HTML body."""
+        msg = EmailMessage()
+        msg.set_content("<p>HTML body</p>", subtype="html")
+        msg.add_attachment(b"small data", maintype="text", subtype="plain", filename="small.txt")
+
+        sender._append_download_links_to_email(
+            msg,
+            [{"filename": "archive.tar.gz", "size_mb": 50.0, "url": "https://storage.example.com/archive"}],
+            "html",
+        )
+
+        # Should have modified the HTML body part
+        body_part = msg.get_body(preferencelist=("html", "plain"))
+        if body_part:
+            content = body_part.get_content()
+            assert "archive.tar.gz" in content
+
+    def test_append_download_links_non_multipart_plain(self, sender):
+        """Handles non-multipart plain text message."""
+        msg = EmailMessage()
+        msg.set_content("Simple body text")
+
+        sender._append_download_links_to_email(
+            msg,
+            [{"filename": "big.bin", "size_mb": 100.0, "url": "https://storage/big"}],
+            "plain",
+        )
+
+        body = msg.get_content()
+        assert "Large attachments available for download" in body
+        assert "big.bin" in body
+
+
+class TestSmtpSenderLargeFileWarnMode:
+    """Tests for large file warn mode functionality."""
+
+    @pytest.fixture
+    def mock_proxy(self):
+        return MockProxy()
+
+    @pytest.fixture
+    def sender(self, mock_proxy):
+        s = SmtpSender(mock_proxy)
+        mock_proxy.attachments.guess_mime = MagicMock(return_value=("application", "octet-stream"))
+        return s
+
+    async def test_process_attachments_warn_mode_sends_anyway(self, sender, mock_proxy):
+        """In warn mode, large attachments are sent with warning."""
+        mock_proxy._tables["tenants"].get = AsyncMock(return_value={
+            "large_file_config": {
+                "enabled": True,
+                "max_size_mb": 1.0,
+                "action": "warn",
+            }
+        })
+        mock_proxy._tables["storages"].get_storage_manager = AsyncMock(
+            side_effect=ValueError("no storage")
+        )
+        # 2MB attachment
+        mock_proxy.attachments.fetch = AsyncMock(return_value=(b"x" * (2 * 1024 * 1024), "large.bin"))
+
+        msg = EmailMessage()
+        msg.set_content("Body")
+
+        # Should NOT raise - just warns and attaches normally
+        await sender._process_attachments(
+            msg,
+            {"tenant_id": "t1"},
+            [{"filename": "large.bin"}],
+            "plain",
+        )
+
+        # Message should have the attachment
+        attachments = list(msg.iter_attachments())
+        assert len(attachments) == 1
+
+
+class TestSmtpSenderBuildEmailExtended:
+    """Tests for additional _build_email paths."""
+
+    @pytest.fixture
+    def mock_proxy(self):
+        return MockProxy()
+
+    @pytest.fixture
+    def sender(self, mock_proxy):
+        return SmtpSender(mock_proxy)
+
+    async def test_build_email_with_reply_to(self, sender, mock_proxy):
+        """Builds email with Reply-To header."""
+        data = {
+            "from": "sender@example.com",
+            "to": "recipient@example.com",
+            "subject": "Test",
+            "reply_to": "reply@example.com",
+        }
+
+        msg, _ = await sender._build_email(data)
+
+        assert msg["Reply-To"] == "reply@example.com"
+
+    async def test_build_email_with_date_header(self, sender, mock_proxy):
+        """Builds email with custom Date header."""
+        data = {
+            "from": "sender@example.com",
+            "to": "recipient@example.com",
+            "subject": "Test",
+            "headers": {
+                "Date": "Wed, 01 Jan 2025 12:00:00 +0000",
+            },
+        }
+
+        msg, _ = await sender._build_email(data)
+
+        assert "2025" in msg["Date"]

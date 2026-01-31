@@ -392,3 +392,286 @@ class TestMessagesTableExistingIds:
         messages = db.table("messages")
         result = await messages.existing_ids(["msg1", "msg2"])
         assert result == set()
+
+    async def test_existing_ids_empty_input(self, db):
+        """existing_ids() returns empty set for empty input."""
+        messages = db.table("messages")
+        result = await messages.existing_ids([])
+        assert result == set()
+
+    async def test_existing_ids_filters_none(self, db):
+        """existing_ids() filters out None/empty values."""
+        messages = db.table("messages")
+        await insert_message(db, "msg1")
+        result = await messages.existing_ids(["msg1", "", None])
+        assert result == {"msg1"}
+
+
+class TestMessagesTableCountPendingForTenant:
+    """Tests for MessagesTable.count_pending_for_tenant() method."""
+
+    async def test_count_pending_for_tenant(self, db):
+        """count_pending_for_tenant() counts pending messages."""
+        messages = db.table("messages")
+        # Need to link messages via account_pk
+        acc = await db.table("accounts").get("t1", "a1")
+        await insert_message(db, "msg1", account_pk=acc["pk"])
+        await insert_message(db, "msg2", account_pk=acc["pk"])
+        await insert_message(db, "sent", account_pk=acc["pk"], smtp_ts=12345)
+        count = await messages.count_pending_for_tenant("t1")
+        assert count == 2
+
+    async def test_count_pending_for_tenant_with_batch_code(self, db):
+        """count_pending_for_tenant() filters by batch_code."""
+        messages = db.table("messages")
+        acc = await db.table("accounts").get("t1", "a1")
+        await insert_message(db, "msg1", account_pk=acc["pk"], batch_code="newsletter")
+        await insert_message(db, "msg2", account_pk=acc["pk"], batch_code="newsletter")
+        await insert_message(db, "msg3", account_pk=acc["pk"], batch_code="other")
+        count = await messages.count_pending_for_tenant("t1", batch_code="newsletter")
+        assert count == 2
+
+    async def test_count_pending_for_tenant_no_results(self, db):
+        """count_pending_for_tenant() returns 0 when no messages."""
+        messages = db.table("messages")
+        count = await messages.count_pending_for_tenant("t1")
+        assert count == 0
+
+
+class TestMessagesTableGetIdsForTenant:
+    """Tests for MessagesTable.get_ids_for_tenant() method."""
+
+    async def test_get_ids_for_tenant(self, db):
+        """get_ids_for_tenant() returns IDs owned by tenant."""
+        messages = db.table("messages")
+        acc = await db.table("accounts").get("t1", "a1")
+        await insert_message(db, "msg1", account_pk=acc["pk"])
+        await insert_message(db, "msg2", account_pk=acc["pk"])
+        result = await messages.get_ids_for_tenant(["msg1", "msg2", "msg3"], "t1")
+        assert result == {"msg1", "msg2"}
+
+    async def test_get_ids_for_tenant_empty_input(self, db):
+        """get_ids_for_tenant() returns empty set for empty input."""
+        messages = db.table("messages")
+        result = await messages.get_ids_for_tenant([], "t1")
+        assert result == set()
+
+
+class TestMessagesTableDecodePayload:
+    """Tests for MessagesTable._decode_payload() edge cases."""
+
+    async def test_decode_payload_invalid_json(self, db):
+        """_decode_payload() handles invalid JSON gracefully."""
+        messages = db.table("messages")
+        # Insert message with invalid JSON payload directly
+        from genro_toolbox import get_uuid
+        pk = get_uuid()
+        await db.adapter.execute(
+            "INSERT INTO messages (pk, id, tenant_id, account_id, payload, priority) VALUES (:pk, :id, :tenant_id, :account_id, :payload, :priority)",
+            {"pk": pk, "id": "bad", "tenant_id": "t1", "account_id": "a1", "payload": "not{valid}json", "priority": 2}
+        )
+        msg = await messages.get_by_pk(pk)
+        assert msg is not None
+        assert msg["message"]["raw_payload"] == "not{valid}json"
+
+    def test_decode_payload_direct_with_none(self, db):
+        """_decode_payload() handles None payload directly."""
+        messages = db.table("messages")
+        # Test _decode_payload directly with None payload
+        data = {"pk": "test", "id": "test", "payload": None}
+        result = messages._decode_payload(data)
+        assert result["message"] is None
+
+
+class TestMessagesTableUpdatePayload:
+    """Tests for MessagesTable.update_payload() method."""
+
+    async def test_update_payload(self, db):
+        """update_payload() updates message payload."""
+        messages = db.table("messages")
+        pk = await insert_message(db, "msg1")
+        new_payload = {"to": "new@example.com", "subject": "Updated"}
+        await messages.update_payload(pk, new_payload)
+        msg = await messages.get_by_pk(pk)
+        assert msg["message"]["to"] == "new@example.com"
+        assert msg["message"]["subject"] == "Updated"
+
+
+class TestMessagesTableListAllHistory:
+    """Tests for MessagesTable.list_all() with include_history."""
+
+    async def test_list_all_with_history(self, db):
+        """list_all(include_history=True) adds event history."""
+        messages = db.table("messages")
+        pk = await insert_message(db, "msg1")
+        # Add event
+        await db.table("message_events").add_event(pk, "sent", int(time.time()), description="OK")
+        result = await messages.list_all(include_history=True)
+        assert len(result) == 1
+        assert "history" in result[0]
+        assert len(result[0]["history"]) == 1
+        assert result[0]["history"][0]["event_type"] == "sent"
+
+    async def test_list_all_with_history_empty(self, db):
+        """list_all(include_history=True) works with no events."""
+        messages = db.table("messages")
+        await insert_message(db, "msg1")
+        result = await messages.list_all(include_history=True)
+        assert len(result) == 1
+        assert result[0]["history"] == []
+
+
+class TestMessagesTableFetchReadyMinPriority:
+    """Tests for fetch_ready() with min_priority filter."""
+
+    async def test_fetch_ready_min_priority(self, db):
+        """fetch_ready() filters by min_priority."""
+        messages = db.table("messages")
+        await insert_message(db, "p0", priority=0)
+        await insert_message(db, "p1", priority=1)
+        await insert_message(db, "p2", priority=2)
+        await insert_message(db, "p3", priority=3)
+        now_ts = int(time.time())
+        result = await messages.fetch_ready(limit=10, now_ts=now_ts, min_priority=2)
+        assert len(result) == 2
+        ids = {m["id"] for m in result}
+        assert ids == {"p2", "p3"}
+
+
+class TestMessagesTableMigration:
+    """Tests for MessagesTable.migrate_from_legacy_schema() method."""
+
+    async def test_migration_skips_when_pk_exists(self, db):
+        """Migration returns False when pk column already exists."""
+        messages = db.table("messages")
+        # pk column exists in current schema
+        result = await messages.migrate_from_legacy_schema()
+        assert result is False
+
+    async def test_migration_skips_when_table_not_exists(self, tmp_path):
+        """Migration returns False when messages table doesn't exist."""
+        from core.mail_proxy.proxy_base import MailProxyBase
+        from core.mail_proxy.proxy_config import ProxyConfig
+
+        db_path = str(tmp_path / "empty.db")
+        proxy = MailProxyBase(ProxyConfig(db_path=db_path))
+        await proxy.db.adapter.connect()
+
+        messages = proxy.db.table("messages")
+        result = await messages.migrate_from_legacy_schema()
+        assert result is False
+
+        await proxy.close()
+
+    async def test_migration_from_legacy_schema(self, tmp_path):
+        """Migration converts legacy composite PK to UUID PK."""
+        from core.mail_proxy.proxy_base import MailProxyBase
+        from core.mail_proxy.proxy_config import ProxyConfig
+
+        db_path = str(tmp_path / "legacy.db")
+        proxy = MailProxyBase(ProxyConfig(db_path=db_path))
+        await proxy.db.adapter.connect()
+
+        # Create legacy schema (no pk column)
+        await proxy.db.adapter.execute("""
+            CREATE TABLE messages (
+                id TEXT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                account_id TEXT,
+                priority INTEGER NOT NULL DEFAULT 2,
+                payload TEXT NOT NULL,
+                batch_code TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                deferred_ts INTEGER,
+                smtp_ts INTEGER,
+                is_pec INTEGER DEFAULT 0,
+                PRIMARY KEY (tenant_id, id)
+            )
+        """)
+
+        # Insert legacy data
+        await proxy.db.adapter.execute(
+            """INSERT INTO messages
+               (id, tenant_id, account_id, priority, payload, is_pec)
+               VALUES ('msg1', 't1', 'a1', 1, '{"to": "a@x.com"}', 0)"""
+        )
+        await proxy.db.adapter.execute(
+            """INSERT INTO messages
+               (id, tenant_id, account_id, priority, payload, is_pec)
+               VALUES ('msg2', 't1', 'a1', 2, '{"to": "b@x.com"}', 1)"""
+        )
+
+        messages = proxy.db.table("messages")
+        result = await messages.migrate_from_legacy_schema()
+
+        assert result is True
+
+        # Verify pk column now exists
+        row = await proxy.db.adapter.fetch_one("SELECT pk FROM messages LIMIT 1")
+        assert row is not None
+        assert row["pk"] is not None
+        assert len(row["pk"]) == 22
+
+        # Verify data was preserved
+        rows = await proxy.db.adapter.fetch_all("SELECT * FROM messages ORDER BY id")
+        assert len(rows) == 2
+        assert rows[0]["id"] == "msg1"
+        assert rows[0]["priority"] == 1
+        assert rows[1]["id"] == "msg2"
+        assert rows[1]["is_pec"] == 1
+
+        await proxy.close()
+
+
+class TestMessagesTableMigrateAccountPk:
+    """Tests for MessagesTable.migrate_account_pk() method."""
+
+    async def test_migrate_account_pk(self, db):
+        """migrate_account_pk() populates account_pk from account_id."""
+        messages = db.table("messages")
+        # Get account pk
+        acc = await db.table("accounts").get("t1", "a1")
+        account_pk = acc["pk"]
+
+        # Insert message without account_pk
+        from genro_toolbox import get_uuid
+        pk = get_uuid()
+        await db.adapter.execute(
+            """INSERT INTO messages (pk, id, tenant_id, account_id, priority, payload)
+               VALUES (:pk, :id, :tenant_id, :account_id, :priority, :payload)""",
+            {"pk": pk, "id": "msg1", "tenant_id": "t1", "account_id": "a1", "priority": 2, "payload": "{}"}
+        )
+
+        # Run migration
+        await messages.migrate_account_pk()
+
+        # Verify account_pk was populated
+        row = await db.adapter.fetch_one(
+            "SELECT account_pk FROM messages WHERE pk = :pk",
+            {"pk": pk}
+        )
+        assert row["account_pk"] == account_pk
+
+    async def test_migrate_account_pk_handles_missing_account(self, db):
+        """migrate_account_pk() handles messages with non-existent account."""
+        messages = db.table("messages")
+
+        # Insert message with non-existent account
+        from genro_toolbox import get_uuid
+        pk = get_uuid()
+        await db.adapter.execute(
+            """INSERT INTO messages (pk, id, tenant_id, account_id, priority, payload)
+               VALUES (:pk, :id, :tenant_id, :account_id, :priority, :payload)""",
+            {"pk": pk, "id": "msg1", "tenant_id": "t1", "account_id": "nonexistent", "priority": 2, "payload": "{}"}
+        )
+
+        # Run migration - should not raise
+        await messages.migrate_account_pk()
+
+        # account_pk should remain NULL for missing account
+        row = await db.adapter.fetch_one(
+            "SELECT account_pk FROM messages WHERE pk = :pk",
+            {"pk": pk}
+        )
+        assert row["account_pk"] is None

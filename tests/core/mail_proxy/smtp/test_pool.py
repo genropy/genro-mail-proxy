@@ -405,3 +405,183 @@ class TestSMTPPool:
         # Releasing untracked connection should just close it
         await pool.release(mock_smtp)
         mock_smtp.quit.assert_called_once()
+
+    async def test_release_untracked_connection_quit_exception(self, pool):
+        """release() handles exception during quit of untracked connection."""
+        mock_smtp = AsyncMock()
+        mock_smtp.quit = AsyncMock(side_effect=Exception("quit failed"))
+
+        # Should not raise
+        await pool.release(mock_smtp)
+        mock_smtp.quit.assert_called_once()
+
+    @patch("core.mail_proxy.smtp.pool.aiosmtplib.SMTP")
+    async def test_release_unhealthy_connection_closes_it(self, mock_smtp_class, pool):
+        """release() closes unhealthy connection instead of returning to pool."""
+        mock_smtp = AsyncMock()
+        mock_smtp.connect = AsyncMock()
+        mock_smtp.login = AsyncMock()
+        mock_smtp.noop = AsyncMock(return_value=(250, "OK"))
+        mock_smtp.quit = AsyncMock(side_effect=Exception("quit failed"))
+        mock_smtp_class.return_value = mock_smtp
+
+        # Acquire connection
+        smtp = await pool.acquire("smtp.example.com", 465, "user", "pass", use_tls=True)
+
+        # Make it unhealthy before release
+        mock_smtp.noop = AsyncMock(side_effect=Exception("connection lost"))
+
+        # Release should close it (quit exception is caught)
+        await pool.release(smtp)
+
+        # Connection should NOT be in idle pool
+        key = "smtp.example.com:465:user"
+        assert key not in pool._idle or len(pool._idle[key]) == 0
+
+    @patch("core.mail_proxy.smtp.pool.aiosmtplib.SMTP")
+    async def test_acquire_expired_ttl_connection_closes_it(self, mock_smtp_class, pool):
+        """acquire() closes expired TTL connection and continues."""
+        # Create pool with very short TTL
+        pool = SMTPPool(ttl=0.001, max_per_account=5)
+
+        mock_smtp = AsyncMock()
+        mock_smtp.connect = AsyncMock()
+        mock_smtp.login = AsyncMock()
+        mock_smtp.noop = AsyncMock(return_value=(250, "OK"))
+        mock_smtp.quit = AsyncMock()
+        mock_smtp_class.return_value = mock_smtp
+
+        # Acquire and release to put in idle pool
+        smtp1 = await pool.acquire("smtp.example.com", 465, "user", "pass", use_tls=True)
+        # Make it healthy for release
+        mock_smtp.noop = AsyncMock(return_value=(250, "OK"))
+        await pool.release(smtp1)
+
+        # Wait for TTL to expire
+        import time
+        time.sleep(0.01)
+
+        # Acquire again - should get new connection because old one expired
+        smtp2 = await pool.acquire("smtp.example.com", 465, "user", "pass", use_tls=True)
+        # quit should have been called on the expired connection
+        assert mock_smtp.quit.called
+
+    @patch("core.mail_proxy.smtp.pool.aiosmtplib.SMTP")
+    async def test_acquire_unhealthy_idle_connection_closes_it(self, mock_smtp_class, pool):
+        """acquire() closes unhealthy idle connection and continues."""
+        mock_smtp1 = AsyncMock()
+        mock_smtp1.connect = AsyncMock()
+        mock_smtp1.login = AsyncMock()
+        mock_smtp1.noop = AsyncMock(return_value=(250, "OK"))
+        mock_smtp1.quit = AsyncMock()
+
+        mock_smtp2 = AsyncMock()
+        mock_smtp2.connect = AsyncMock()
+        mock_smtp2.login = AsyncMock()
+        mock_smtp2.noop = AsyncMock(return_value=(250, "OK"))
+        mock_smtp2.quit = AsyncMock()
+
+        # First call returns first mock, second returns second
+        mock_smtp_class.side_effect = [mock_smtp1, mock_smtp2]
+
+        # Acquire and release to put in idle pool
+        smtp1 = await pool.acquire("smtp.example.com", 465, "user", "pass", use_tls=True)
+        await pool.release(smtp1)
+
+        # Make first connection unhealthy
+        mock_smtp1.noop = AsyncMock(side_effect=Exception("connection lost"))
+
+        # Acquire again - should close unhealthy and get new connection
+        smtp2 = await pool.acquire("smtp.example.com", 465, "user", "pass", use_tls=True)
+
+        # First connection should have been closed
+        mock_smtp1.quit.assert_called()
+        # New connection should be second mock
+        assert smtp2 is mock_smtp2
+
+    @patch("core.mail_proxy.smtp.pool.aiosmtplib.SMTP")
+    async def test_is_alive_exception_returns_false(self, mock_smtp_class, pool):
+        """_is_alive returns False on exception."""
+        mock_smtp = AsyncMock()
+        mock_smtp.noop = AsyncMock(side_effect=Exception("network error"))
+
+        result = await pool._is_alive(mock_smtp)
+
+        assert result is False
+
+    async def test_close_connection_exception_ignored(self, pool):
+        """_close_connection ignores exceptions during quit."""
+        mock_smtp = AsyncMock()
+        mock_smtp.quit = AsyncMock(side_effect=Exception("already closed"))
+
+        conn = PooledConnection(smtp=mock_smtp, account_key="test")
+
+        # Should not raise
+        await pool._close_connection(conn)
+        mock_smtp.quit.assert_called_once()
+
+    async def test_get_connection_legacy_api(self, pool):
+        """get_connection (deprecated) delegates to acquire."""
+        pool.acquire = AsyncMock(return_value="mock_smtp")
+
+        result = await pool.get_connection(
+            "smtp.example.com", 465, "user", "pass", use_tls=True
+        )
+
+        assert result == "mock_smtp"
+        pool.acquire.assert_called_once_with(
+            "smtp.example.com", 465, "user", "pass", use_tls=True
+        )
+
+    @patch("core.mail_proxy.smtp.pool.aiosmtplib.SMTP")
+    async def test_cleanup_removes_expired_and_cleans_empty_keys(self, mock_smtp_class, pool):
+        """cleanup() removes expired connections and cleans up empty keys."""
+        pool = SMTPPool(ttl=0.001, max_per_account=5)
+
+        mock_smtp = AsyncMock()
+        mock_smtp.connect = AsyncMock()
+        mock_smtp.login = AsyncMock()
+        mock_smtp.noop = AsyncMock(return_value=(250, "OK"))
+        mock_smtp.quit = AsyncMock()
+        mock_smtp_class.return_value = mock_smtp
+
+        # Acquire and release
+        smtp = await pool.acquire("smtp.example.com", 465, "user", "pass", use_tls=True)
+        await pool.release(smtp)
+
+        # Wait for TTL
+        import time
+        time.sleep(0.01)
+
+        key = "smtp.example.com:465:user"
+        assert key in pool._idle
+
+        # Cleanup should remove expired
+        await pool.cleanup()
+
+        # Key should be removed since empty
+        assert key not in pool._idle
+
+    @patch("core.mail_proxy.smtp.pool.aiosmtplib.SMTP")
+    async def test_cleanup_keeps_valid_connections(self, mock_smtp_class, pool):
+        """cleanup() keeps valid connections in idle pools."""
+        mock_smtp = AsyncMock()
+        mock_smtp.connect = AsyncMock()
+        mock_smtp.login = AsyncMock()
+        mock_smtp.noop = AsyncMock(return_value=(250, "OK"))
+        mock_smtp.quit = AsyncMock()
+        mock_smtp_class.return_value = mock_smtp
+
+        # Acquire and release
+        smtp = await pool.acquire("smtp.example.com", 465, "user", "pass", use_tls=True)
+        await pool.release(smtp)
+
+        key = "smtp.example.com:465:user"
+        assert key in pool._idle
+        assert len(pool._idle[key]) == 1
+
+        # Cleanup should keep valid connection
+        await pool.cleanup()
+
+        assert key in pool._idle
+        assert len(pool._idle[key]) == 1

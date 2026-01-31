@@ -917,3 +917,591 @@ class TestMailProxyBaseCli:
         # Should have commands for registered endpoints
         # At minimum should have some commands
         assert len(cli.commands) > 1  # serve + at least some endpoint commands
+
+
+class TestMailProxyBaseApi:
+    """Tests for API creation in MailProxyBase."""
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_api_property_creates_fastapi_app(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """api property creates a FastAPI app on first access."""
+        from fastapi import FastAPI
+
+        mock_db_cls.return_value = MockDb()
+
+        proxy = MailProxy()
+        api = proxy.api
+
+        assert isinstance(api, FastAPI)
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_api_property_is_cached(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """api property returns same instance on subsequent calls."""
+        mock_db_cls.return_value = MockDb()
+
+        proxy = MailProxy()
+        api1 = proxy.api
+        api2 = proxy.api
+
+        assert api1 is api2
+
+
+class TestMailProxyBaseEndpoint:
+    """Tests for endpoint() method in MailProxyBase."""
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_endpoint_not_found_raises_value_error(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """endpoint() raises ValueError for unknown endpoint name."""
+        mock_db_cls.return_value = MockDb()
+
+        proxy = MailProxy()
+
+        with pytest.raises(ValueError, match="Endpoint 'nonexistent' not found"):
+            proxy.endpoint("nonexistent")
+
+
+class TestMailProxyBaseTableDiscoveryExtended:
+    """Extended tests for table discovery edge cases."""
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_get_class_from_module_filters_ee_classes(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """_get_class_from_module filters out _EE classes."""
+        mock_db_cls.return_value = MockDb()
+
+        proxy = MailProxy()
+
+        # Create module with _EE class
+        mock_module = type('MockModule', (), {})()
+        mock_module.SomeTable_EE = type("SomeTable_EE", (), {"name": "test"})
+
+        result = proxy._get_class_from_module(mock_module, "Table")
+        assert result is None  # _EE classes are filtered
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_get_class_from_module_filters_base_table(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """_get_class_from_module filters out bare 'Table' class."""
+        mock_db_cls.return_value = MockDb()
+
+        proxy = MailProxy()
+
+        # Create module with only Table class (the base class import)
+        mock_module = type('MockModule', (), {})()
+        mock_module.Table = type("Table", (), {"name": "table"})
+
+        result = proxy._get_class_from_module(mock_module, "Table")
+        assert result is None  # Base Table class is filtered
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_get_class_from_module_filters_class_without_name(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """_get_class_from_module filters out classes without name attribute."""
+        mock_db_cls.return_value = MockDb()
+
+        proxy = MailProxy()
+
+        # Create module with class that has no name attribute
+        mock_module = type('MockModule', (), {})()
+        mock_module.SomeTable = type("SomeTable", (), {})  # No name attribute
+
+        result = proxy._get_class_from_module(mock_module, "Table")
+        assert result is None  # Classes without name are filtered
+
+
+class TestMailProxyBaseEncryptionKeyExtended:
+    """Extended tests for encryption key loading edge cases."""
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_secrets_file_read_error_ignored(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """Errors reading secrets file are silently ignored."""
+        import os
+
+        mock_db_cls.return_value = MockDb()
+
+        mock_path_instance = MagicMock()
+        mock_path_instance.exists.return_value = True
+        mock_path_instance.read_bytes.side_effect = IOError("Permission denied")
+
+        with patch.dict(os.environ, {}, clear=True), \
+             patch('pathlib.Path') as mock_path_cls:
+            mock_path_cls.return_value = mock_path_instance
+
+            proxy = MailProxy()
+            assert proxy.encryption_key is None  # Error is silently handled
+
+
+class TestMailProxyCompatibilityProperties:
+    """Tests for compatibility properties (pool, rate_limiter)."""
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_pool_property_delegates_to_smtp_sender(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """pool property delegates to smtp_sender.pool."""
+        mock_db_cls.return_value = MockDb()
+
+        proxy = MailProxy()
+        mock_pool = MagicMock()
+        proxy.smtp_sender.pool = mock_pool
+
+        assert proxy.pool is mock_pool
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_rate_limiter_property_delegates_to_smtp_sender(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """rate_limiter property delegates to smtp_sender.rate_limiter."""
+        mock_db_cls.return_value = MockDb()
+
+        proxy = MailProxy()
+        mock_limiter = MagicMock()
+        proxy.smtp_sender.rate_limiter = mock_limiter
+
+        assert proxy.rate_limiter is mock_limiter
+
+
+class TestMailProxyInitMethod:
+    """Tests for init() method with cache initialization."""
+
+    @patch('core.mail_proxy.proxy.TieredCache')
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    async def test_init_with_cache_enabled(self, mock_db_cls, mock_reporter_cls, mock_sender_cls, mock_cache_cls):
+        """init() initializes TieredCache when cache is enabled."""
+        from core.mail_proxy.proxy_config import ProxyConfig, CacheConfig
+
+        mock_db_cls.return_value = MockDb()
+
+        # Configure cache to be enabled via config
+        cache_config = CacheConfig(
+            memory_max_mb=100,
+            memory_ttl_seconds=300,
+            disk_dir="/tmp/cache",  # This enables the cache
+            disk_max_mb=500,
+            disk_ttl_seconds=3600,
+            disk_threshold_kb=100,
+        )
+        config = ProxyConfig(cache=cache_config)
+
+        proxy = MailProxy(config=config)
+        proxy._refresh_queue_gauge = AsyncMock()
+        proxy._init_account_metrics = AsyncMock()
+
+        mock_cache_instance = MagicMock()
+        mock_cache_instance.init = AsyncMock()
+        mock_cache_cls.return_value = mock_cache_instance
+
+        # Mock MailProxyBase.init
+        with patch.object(MailProxy.__bases__[0], 'init', new_callable=AsyncMock):
+            await proxy.init()
+
+        mock_cache_cls.assert_called_once_with(
+            memory_max_mb=100,
+            memory_ttl_seconds=300,
+            disk_dir="/tmp/cache",
+            disk_max_mb=500,
+            disk_ttl_seconds=3600,
+            disk_threshold_kb=100,
+        )
+        mock_cache_instance.init.assert_called_once()
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    async def test_init_without_cache(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """init() skips cache when disabled."""
+        from core.mail_proxy.proxy_config import ProxyConfig, CacheConfig
+
+        mock_db_cls.return_value = MockDb()
+
+        # No disk_dir means cache is disabled
+        cache_config = CacheConfig(disk_dir=None)
+        config = ProxyConfig(cache=cache_config)
+
+        proxy = MailProxy(config=config)
+        proxy._refresh_queue_gauge = AsyncMock()
+        proxy._init_account_metrics = AsyncMock()
+        proxy._attachment_cache = None
+
+        # Mock MailProxyBase.init
+        with patch.object(MailProxy.__bases__[0], 'init', new_callable=AsyncMock):
+            await proxy.init()
+
+        assert proxy._attachment_cache is None
+
+
+class TestMailProxyDeleteMessagesCommand:
+    """Tests for deleteMessages command through handle_command."""
+
+    @pytest.fixture
+    def proxy(self):
+        with patch('core.mail_proxy.proxy.SmtpSender'), \
+             patch('core.mail_proxy.proxy.ClientReporter'), \
+             patch('core.mail_proxy.proxy_base.SqlDb') as mock_db_cls:
+            mock_db_cls.return_value = MockDb()
+            p = MailProxy()
+            p.smtp_sender = MagicMock()
+            p.client_reporter = MagicMock()
+            p.client_reporter._last_sync = {}
+            p._dispatcher = MagicMock()
+            p._dispatcher.dispatch = AsyncMock(return_value={"ok": True})
+            p._refresh_queue_gauge = AsyncMock()
+            p.db.table("command_log").log_command = AsyncMock()
+            return p
+
+    async def test_delete_messages_success(self, proxy):
+        """deleteMessages command deletes messages and returns counts."""
+        proxy.db.table("messages").get_ids_for_tenant = AsyncMock(return_value={"m1", "m2"})
+        proxy.db.table("messages").delete = AsyncMock(return_value=True)
+
+        result = await proxy.handle_command("deleteMessages", {
+            "tenant_id": "t1",
+            "ids": ["m1", "m2", "m3"]
+        })
+
+        assert result["ok"] is True
+        assert result["removed"] == 2
+        assert "m3" in result["unauthorized"]
+        proxy._refresh_queue_gauge.assert_called()
+
+
+class TestMailProxyCleanupMessagesCommand:
+    """Tests for cleanupMessages command through handle_command."""
+
+    @pytest.fixture
+    def proxy(self):
+        with patch('core.mail_proxy.proxy.SmtpSender'), \
+             patch('core.mail_proxy.proxy.ClientReporter'), \
+             patch('core.mail_proxy.proxy_base.SqlDb') as mock_db_cls:
+            mock_db_cls.return_value = MockDb()
+            p = MailProxy()
+            p.smtp_sender = MagicMock()
+            p.client_reporter = MagicMock()
+            p.client_reporter._last_sync = {}
+            p._dispatcher = MagicMock()
+            p._dispatcher.dispatch = AsyncMock(return_value={"ok": True})
+            p._refresh_queue_gauge = AsyncMock()
+            p._report_retention_seconds = 3600
+            p.db.table("command_log").log_command = AsyncMock()
+            p.db.table("messages").remove_fully_reported_before_for_tenant = AsyncMock(return_value=5)
+            return p
+
+    async def test_cleanup_messages_success(self, proxy):
+        """cleanupMessages command removes old reported messages."""
+        result = await proxy.handle_command("cleanupMessages", {
+            "tenant_id": "t1",
+            "older_than_seconds": 7200
+        })
+
+        assert result["ok"] is True
+        assert result["removed"] == 5
+
+
+class TestMailProxyDeleteAccountCommand:
+    """Tests for deleteAccount command through handle_command."""
+
+    @pytest.fixture
+    def proxy(self):
+        with patch('core.mail_proxy.proxy.SmtpSender'), \
+             patch('core.mail_proxy.proxy.ClientReporter'), \
+             patch('core.mail_proxy.proxy_base.SqlDb') as mock_db_cls:
+            mock_db_cls.return_value = MockDb()
+            p = MailProxy()
+            p.smtp_sender = MagicMock()
+            p.client_reporter = MagicMock()
+            p.client_reporter._last_sync = {}
+            p._dispatcher = MagicMock()
+            p._dispatcher.dispatch = AsyncMock(return_value={"ok": True})
+            p._refresh_queue_gauge = AsyncMock()
+            p.db.table("command_log").log_command = AsyncMock()
+            return p
+
+    async def test_delete_account_success(self, proxy):
+        """deleteAccount command deletes account successfully."""
+        proxy.db.table("accounts").get = AsyncMock(return_value={"id": "acc1"})
+        proxy.db.table("accounts").remove = AsyncMock()
+
+        result = await proxy.handle_command("deleteAccount", {
+            "tenant_id": "t1",
+            "id": "acc1"
+        })
+
+        assert result["ok"] is True
+        proxy.db.table("accounts").remove.assert_called_once_with("t1", "acc1")
+        proxy._refresh_queue_gauge.assert_called()
+
+    async def test_delete_account_not_found(self, proxy):
+        """deleteAccount command returns error when account not found."""
+        proxy.db.table("accounts").get = AsyncMock(side_effect=ValueError("not found"))
+
+        result = await proxy.handle_command("deleteAccount", {
+            "tenant_id": "t1",
+            "id": "nonexistent"
+        })
+
+        assert result["ok"] is False
+        assert "not found" in result["error"]
+
+
+class TestMailProxyInitAccountMetrics:
+    """Tests for _init_account_metrics method."""
+
+    @pytest.fixture
+    def proxy(self):
+        with patch('core.mail_proxy.proxy.SmtpSender'), \
+             patch('core.mail_proxy.proxy.ClientReporter'), \
+             patch('core.mail_proxy.proxy_base.SqlDb') as mock_db_cls:
+            mock_db_cls.return_value = MockDb()
+            p = MailProxy()
+            p.metrics = MagicMock()
+            return p
+
+    async def test_init_account_metrics_initializes_default(self, proxy):
+        """_init_account_metrics always initializes default account."""
+        proxy.db.table("tenants").list_all = AsyncMock(return_value=[])
+        proxy.db.table("accounts").list_all = AsyncMock(return_value=[])
+
+        await proxy._init_account_metrics()
+
+        proxy.metrics.init_account.assert_called()
+        proxy.metrics.set_pending.assert_called_with(0)
+
+    async def test_init_account_metrics_initializes_all_accounts(self, proxy):
+        """_init_account_metrics initializes metrics for all accounts."""
+        proxy.db.table("tenants").list_all = AsyncMock(return_value=[
+            {"id": "t1", "name": "Tenant 1"},
+            {"id": "t2", "name": "Tenant 2"},
+        ])
+        proxy.db.table("accounts").list_all = AsyncMock(return_value=[
+            {"id": "acc1", "tenant_id": "t1"},
+            {"id": "acc2", "tenant_id": "t2"},
+        ])
+
+        await proxy._init_account_metrics()
+
+        # Should have called init_account for default + 2 accounts
+        assert proxy.metrics.init_account.call_count >= 3
+
+
+class TestMailProxyLogDeliveryEventExtended:
+    """Extended tests for _log_delivery_event method."""
+
+    @pytest.fixture
+    def proxy(self):
+        with patch('core.mail_proxy.proxy.SmtpSender'), \
+             patch('core.mail_proxy.proxy.ClientReporter'), \
+             patch('core.mail_proxy.proxy_base.SqlDb') as mock_db_cls:
+            mock_db_cls.return_value = MockDb()
+            p = MailProxy()
+            p.logger = MagicMock()
+            p._log_delivery_activity = True
+            return p
+
+    def test_log_deferred_event_with_non_numeric_timestamp(self, proxy):
+        """Deferred events handle non-numeric timestamps."""
+        event = {
+            "status": "deferred",
+            "id": "msg1",
+            "account": "acc1",
+            "deferred_until": "2025-01-20T10:00:00Z"  # String timestamp
+        }
+        proxy._log_delivery_event(event)
+        proxy.logger.info.assert_called()
+
+    def test_log_unknown_status_event(self, proxy):
+        """Unknown status events are logged as info."""
+        event = {
+            "status": "processing",  # Unknown status
+            "id": "msg1",
+            "account": "acc1",
+        }
+        proxy._log_delivery_event(event)
+        proxy.logger.info.assert_called()
+
+
+class TestMailProxyNormalisePriorityExtended:
+    """Extended tests for _normalise_priority edge cases."""
+
+    @pytest.fixture
+    def proxy(self):
+        with patch('core.mail_proxy.proxy.SmtpSender'), \
+             patch('core.mail_proxy.proxy.ClientReporter'), \
+             patch('core.mail_proxy.proxy_base.SqlDb') as mock_db_cls:
+            mock_db_cls.return_value = MockDb()
+            return MailProxy()
+
+    def test_normalise_with_string_default(self, proxy):
+        """_normalise_priority accepts string default."""
+        priority, label = proxy._normalise_priority(None, default="high")
+        assert priority == 1
+        assert label == "high"
+
+    def test_normalise_with_float_default(self, proxy):
+        """_normalise_priority accepts float default."""
+        priority, label = proxy._normalise_priority(None, default=1.5)
+        assert priority == 1
+        assert label == "high"
+
+    def test_normalise_with_invalid_type_default(self, proxy):
+        """_normalise_priority handles invalid default type."""
+        priority, label = proxy._normalise_priority(None, default=object())
+        assert priority == DEFAULT_PRIORITY  # Falls back to global default
+
+    def test_normalise_with_non_convertible_value(self, proxy):
+        """_normalise_priority handles non-convertible values."""
+        priority, label = proxy._normalise_priority(object())
+        assert priority == DEFAULT_PRIORITY
+
+
+class TestMailProxyHandleAddMessagesExtended:
+    """Extended tests for _handle_add_messages edge cases."""
+
+    @pytest.fixture
+    def proxy(self):
+        with patch('core.mail_proxy.proxy.SmtpSender'), \
+             patch('core.mail_proxy.proxy.ClientReporter'), \
+             patch('core.mail_proxy.proxy_base.SqlDb') as mock_db_cls:
+            mock_db_cls.return_value = MockDb()
+            p = MailProxy()
+            p.db.table("accounts").get = AsyncMock(return_value={"id": "acc1"})
+            p.db.table("messages").insert_batch = AsyncMock(return_value=[])
+            p.db.table("message_events").add_event = AsyncMock()
+            p._refresh_queue_gauge = AsyncMock()
+            p._publish_result = AsyncMock()
+            return p
+
+    async def test_non_dict_payload_in_messages(self, proxy):
+        """Non-dict items in messages list are rejected."""
+        messages = ["not a dict", 123, None]
+        result = await proxy._handle_add_messages({"messages": messages})
+
+        assert len(result["rejected"]) == 3
+        for r in result["rejected"]:
+            assert r["reason"] == "invalid payload"
+
+    async def test_rejected_message_with_id_is_persisted(self, proxy):
+        """Rejected messages with ID are persisted for error reporting."""
+        proxy.db.table("messages").insert_batch = AsyncMock(return_value=[{"id": "msg1", "pk": "pk1"}])
+
+        messages = [{
+            "id": "msg1",
+            "tenant_id": "t1",
+            "account_id": "acc1",
+            # Missing required fields
+        }]
+        result = await proxy._handle_add_messages({"messages": messages})
+
+        # Message was rejected due to validation failure
+        assert len(result["rejected"]) == 1
+        # But it was persisted with error event
+        proxy.db.table("message_events").add_event.assert_called()
+
+    async def test_already_sent_message_is_rejected(self, proxy):
+        """Messages already sent are marked as rejected with 'already sent' reason."""
+        # insert_batch returns empty list (message already exists with sent_ts)
+        proxy.db.table("messages").insert_batch = AsyncMock(return_value=[])
+
+        messages = [{
+            "id": "msg1",
+            "tenant_id": "t1",
+            "account_id": "acc1",
+            "from": "sender@test.com",
+            "to": ["recipient@test.com"],
+            "subject": "Test",
+        }]
+        result = await proxy._handle_add_messages({"messages": messages})
+
+        assert len(result["rejected"]) == 1
+        assert result["rejected"][0]["reason"] == "already sent"
+        # ok should still be True because "already sent" is not a validation failure
+        assert result["ok"] is True
+
+    async def test_deferred_ts_none_is_removed(self, proxy):
+        """deferred_ts=None is removed from payload."""
+        proxy.db.table("messages").insert_batch = AsyncMock(return_value=[{"id": "msg1", "pk": "pk1"}])
+
+        messages = [{
+            "id": "msg1",
+            "tenant_id": "t1",
+            "account_id": "acc1",
+            "from": "sender@test.com",
+            "to": ["recipient@test.com"],
+            "subject": "Test",
+            "deferred_ts": None,
+        }]
+        await proxy._handle_add_messages({"messages": messages})
+
+        # Check that the message passed to insert_batch doesn't have deferred_ts
+        call_args = proxy.db.table("messages").insert_batch.call_args
+        inserted_entry = call_args[0][0][0]
+        assert inserted_entry.get("deferred_ts") is None
+
+
+class TestMailProxySummariseAddressesExtended:
+    """Extended tests for _summarise_addresses edge cases."""
+
+    def test_set_is_joined(self):
+        """Set items are joined."""
+        result = MailProxy._summarise_addresses({"a@test.com", "b@test.com"})
+        assert "@test.com" in result
+
+    def test_single_value_converted_to_string(self):
+        """Single non-iterable value is converted to string."""
+        result = MailProxy._summarise_addresses(123)
+        assert result == "123"
+
+    def test_tuple_is_joined(self):
+        """Tuple items are joined."""
+        result = MailProxy._summarise_addresses(("a@test.com", "b@test.com"))
+        assert "a@test.com" in result
+        assert "b@test.com" in result
+
+
+class TestMailProxyEEHooks:
+    """Tests for EE hook methods (CE stubs)."""
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    def test_init_proxy_ee_is_noop(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """__init_proxy_ee__ is a no-op in CE."""
+        mock_db_cls.return_value = MockDb()
+
+        proxy = MailProxy()
+        # Should not raise
+        proxy.__init_proxy_ee__()
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    async def test_start_proxy_ee_is_noop(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """_start_proxy_ee is a no-op in CE."""
+        mock_db_cls.return_value = MockDb()
+
+        proxy = MailProxy()
+        # Should not raise
+        await proxy._start_proxy_ee()
+
+    @patch('core.mail_proxy.proxy.SmtpSender')
+    @patch('core.mail_proxy.proxy.ClientReporter')
+    @patch('core.mail_proxy.proxy_base.SqlDb')
+    async def test_stop_proxy_ee_is_noop(self, mock_db_cls, mock_reporter_cls, mock_sender_cls):
+        """_stop_proxy_ee is a no-op in CE."""
+        mock_db_cls.return_value = MockDb()
+
+        proxy = MailProxy()
+        # Should not raise
+        await proxy._stop_proxy_ee()
