@@ -50,6 +50,7 @@ dependencies = [
     "click>=8.1.0",
     "rich>=13.0.0",
     "requests>=2.31.0",
+    "genro-toolbox>=0.1.0",
 ]
 
 [project.scripts]
@@ -80,15 +81,15 @@ postgresql = [
     "psycopg[binary]>=3.1.0",
     "psycopg-pool>=3.1.0",
 ]
-large-files = [
-    "fsspec>=2024.1.0",
-    "s3fs>=2024.1.0",
-]
-bounce = [
+enterprise-s3 = ["s3fs>=2024.1.0"]
+enterprise-gcs = ["gcsfs>=2024.1.0"]
+enterprise-azure = ["adlfs>=2024.1.0"]
+enterprise = [
+    "genro-mail-proxy[postgresql,enterprise-s3,enterprise-gcs,enterprise-azure]",
     "aioimaplib>=1.0.0",
 ]
 all = [
-    "genro-mail-proxy[dev,docs,postgresql,large-files,bounce]",
+    "genro-mail-proxy[dev,docs,postgresql,enterprise]",
 ]
 
 [project.urls]
