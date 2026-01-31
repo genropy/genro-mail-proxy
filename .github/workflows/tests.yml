@@ -69,7 +69,7 @@ jobs:
         env:
           GMP_DB_PATH: postgresql://test:test@localhost:5432/test
         run: |
-          pytest tests/postgres_tests/ -v
+          pytest -m "db" -v
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.11'
