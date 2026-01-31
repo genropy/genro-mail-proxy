@@ -16,37 +16,50 @@ class TestMailProxyModuleImport:
 
         assert isinstance(HAS_ENTERPRISE, bool)
 
-    def test_mailproxy_ee_none_when_no_enterprise(self, monkeypatch):
-        """MailProxy_EE is None when enterprise not installed."""
-        # Remove cached modules
-        modules_to_remove = [k for k in sys.modules if "mail_proxy" in k or "enterprise" in k]
-        for mod in modules_to_remove:
-            monkeypatch.delitem(sys.modules, mod, raising=False)
+    def test_mailproxy_ee_none_when_no_enterprise(self):
+        """MailProxy_EE is None when enterprise not installed.
 
-        # Block enterprise import
-        original_import = __builtins__["__import__"]
+        This test verifies the module's import-time behavior by running
+        in a subprocess to avoid corrupting the module state for other tests.
+        """
+        import subprocess
 
-        def blocked_import(name, *args, **kwargs):
-            if name.startswith("enterprise"):
-                raise ImportError(f"Blocked for test: {name}")
-            return original_import(name, *args, **kwargs)
+        # Run a Python subprocess that simulates no enterprise package
+        code = '''
+import sys
+from importlib.abc import MetaPathFinder
+from importlib.machinery import ModuleSpec
 
-        monkeypatch.setattr("builtins.__import__", blocked_import)
+# Block enterprise imports using modern finder API
+class BlockEnterprise(MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if fullname.startswith("enterprise"):
+            # Return a spec that will fail to load
+            raise ImportError(f"Blocked for test: {fullname}")
+        return None
 
-        # Reimport
-        import importlib
+sys.meta_path.insert(0, BlockEnterprise())
 
-        import core.mail_proxy
+# Remove any cached mail_proxy modules
+for mod in list(sys.modules.keys()):
+    if "mail_proxy" in mod or "enterprise" in mod:
+        del sys.modules[mod]
 
-        importlib.reload(core.mail_proxy)
+# Now import - enterprise should fail
+import core.mail_proxy
 
-        assert core.mail_proxy.HAS_ENTERPRISE is False
-        assert core.mail_proxy.MailProxy_EE is None
-
-        # Cleanup
-        modules_to_remove = [k for k in sys.modules if "mail_proxy" in k]
-        for mod in modules_to_remove:
-            monkeypatch.delitem(sys.modules, mod, raising=False)
+assert core.mail_proxy.HAS_ENTERPRISE is False, f"Expected False, got {core.mail_proxy.HAS_ENTERPRISE}"
+assert core.mail_proxy.MailProxy_EE is None, f"Expected None, got {core.mail_proxy.MailProxy_EE}"
+print("OK")
+'''
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            cwd=".",
+        )
+        assert result.returncode == 0, f"Subprocess failed: {result.stderr}"
+        assert "OK" in result.stdout
 
     def test_has_enterprise_true_when_installed(self):
         """HAS_ENTERPRISE is True when enterprise package available."""
