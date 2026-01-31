@@ -1,7 +1,10 @@
 codecov:
   max_report_age: false
+  require_ci_to_pass: false
 
 coverage:
+  precision: 2
+  round: down
   status:
     project:
       default:
@@ -10,6 +13,10 @@ coverage:
     patch:
       default:
         target: auto
+
+flag_management:
+  default_rules:
+    carryforward: false
 
 ignore:
   - "tests/**/*"
