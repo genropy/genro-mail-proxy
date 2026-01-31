@@ -31,7 +31,7 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          pytest -m "not fullstack and not db" --cov=src --cov-report=xml --cov-report=term
+          pytest -m "not fullstack and not db" --cov=src --cov-report=xml:coverage.xml --cov-report=term-missing
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.11'
@@ -43,6 +43,7 @@ jobs:
           verbose: true
           flags: unittests
           name: codecov-py311
+          disable_search: true
 
   db-integration:
     runs-on: ubuntu-latest

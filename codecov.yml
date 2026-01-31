@@ -19,9 +19,14 @@ flag_management:
     carryforward: false
 
 ignore:
-  - "tests/**"
-  - "docs/**"
-  - "**/__pycache__/**"
-  - "**/conftest.py"
-  - "setup.py"
-  - "*.py"
+  - "tests/"
+  - "docs/"
+  - "conftest.py"
+
+fixes:
+  - "src/::"
+
+comment:
+  layout: "reach,diff,flags,files"
+  behavior: default
+  require_changes: true
