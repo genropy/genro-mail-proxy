@@ -189,9 +189,9 @@ class TestStorageNodeLocalIO:
         import time
 
         node = storage.node("data:timed.txt")
-        before = time.time()
+        before = time.time() - 1  # 1 second tolerance for clock skew
         await node.write_text("content")
-        after = time.time()
+        after = time.time() + 1  # 1 second tolerance for clock skew
 
         mtime = await node.mtime()
 
