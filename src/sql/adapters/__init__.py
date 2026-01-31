@@ -1,5 +1,35 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
-"""Database adapters for SQLite and PostgreSQL."""
+"""Database adapters for SQLite and PostgreSQL.
+
+This package provides async database adapters with a unified interface
+for executing queries and CRUD operations.
+
+Components:
+    DbAdapter: Abstract base class defining the adapter interface.
+    SqliteAdapter: SQLite adapter using aiosqlite with per-operation connections.
+    PostgresAdapter: PostgreSQL adapter using psycopg3 with connection pooling.
+    get_adapter: Factory function to create adapters from connection strings.
+
+Example:
+    Create adapter from connection string::
+
+        from sql.adapters import get_adapter
+
+        # SQLite
+        adapter = get_adapter("/data/app.db")
+        adapter = get_adapter("sqlite::memory:")
+
+        # PostgreSQL
+        adapter = get_adapter("postgresql://user:pass@localhost:5432/mydb")
+
+        await adapter.connect()
+        rows = await adapter.fetch_all("SELECT * FROM users")
+        await adapter.close()
+
+Note:
+    PostgreSQL requires psycopg: `pip install genro-mail-proxy[postgresql]`.
+    SQLite uses per-operation connections (no persistent pool).
+"""
 
 from .base import DbAdapter
 from .sqlite import SqliteAdapter

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-import time
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -213,8 +213,20 @@ class TenantsTable_EE:
             return None
 
         expires_at = tenant.get("api_key_expires_at")
-        if expires_at and expires_at < time.time():
-            return None  # Expired
+        if expires_at:
+            # Handle both datetime (PostgreSQL) and int (SQLite) types
+            if isinstance(expires_at, datetime):
+                now = datetime.now(timezone.utc)
+                # Make expires_at timezone-aware if it isn't
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                if expires_at < now:
+                    return None  # Expired
+            else:
+                # SQLite returns int (Unix timestamp)
+                now_ts = datetime.now(timezone.utc).timestamp()
+                if expires_at < now_ts:
+                    return None  # Expired
 
         return self._decode_active(tenant)  # type: ignore[attr-defined]
 

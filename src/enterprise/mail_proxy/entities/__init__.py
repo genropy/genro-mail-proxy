@@ -1,14 +1,35 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: BSL-1.1
 """Enterprise Edition composed table and endpoint classes.
 
-Combines CE base classes with EE-specific methods via multiple inheritance.
-Usage: Import these classes instead of core classes when running in EE mode.
+This module composes CE (core) base classes with EE-specific mixins using
+multiple inheritance, providing full functionality in Enterprise Edition.
 
-The composition follows this pattern:
-    class AccountsTable(AccountsTable_EE, CoreAccountsTable):
-        pass
+Components:
+    TenantsTable: CE + per-tenant API key management.
+    AccountsTable: CE + PEC account configuration and IMAP polling.
+    MessagesTable: CE + PEC receipt tracking.
+    InstanceTable: CE + bounce detection configuration.
+    AccountEndpoint: CE + PEC account management API.
 
-This gives AccountsTable all methods from both CE (core) and EE (mixin).
+Example:
+    In EE mode, MailProxyDb uses composed tables automatically::
+
+        from enterprise.mail_proxy.entities import AccountsTable
+
+        # AccountsTable includes both CE and EE methods
+        accounts = AccountsTable(db)
+        await accounts.add_pec_account(
+            tenant_id="acme",
+            account_id="pec-1",
+            smtp_host="smtps.pec.aruba.it",
+            pec_imap_host="imaps.pec.aruba.it",
+            ...
+        )
+
+Note:
+    The composition pattern: `class X(X_EE, CoreX): pass` ensures EE methods
+    take precedence (MRO) while CE provides the base implementation.
+    Import from this module when running in EE mode.
 """
 
 from core.mail_proxy.entities.account.endpoint import (

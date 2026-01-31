@@ -1,11 +1,39 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Base class for endpoint introspection and command dispatch.
 
-Provides common functionality for all endpoints:
-- Method introspection for API/CLI generation
-- HTTP method inference from method names
-- Pydantic model generation from signatures
-- Command dispatch to appropriate endpoint methods
+This module provides the foundation for automatic API/CLI generation
+from endpoint classes via method introspection.
+
+Components:
+    POST: Decorator to mark methods as HTTP POST.
+    BaseEndpoint: Base class with introspection capabilities.
+    EndpointDispatcher: Routes commands to endpoint methods.
+
+Example:
+    Define an endpoint::
+
+        from core.mail_proxy.interface.endpoint_base import BaseEndpoint, POST
+
+        class MyEndpoint(BaseEndpoint):
+            name = "items"
+
+            async def list(self, active_only: bool = False) -> list[dict]:
+                \"\"\"List all items.\"\"\"
+                return await self.table.list_all(active_only=active_only)
+
+            @POST
+            async def add(self, id: str, name: str) -> dict:
+                \"\"\"Add a new item.\"\"\"
+                return await self.table.add({"id": id, "name": name})
+
+    Use with dispatcher::
+
+        dispatcher = EndpointDispatcher(db)
+        result = await dispatcher.dispatch("addMessages", {"messages": [...]})
+
+Note:
+    BaseEndpoint.discover() scans CE and EE packages for endpoint classes
+    and composes them when both exist for an entity.
 """
 
 from __future__ import annotations
@@ -26,21 +54,77 @@ _EE_ENTITIES_PACKAGE = "enterprise.mail_proxy.entities"
 
 
 def POST(method: Callable) -> Callable:
-    """Decorator to mark an endpoint method as POST (uses JSON body)."""
+    """Decorator to mark an endpoint method as POST.
+
+    POST methods receive parameters via JSON request body
+    instead of query parameters.
+
+    Args:
+        method: The async method to decorate.
+
+    Returns:
+        The decorated method with _http_post attribute set.
+
+    Example:
+        ::
+
+            @POST
+            async def add(self, id: str, data: dict) -> dict:
+                \"\"\"Add item with complex data.\"\"\"
+                ...
+    """
     method._http_post = True  # type: ignore[attr-defined]
     return method
 
 
 class BaseEndpoint:
-    """Base class for all endpoints. Provides introspection capabilities."""
+    """Base class for all endpoints with introspection capabilities.
+
+    Provides method discovery, HTTP method inference, and Pydantic model
+    generation from signatures for automatic API/CLI generation.
+
+    Attributes:
+        name: Endpoint name used in URL paths and CLI groups.
+        table: Database table instance for operations.
+
+    Example:
+        Create a custom endpoint::
+
+            class ItemEndpoint(BaseEndpoint):
+                name = "items"
+
+                async def get(self, item_id: str) -> dict:
+                    item = await self.table.get(item_id)
+                    if not item:
+                        raise ValueError(f"Item '{item_id}' not found")
+                    return item
+
+                @POST
+                async def add(self, id: str, name: str) -> dict:
+                    return await self.table.add({"id": id, "name": name})
+
+            # Register with FastAPI
+            endpoint = ItemEndpoint(db.table("items"))
+            register_endpoint(app, endpoint)
+    """
 
     name: str = ""
 
     def __init__(self, table: Any):
+        """Initialize endpoint with table reference.
+
+        Args:
+            table: Database table instance for operations.
+        """
         self.table = table
 
     def get_methods(self) -> list[tuple[str, Callable]]:
-        """Return all public async methods for API/CLI generation."""
+        """Return all public async methods for API/CLI generation.
+
+        Returns:
+            List of (method_name, method) tuples for all public
+            async methods (excluding those starting with underscore).
+        """
         methods = []
         for method_name in dir(self):
             if method_name.startswith("_"):
@@ -51,18 +135,33 @@ class BaseEndpoint:
         return methods
 
     def get_http_method(self, method_name: str) -> str:
-        """Determine HTTP method: POST if decorated with @POST, else GET."""
+        """Determine HTTP method for an endpoint method.
+
+        Args:
+            method_name: Name of the endpoint method.
+
+        Returns:
+            "POST" if decorated with @POST, otherwise "GET".
+        """
         method = getattr(self, method_name)
         if getattr(method, "_http_post", False):
             return "POST"
         return "GET"
 
     def create_request_model(self, method_name: str) -> type:
-        """Create Pydantic model from method signature for request body."""
+        """Create Pydantic model from method signature.
+
+        Used by API layer to validate and parse request bodies.
+
+        Args:
+            method_name: Name of the method to introspect.
+
+        Returns:
+            Dynamically created Pydantic model class.
+        """
         method = getattr(self, method_name)
         sig = inspect.signature(method)
 
-        # Resolve string annotations to actual types
         try:
             hints = get_type_hints(method)
         except Exception:
@@ -73,7 +172,6 @@ class BaseEndpoint:
             if param_name == "self":
                 continue
 
-            # Prefer resolved hint, fallback to signature annotation
             annotation = hints.get(param_name, param.annotation)
             if annotation is inspect.Parameter.empty:
                 annotation = Any
@@ -84,13 +182,16 @@ class BaseEndpoint:
         return create_model(model_name, **fields)
 
     def is_simple_params(self, method_name: str) -> bool:
-        """Check if method has only simple params (suitable for query string).
+        """Check if method has only simple params suitable for query string.
 
-        Returns False if any parameter is a list or dict (including Optional[list]).
+        Args:
+            method_name: Name of the method to check.
+
+        Returns:
+            False if any parameter is list or dict (including Optional[list]).
         """
         method = getattr(self, method_name)
 
-        # Resolve string annotations to actual types
         try:
             hints = get_type_hints(method)
         except Exception:
@@ -100,7 +201,6 @@ class BaseEndpoint:
         for param_name, param in sig.parameters.items():
             if param_name == "self":
                 continue
-            # Prefer resolved hint, fallback to raw annotation
             ann = hints.get(param_name, param.annotation)
             if self._is_complex_type(ann):
                 return False
@@ -118,7 +218,6 @@ class BaseEndpoint:
         if origin in (list, dict):
             return True
 
-        # Check Union types: both typing.Union and Python 3.10+ X | Y syntax
         if origin is Union or isinstance(origin, type) and origin is types.UnionType:
             for arg in get_args(ann):
                 if arg is type(None):
@@ -126,7 +225,6 @@ class BaseEndpoint:
                 if self._is_complex_type(arg):
                     return True
 
-        # Also check for types.UnionType directly (Python 3.10+ X | Y)
         if type(ann).__name__ == "UnionType":
             for arg in get_args(ann):
                 if arg is type(None):
@@ -137,7 +235,14 @@ class BaseEndpoint:
         return False
 
     def count_params(self, method_name: str) -> int:
-        """Count non-self parameters."""
+        """Count non-self parameters for a method.
+
+        Args:
+            method_name: Name of the method.
+
+        Returns:
+            Number of parameters excluding 'self'.
+        """
         method = getattr(self, method_name)
         sig = inspect.signature(method)
         return sum(1 for p in sig.parameters if p != "self")
@@ -152,11 +257,19 @@ class BaseEndpoint:
     def discover(cls) -> list[type["BaseEndpoint"]]:
         """Autodiscover all endpoint classes from entities/ directories.
 
-        Scans CE and EE entities packages for endpoint.py and endpoint_ee.py modules.
-        When both exist for an entity, composes them (EE mixin first for override).
+        Scans CE and EE packages for endpoint.py and endpoint_ee.py modules.
+        When both exist for an entity, composes them with EE mixin first.
 
         Returns:
             List of endpoint classes ready for instantiation.
+
+        Example:
+            ::
+
+                for endpoint_class in BaseEndpoint.discover():
+                    table = db.table(endpoint_class.name)
+                    endpoint = endpoint_class(table)
+                    register_endpoint(app, endpoint)
         """
         ce_modules = cls._find_entity_modules(_CE_ENTITIES_PACKAGE, "endpoint")
         ee_modules = cls._find_entity_modules(_EE_ENTITIES_PACKAGE, "endpoint_ee")
@@ -167,12 +280,10 @@ class BaseEndpoint:
             if not ce_class:
                 continue
 
-            # Check for EE mixin
             ee_module = ee_modules.get(entity_name)
             if ee_module:
                 ee_mixin = cls._get_ee_mixin_from_module(ee_module, "_EE")
                 if ee_mixin:
-                    # Compose: EE mixin first for method override
                     composed_class = type(
                         ce_class.__name__,
                         (ee_mixin, ce_class),
@@ -181,7 +292,6 @@ class BaseEndpoint:
                     endpoints.append(composed_class)
                     continue
 
-            # No EE mixin, use CE class as-is
             endpoints.append(ce_class)
 
         return endpoints
@@ -242,16 +352,31 @@ class BaseEndpoint:
 class EndpointDispatcher:
     """Dispatches commands to appropriate endpoint methods.
 
-    Centralizes command routing, replacing the large match/case block in proxy.py.
-    Commands are mapped to endpoint.method pairs via a registration system.
+    Centralizes command routing, mapping legacy camelCase commands
+    to endpoint.method pairs for backward compatibility.
+
+    Attributes:
+        COMMAND_MAP: Maps command names to (endpoint_name, method_name).
+        db: Database instance for table access.
+        proxy: Optional MailProxy for operations needing runtime state.
 
     Example:
-        dispatcher = EndpointDispatcher(db)
-        result = await dispatcher.dispatch("addMessages", {"messages": [...]})
+        Use dispatcher for legacy API compatibility::
+
+            dispatcher = EndpointDispatcher(db, proxy=proxy)
+
+            # Dispatch legacy command
+            result = await dispatcher.dispatch(
+                "addMessages",
+                {"messages": [{"to": "user@example.com"}]}
+            )
+            # Returns: {"ok": True, "count": 1}
+
+            # Direct endpoint access
+            messages_endpoint = dispatcher.get_endpoint("messages")
+            await messages_endpoint.add_batch(messages=[...])
     """
 
-    # Command name → (endpoint_name, method_name)
-    # This maps legacy camelCase commands to endpoint methods
     COMMAND_MAP: dict[str, tuple[str, str]] = {
         # Messages
         "addMessages": ("messages", "add_batch"),
@@ -276,12 +401,19 @@ class EndpointDispatcher:
         "listTenantsSyncStatus": ("instance", "get_sync_status"),
     }
 
+    # Result wrapping rules for legacy API compatibility
+    _RESULT_WRAP_KEYS: dict[str, str] = {
+        "listTenants": "tenants",
+        "listAccounts": "accounts",
+        "listMessages": "messages",
+    }
+
     def __init__(self, db: "SqlDb", proxy: Any = None):
-        """Initialize dispatcher with database and optional proxy reference.
+        """Initialize dispatcher with database and optional proxy.
 
         Args:
-            db: MailProxyDb instance for accessing tables.
-            proxy: Optional MailProxy instance for operations needing runtime state.
+            db: MailProxyDb instance for table access.
+            proxy: Optional MailProxy for operations needing runtime state.
         """
         self.db = db
         self.proxy = proxy
@@ -314,14 +446,6 @@ class EndpointDispatcher:
             case _:
                 raise ValueError(f"Unknown endpoint: {endpoint_name}")
 
-    # Result wrapping rules for legacy API compatibility
-    # Maps command name to the key to use when wrapping non-dict results
-    _RESULT_WRAP_KEYS: dict[str, str] = {
-        "listTenants": "tenants",
-        "listAccounts": "accounts",
-        "listMessages": "messages",
-    }
-
     async def dispatch(self, cmd: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Dispatch a command to the appropriate endpoint method.
 
@@ -331,11 +455,20 @@ class EndpointDispatcher:
 
         Returns:
             Result dict in legacy format {"ok": True/False, ...}.
+
+        Example:
+            ::
+
+                result = await dispatcher.dispatch(
+                    "addTenant",
+                    {"id": "acme", "name": "Acme Corp"}
+                )
+                if result["ok"]:
+                    print(f"Created tenant: {result['id']}")
         """
         if cmd not in self.COMMAND_MAP:
             return {"ok": False, "error": f"unknown command: {cmd}"}
 
-        # Pre-dispatch validation for commands requiring specific fields
         validation_error = self._validate_payload(cmd, payload)
         if validation_error:
             return {"ok": False, "error": validation_error}
@@ -361,42 +494,30 @@ class EndpointDispatcher:
         return None
 
     def _wrap_result(self, cmd: str, result: Any) -> dict[str, Any]:
-        """Wrap endpoint result in legacy API format.
-
-        Handles conversion from endpoint return types to {"ok": True, ...} format.
-        """
-        # List results → wrap with appropriate key
+        """Wrap endpoint result in legacy API format."""
         if isinstance(result, list):
             key = self._RESULT_WRAP_KEYS.get(cmd, "items")
             return {"ok": True, key: result}
 
-        # Boolean results (e.g., delete operations)
         if isinstance(result, bool):
             if result:
                 return {"ok": True}
             return {"ok": False, "error": "not found"}
 
-        # None results
         if result is None:
             return {"ok": False, "error": "not found"}
 
-        # Dict results - ensure "ok" is present
         if isinstance(result, dict):
             if "ok" not in result:
                 result["ok"] = True
             return result
 
-        # Other types - wrap as value
         return {"ok": True, "value": result}
 
     def _map_payload(self, cmd: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """Map legacy payload keys to endpoint method parameters.
-
-        Handles differences between old API (camelCase, "id") and new endpoints.
-        """
+        """Map legacy payload keys to endpoint method parameters."""
         result = dict(payload)
 
-        # Rename "id" to specific field names based on command
         if cmd in ("getTenant", "deleteTenant", "updateTenant"):
             if "id" in result:
                 result["tenant_id"] = result.pop("id")
@@ -404,7 +525,6 @@ class EndpointDispatcher:
             if "id" in result:
                 result["account_id"] = result.pop("id")
 
-        # Handle listMessages active_only default
         if cmd == "listMessages":
             result.setdefault("active_only", False)
             result.setdefault("include_history", False)
@@ -412,7 +532,14 @@ class EndpointDispatcher:
         return result
 
     def get_endpoint(self, name: str) -> BaseEndpoint:
-        """Get endpoint by name for direct access."""
+        """Get endpoint by name for direct access.
+
+        Args:
+            name: Endpoint name (e.g., "messages", "accounts").
+
+        Returns:
+            BaseEndpoint instance for direct method calls.
+        """
         return self._get_endpoint(name)
 
 

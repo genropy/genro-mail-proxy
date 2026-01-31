@@ -1,21 +1,39 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Interactive terminal forms with dynamic schema generation.
 
-This module provides interactive forms for creating tenants, accounts,
-and other entities with real-time validation. Schemas are generated
-dynamically via introspection from endpoint method signatures.
+This module provides Rich-based interactive forms for entity creation
+with real-time validation. Schemas are generated dynamically via
+introspection from endpoint method signatures - no hardcoded forms.
 
-Nested model fields (like client_auth) are automatically expanded
-into separate fields (client_auth_method, client_auth_token, etc.)
-for easier input.
+Components:
+    DynamicForm: Interactive form generated from endpoint method signature.
+    create_form: Factory function to create forms from endpoints.
+    new_tenant: Pre-configured form for tenant creation.
+    new_account: Pre-configured form for account creation.
+    new_message: Pre-configured form for message creation.
 
-Usage in REPL:
-    >>> from core.mail_proxy.interface.forms import create_form
-    >>> tenant_data = create_form("tenants", "add").run()
-    >>> account_data = create_form("accounts", "add").run()
+Example:
+    Create and run a form from an endpoint::
 
-The forms display field descriptions from Pydantic annotations and
-validate input in real-time, showing errors immediately.
+        from core.mail_proxy.interface.forms import create_form
+        from core.mail_proxy.entities.tenant import TenantEndpoint
+
+        endpoint = TenantEndpoint(table)
+        form = create_form(endpoint, "add", title="New Tenant")
+        data = form.run()  # Interactive prompts
+        if data:
+            print(f"Created: {data}")
+
+    Use pre-configured forms in REPL::
+
+        from core.mail_proxy.interface.forms import set_proxy, new_tenant
+        set_proxy(proxy_client, dispatcher)
+        new_tenant()  # Interactive form with auto-save
+
+Note:
+    Nested Pydantic models (e.g., ClientAuth) are automatically expanded
+    into separate fields (client_auth_method, client_auth_token) for
+    easier terminal input, then collapsed back on validation.
 """
 
 from __future__ import annotations
@@ -37,14 +55,14 @@ console = Console()
 
 
 def get_field_description(field_info: FieldInfo | None) -> str:
-    """Extract the description string from a Pydantic FieldInfo."""
+    """Extract description from Pydantic FieldInfo for prompt display."""
     if field_info and field_info.description:
         return field_info.description
     return ""
 
 
 def get_field_type_hint(annotation: Any) -> str:
-    """Convert a type annotation to a human-readable hint for prompts."""
+    """Convert type annotation to human-readable hint (e.g., 'integer', 'yes/no')."""
     origin = get_origin(annotation)
 
     if origin is None:
@@ -79,7 +97,7 @@ def get_field_type_hint(annotation: Any) -> str:
 
 
 def is_optional(annotation: Any) -> bool:
-    """Check if a type annotation represents an optional field."""
+    """Check if type is Optional[X] (allows None)."""
     origin = get_origin(annotation)
     if origin is None:
         return False
@@ -88,7 +106,7 @@ def is_optional(annotation: Any) -> bool:
 
 
 def get_inner_type(annotation: Any) -> Any:
-    """Extract the inner type from Optional[X] or other union types."""
+    """Extract inner type from Optional[X] → X."""
     origin = get_origin(annotation)
     if origin is None:
         return annotation
@@ -98,13 +116,13 @@ def get_inner_type(annotation: Any) -> Any:
 
 
 def is_nested_model(annotation: Any) -> bool:
-    """Check if annotation references a nested Pydantic BaseModel."""
+    """Check if annotation is a nested Pydantic BaseModel (requires expansion)."""
     inner = get_inner_type(annotation)
     return isinstance(inner, type) and issubclass(inner, BaseModel)
 
 
 def get_nested_model_class(annotation: Any) -> type[BaseModel] | None:
-    """Extract the Pydantic model class from a nested annotation."""
+    """Extract Pydantic BaseModel class from nested annotation."""
     inner = get_inner_type(annotation)
     if isinstance(inner, type) and issubclass(inner, BaseModel):
         return inner
@@ -112,10 +130,28 @@ def get_nested_model_class(annotation: Any) -> type[BaseModel] | None:
 
 
 class DynamicForm:
-    """Interactive form generated dynamically from endpoint method signature.
+    """Interactive Rich form generated from endpoint method signature.
 
-    The form introspects an endpoint method to determine fields, types,
-    and validation rules. No hardcoded schemas required.
+    Introspects method parameters to determine fields, types, defaults,
+    and validation rules. Nested Pydantic models are expanded into
+    separate fields for easier terminal input.
+
+    Attributes:
+        title: Form title displayed in panel header.
+        method: The endpoint method this form is for.
+        model: Dynamically created Pydantic model for validation.
+        values: Current field values entered by user.
+        errors: Validation errors by field name.
+
+    Example:
+        ::
+
+            form = DynamicForm(
+                title="Create Account",
+                method=endpoint.add,
+                model=AddAccountModel,
+            )
+            result = form.run()  # Returns validated dict or None
     """
 
     def __init__(
@@ -144,7 +180,7 @@ class DynamicForm:
         self._expand_fields()
 
     def _expand_fields(self) -> None:
-        """Expand nested model fields into separate subfields."""
+        """Expand nested models into flat fields (client_auth → client_auth_method, etc.)."""
         self._expanded_fields = []
         self._nested_map = {}
         self._nested_models = {}
@@ -169,7 +205,7 @@ class DynamicForm:
                 self._expanded_fields.append(field_name)
 
     def _get_field_info(self, field_name: str) -> FieldInfo | None:
-        """Get Pydantic FieldInfo for a field (handles expanded nested fields)."""
+        """Get FieldInfo for field, resolving expanded nested field names."""
         if field_name in self._nested_map:
             parent_field, subfield = self._nested_map[field_name]
             nested_class = self._nested_models.get(parent_field)
@@ -182,7 +218,7 @@ class DynamicForm:
         return None
 
     def _get_annotation(self, field_name: str) -> Any:
-        """Get type annotation for a field (handles expanded nested fields)."""
+        """Get type annotation, resolving expanded nested field names."""
         if field_name in self._nested_map:
             parent_field, subfield = self._nested_map[field_name]
             nested_class = self._nested_models.get(parent_field)
@@ -198,7 +234,7 @@ class DynamicForm:
         return str
 
     def _is_parent_optional(self, field_name: str) -> bool:
-        """Check if the parent field of a nested subfield is optional."""
+        """Check if parent of nested subfield is optional (makes subfield optional too)."""
         if field_name in self._nested_map:
             parent_field, _ = self._nested_map[field_name]
             parent_info = self.model.model_fields.get(parent_field)
@@ -207,7 +243,7 @@ class DynamicForm:
         return False
 
     def _prompt_field(self, field_name: str, current_value: Any = None) -> Any:
-        """Prompt for a single field value."""
+        """Prompt user for field value with type-appropriate input handling."""
         field_info = self._get_field_info(field_name)
         annotation = self._get_annotation(field_name)
 
@@ -301,7 +337,7 @@ class DynamicForm:
         return value
 
     def _collect_nested_values(self) -> dict[str, Any]:
-        """Collect expanded nested field values back into nested dicts."""
+        """Collapse expanded fields back to nested dicts for validation."""
         result = {}
 
         for field_name in self.fields:
@@ -325,7 +361,7 @@ class DynamicForm:
         return result
 
     def _validate(self) -> bool:
-        """Validate current values against the model."""
+        """Validate current values against Pydantic model."""
         try:
             collected = self._collect_nested_values()
             filtered = {k: v for k, v in collected.items() if v is not None}
@@ -345,7 +381,7 @@ class DynamicForm:
             return False
 
     def _show_summary(self) -> None:
-        """Show a summary of entered values."""
+        """Display Rich table with current values and validation status."""
         table = Table(title="Summary", show_header=True)
         table.add_column("Field", style="cyan")
         table.add_column("Value")
@@ -379,13 +415,13 @@ class DynamicForm:
         console.print(table)
 
     def _edit_field(self, field_name: str) -> None:
-        """Edit a specific field."""
+        """Re-prompt for a specific field value."""
         current = self.values.get(field_name)
         self.values[field_name] = self._prompt_field(field_name, current)
         self._validate()
 
     def _get_expanded_group_fields(self, group_fields: list[str]) -> list[str]:
-        """Get expanded field names for a group."""
+        """Expand field group to include nested subfields."""
         result = []
         for field_name in group_fields:
             if field_name in self._nested_models:
@@ -397,10 +433,10 @@ class DynamicForm:
         return result
 
     def run(self) -> dict[str, Any] | None:
-        """Run the interactive form.
+        """Run interactive form loop until save or cancel.
 
         Returns:
-            Dict of validated values, or None if cancelled.
+            Validated dict ready for API call, or None if cancelled.
         """
         console.print()
         console.print(Panel(f"[bold]{self.title}[/bold]", expand=False))
@@ -463,7 +499,7 @@ class DynamicForm:
 
 
 def _create_model_from_method(method: Callable) -> type[BaseModel]:
-    """Create Pydantic model from method signature."""
+    """Create Pydantic model dynamically from method signature for validation."""
     sig = inspect.signature(method)
 
     try:
@@ -495,22 +531,27 @@ def create_form(
     title: str | None = None,
     field_groups: dict[str, list[str]] | None = None,
 ) -> DynamicForm:
-    """Create an interactive form from an endpoint method.
+    """Create interactive form from endpoint method via introspection.
 
     Args:
-        endpoint: The endpoint instance.
-        method_name: Name of the method to create form for (e.g., "add").
-        title: Optional custom title.
-        field_groups: Optional field groupings for better UX.
+        endpoint: Endpoint instance with the target method.
+        method_name: Method name to create form for (e.g., "add").
+        title: Optional custom title (default: "{Endpoint} - {Method}").
+        field_groups: Optional dict grouping fields for organized display.
 
     Returns:
-        DynamicForm instance ready to run.
+        DynamicForm ready for run().
 
     Example:
-        >>> from core.mail_proxy.interface import create_form
-        >>> endpoint = TenantEndpoint(table)
-        >>> form = create_form(endpoint, "add", title="Create Tenant")
-        >>> data = form.run()
+        ::
+
+            endpoint = TenantEndpoint(table)
+            form = create_form(
+                endpoint, "add",
+                title="Create Tenant",
+                field_groups={"Basic": ["id", "name"], "Settings": ["active"]}
+            )
+            data = form.run()
     """
     method = getattr(endpoint, method_name)
     model = _create_model_from_method(method)
@@ -526,20 +567,27 @@ def create_form(
     )
 
 
-# Reference to the proxy client, set by REPL when connecting
+# Module-level references for auto-save forms (set by REPL)
 _proxy = None
 _dispatcher = None
 
 
 def set_proxy(proxy: Any, dispatcher: Any = None) -> None:
-    """Set the proxy client and dispatcher for auto-save functionality."""
+    """Configure proxy client and dispatcher for auto-save forms.
+
+    Must be called before using new_tenant(), new_account(), new_message().
+
+    Args:
+        proxy: MailProxyClient instance for API calls.
+        dispatcher: EndpointDispatcher for form schema generation.
+    """
     global _proxy, _dispatcher
     _proxy = proxy
     _dispatcher = dispatcher
 
 
 def new_tenant() -> dict[str, Any] | None:
-    """Interactive form to create and save a new tenant."""
+    """Interactive form to create and save a tenant. Requires set_proxy() first."""
     if not _dispatcher:
         console.print("[red]Error:[/red] No dispatcher configured. Use set_proxy() first.")
         return None
@@ -568,7 +616,7 @@ def new_tenant() -> dict[str, Any] | None:
 
 
 def new_account() -> dict[str, Any] | None:
-    """Interactive form to create and save a new SMTP account."""
+    """Interactive form to create and save an SMTP account. Requires set_proxy() first."""
     if not _dispatcher:
         console.print("[red]Error:[/red] No dispatcher configured. Use set_proxy() first.")
         return None
@@ -598,7 +646,7 @@ def new_account() -> dict[str, Any] | None:
 
 
 def new_message() -> dict[str, Any] | None:
-    """Interactive form to create and queue a new message."""
+    """Interactive form to create and queue a message. Requires set_proxy() first."""
     if not _dispatcher:
         console.print("[red]Error:[/red] No dispatcher configured. Use set_proxy() first.")
         return None

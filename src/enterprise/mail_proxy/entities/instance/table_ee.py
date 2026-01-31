@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from sql import Integer, String, Timestamp
+
 
 class InstanceTable_EE:
     """Enterprise Edition: Bounce detection configuration.
@@ -35,19 +37,19 @@ class InstanceTable_EE:
         super().configure()  # type: ignore[misc]
         c = self.columns  # type: ignore[attr-defined]
         # Bounce detection config
-        c.column("bounce_enabled", "Integer", default=0)
-        c.column("bounce_imap_host", "String")
-        c.column("bounce_imap_port", "Integer", default=993)
-        c.column("bounce_imap_user", "String")
-        c.column("bounce_imap_password", "String")
-        c.column("bounce_imap_folder", "String", default="INBOX")
-        c.column("bounce_imap_ssl", "Integer", default=1)
-        c.column("bounce_poll_interval", "Integer", default=60)
-        c.column("bounce_return_path", "String")
+        c.column("bounce_enabled", Integer, default=0)
+        c.column("bounce_imap_host", String)
+        c.column("bounce_imap_port", Integer, default=993)
+        c.column("bounce_imap_user", String)
+        c.column("bounce_imap_password", String, encrypted=True)
+        c.column("bounce_imap_folder", String, default="INBOX")
+        c.column("bounce_imap_ssl", Integer, default=1)
+        c.column("bounce_poll_interval", Integer, default=60)
+        c.column("bounce_return_path", String)
         # Bounce IMAP sync state
-        c.column("bounce_last_uid", "Integer")
-        c.column("bounce_last_sync", "Timestamp")
-        c.column("bounce_uidvalidity", "Integer")
+        c.column("bounce_last_uid", Integer)
+        c.column("bounce_last_sync", Timestamp)
+        c.column("bounce_uidvalidity", Integer)
 
     async def is_bounce_enabled(self) -> bool:
         """Check if bounce detection is enabled.

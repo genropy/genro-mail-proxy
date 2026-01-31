@@ -1,20 +1,33 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Two-tiered cache for attachment content.
 
-Provides content-addressable caching using MD5 hash as key:
-- Level 1 (Memory): Fast LRU cache with short TTL for small files
-- Level 2 (Disk): Persistent cache with longer TTL for larger files
+Provides content-addressable caching using MD5 hash as key with
+automatic tier selection based on content size.
+
+Components:
+    MemoryCache: Fast LRU cache with short TTL for small files.
+    DiskCache: Persistent cache with longer TTL for larger files.
+    TieredCache: Combined memory + disk cache with automatic routing.
 
 Example:
-    cache = TieredCache(
-        memory_max_mb=50,
-        disk_dir="/var/cache/attachments",
-        disk_threshold_kb=100,
-    )
-    content = await cache.get("a1b2c3d4...")
-    if content is None:
-        content = await fetch_from_storage()
-        await cache.set(TieredCache.compute_md5(content), content)
+    Create and use a tiered cache::
+
+        cache = TieredCache(
+            memory_max_mb=50,
+            disk_dir="/var/cache/attachments",
+            disk_threshold_kb=100,
+        )
+        await cache.init()
+
+        content = await cache.get("a1b2c3d4...")
+        if content is None:
+            content = await fetch_from_storage()
+            await cache.set(TieredCache.compute_md5(content), content)
+
+Note:
+    Files smaller than disk_threshold_kb are cached in memory only.
+    Larger files go to disk cache. Memory cache is checked first
+    on reads for optimal performance.
 """
 
 from __future__ import annotations
@@ -27,7 +40,12 @@ from pathlib import Path
 
 
 class MemoryCache:
-    """LRU in-memory cache with TTL and size limits."""
+    """LRU in-memory cache with TTL and size limits.
+
+    Attributes:
+        _max_bytes: Maximum cache size in bytes.
+        _ttl_seconds: Time-to-live for entries.
+    """
 
     def __init__(self, max_mb: float = 50, ttl_seconds: int = 300):
         self._max_bytes = int(max_mb * 1024 * 1024)
@@ -93,7 +111,16 @@ class MemoryCache:
 
 
 class DiskCache:
-    """Persistent disk cache with TTL and size limits."""
+    """Persistent disk cache with TTL and size limits.
+
+    Uses subdirectory structure based on MD5 prefix for efficient
+    filesystem operations with large numbers of files.
+
+    Attributes:
+        _cache_dir: Root directory for cached files.
+        _max_bytes: Maximum total cache size in bytes.
+        _ttl_seconds: Time-to-live for entries.
+    """
 
     def __init__(
         self,
@@ -236,7 +263,17 @@ class DiskCache:
 
 
 class TieredCache:
-    """Two-tiered cache combining memory and disk storage."""
+    """Two-tiered cache combining memory and disk storage.
+
+    Routes content to appropriate tier based on size threshold.
+    Small files go to memory for fast access, large files to disk
+    for persistence. Reads check memory first, then disk.
+
+    Attributes:
+        _memory: MemoryCache instance for small files.
+        _disk: Optional DiskCache for large files.
+        _threshold_bytes: Size threshold for tier selection.
+    """
 
     def __init__(
         self,

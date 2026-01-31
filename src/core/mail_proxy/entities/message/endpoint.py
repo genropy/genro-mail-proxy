@@ -1,8 +1,26 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
-"""Message endpoint: CRUD operations for messages.
+"""Email message REST API endpoint.
 
-Designed for introspection by api_base/cli_base to auto-generate routes/commands.
-Schema is derived from method signatures via inspect + pydantic.create_model.
+This module provides the MessageEndpoint class exposing CRUD operations
+for email messages via REST API and CLI commands.
+
+The endpoint is designed for automatic introspection by api_base and
+cli_base modules, which generate FastAPI routes and Typer commands
+from method signatures.
+
+Example:
+    CLI commands auto-generated::
+
+        mail-proxy messages add --tenant-id acme --id msg-001 --account-id main ...
+        mail-proxy messages list --tenant-id acme
+        mail-proxy messages get --message-id msg-001 --tenant-id acme
+        mail-proxy messages delete --message-pk uuid-...
+        mail-proxy messages add-batch --messages '[{...}, {...}]'
+        mail-proxy messages cleanup --tenant-id acme
+
+Note:
+    Enterprise Edition (EE) extends this with MessageEndpoint_EE mixin
+    adding PEC-specific status information.
 """
 
 from __future__ import annotations
@@ -18,15 +36,14 @@ if TYPE_CHECKING:
     from .table import MessagesTable
 
 
-# Helper enums and models
-
 class FetchMode(str, Enum):
     """Source mode for fetching email attachments.
 
-    - ENDPOINT: Fetch from configured HTTP endpoint with path parameter.
-    - HTTP_URL: Fetch directly from a full HTTP/HTTPS URL.
-    - BASE64: Inline base64-encoded content.
-    - FILESYSTEM: Fetch from local filesystem path.
+    Attributes:
+        ENDPOINT: Fetch from configured HTTP endpoint with path parameter.
+        HTTP_URL: Fetch directly from a full HTTP/HTTPS URL.
+        BASE64: Inline base64-encoded content.
+        FILESYSTEM: Fetch from local filesystem path.
     """
     ENDPOINT = "endpoint"
     HTTP_URL = "http_url"
@@ -37,10 +54,11 @@ class FetchMode(str, Enum):
 class MessageStatus(str, Enum):
     """Current delivery status of an email message.
 
-    - PENDING: Queued and waiting for delivery attempt.
-    - DEFERRED: Temporarily delayed (rate limit or soft error).
-    - SENT: Successfully delivered to SMTP server.
-    - ERROR: Delivery failed with permanent error.
+    Attributes:
+        PENDING: Queued and waiting for delivery attempt.
+        DEFERRED: Temporarily delayed (rate limit or soft error).
+        SENT: Successfully delivered to SMTP server.
+        ERROR: Delivery failed with permanent error.
     """
     PENDING = "pending"
     DEFERRED = "deferred"
@@ -54,15 +72,23 @@ class AttachmentPayload(BaseModel):
     Attributes:
         filename: Attachment filename (may contain MD5 marker).
         storage_path: Content location. Format depends on fetch_mode:
-            - endpoint: query params (e.g., ``doc_id=123``)
-            - http_url: full URL (e.g., ``https://files.myserver.local/file.pdf``)
-            - base64: base64-encoded content (or ``base64:`` prefixed)
-            - filesystem: absolute path (e.g., ``/var/attachments/file.pdf``)
+            - endpoint: query params (e.g., "doc_id=123")
+            - http_url: full URL (e.g., "https://files.example.com/file.pdf")
+            - base64: base64-encoded content
+            - filesystem: absolute path (e.g., "/var/attachments/file.pdf")
         mime_type: Optional MIME type override.
-        fetch_mode: Explicit fetch mode (endpoint, http_url, base64, filesystem).
-            If not provided, inferred from storage_path format.
+        fetch_mode: Explicit fetch mode. If not provided, inferred from path.
         content_md5: MD5 hash for cache lookup.
         auth: Optional authentication override for HTTP requests.
+
+    Example:
+        Attachment from HTTP URL::
+
+            AttachmentPayload(
+                filename="report.pdf",
+                storage_path="https://cdn.example.com/docs/report.pdf",
+                fetch_mode=FetchMode.HTTP_URL,
+            )
     """
     model_config = ConfigDict(extra="forbid")
 
@@ -75,11 +101,43 @@ class AttachmentPayload(BaseModel):
 
 
 class MessageEndpoint(BaseEndpoint):
-    """Message management endpoint. Methods are introspected for API/CLI generation."""
+    """REST API endpoint for email message management.
+
+    Provides CRUD operations for email messages including batch
+    operations for bulk insert/delete and cleanup of old messages.
+
+    Attributes:
+        name: Endpoint name used in URL paths ("messages").
+        table: MessagesTable instance for database operations.
+
+    Example:
+        Using the endpoint programmatically::
+
+            endpoint = MessageEndpoint(db.table("messages"))
+
+            # Add a single message
+            msg = await endpoint.add(
+                id="msg-001",
+                tenant_id="acme",
+                account_id="main",
+                from_addr="sender@acme.com",
+                to=["user@example.com"],
+                subject="Test",
+                body="Hello",
+            )
+
+            # List messages
+            messages = await endpoint.list(tenant_id="acme")
+    """
 
     name = "messages"
 
     def __init__(self, table: MessagesTable):
+        """Initialize endpoint with table reference.
+
+        Args:
+            table: MessagesTable instance for database operations.
+        """
         super().__init__(table)
 
     @POST
@@ -104,30 +162,33 @@ class MessageEndpoint(BaseEndpoint):
         attachments: list[dict[str, Any]] | None = None,
         headers: dict[str, str] | None = None,
     ) -> dict:
-        """Add a new message to the queue.
+        """Add a new message to the delivery queue.
 
         Args:
-            id: Unique message identifier.
+            id: Unique message identifier (client-provided).
             tenant_id: Tenant identifier.
             account_id: SMTP account to use for sending.
             from_addr: Sender email address.
             to: List of recipient addresses.
-            subject: Email subject.
+            subject: Email subject line.
             body: Email body content.
             cc: List of CC addresses.
             bcc: List of BCC addresses.
             reply_to: Reply-To address.
             return_path: Return-Path (envelope sender) address.
-            content_type: Body content type (plain or html).
+            content_type: Body content type ("plain" or "html").
             message_id: Custom Message-ID header.
-            priority: Priority (0=immediate, 1=high, 2=medium, 3=low).
+            priority: Delivery priority (0=immediate, 1=high, 2=medium, 3=low).
             deferred_ts: Unix timestamp to defer delivery until.
             batch_code: Batch/campaign identifier for grouping.
             attachments: List of attachment specifications.
             headers: Additional email headers.
 
         Returns:
-            Dict with message info including id and pk.
+            Dict with message id and pk.
+
+        Raises:
+            ValueError: If message could not be added.
         """
         payload = {
             "from": from_addr,
@@ -167,10 +228,10 @@ class MessageEndpoint(BaseEndpoint):
         raise ValueError(f"Failed to add message '{id}'")
 
     async def get(self, message_id: str, tenant_id: str) -> dict:
-        """Get a single message by ID.
+        """Retrieve a single message by ID.
 
         Args:
-            message_id: Message identifier.
+            message_id: Client-provided message identifier.
             tenant_id: Tenant identifier.
 
         Returns:
@@ -190,7 +251,7 @@ class MessageEndpoint(BaseEndpoint):
         active_only: bool = False,
         include_history: bool = False,
     ) -> list[dict]:
-        """List messages, optionally filtered.
+        """List messages with optional filters.
 
         Args:
             tenant_id: Filter by tenant.
@@ -212,7 +273,7 @@ class MessageEndpoint(BaseEndpoint):
         """Delete a message by internal primary key.
 
         Args:
-            message_pk: Internal message pk (UUID).
+            message_pk: Internal message UUID.
 
         Returns:
             True if deleted, False if not found.
@@ -249,7 +310,10 @@ class MessageEndpoint(BaseEndpoint):
         messages: list[dict[str, Any]],
         default_priority: int | None = None,
     ) -> dict:
-        """Add multiple messages to the queue in a single operation.
+        """Add multiple messages in a single operation.
+
+        Validates each message and queues valid ones. Invalid messages
+        are reported in the rejected list.
 
         Args:
             messages: List of message dicts. Each must have:
@@ -259,13 +323,25 @@ class MessageEndpoint(BaseEndpoint):
                 - from (or from_addr): Sender address
                 - to: Recipient(s)
                 - subject: Email subject
-                - body: Email body
-                Optional: cc, bcc, reply_to, return_path, content_type,
+                Optional: body, cc, bcc, reply_to, return_path, content_type,
                 message_id, priority, deferred_ts, batch_code, attachments, headers.
             default_priority: Default priority for messages without explicit priority.
 
         Returns:
-            Dict with ok=True, queued count, and list of rejected messages.
+            Dict with:
+                - ok: True
+                - queued: Number of messages queued
+                - rejected: List of {id, reason} for invalid messages
+
+        Example:
+            ::
+
+                result = await endpoint.add_batch([
+                    {"id": "m1", "tenant_id": "t1", "account_id": "a1",
+                     "from": "a@b.com", "to": ["c@d.com"], "subject": "Hi"},
+                    {"id": "m2", ...},
+                ])
+                # Returns: {"ok": True, "queued": 2, "rejected": []}
         """
         queued = 0
         rejected: list[dict[str, str | None]] = []
@@ -302,7 +378,6 @@ class MessageEndpoint(BaseEndpoint):
                 rejected.append({"id": msg_id, "reason": "Missing 'subject' field"})
                 continue
 
-            # Build payload
             payload: dict[str, Any] = {
                 "from": from_addr,
                 "to": to if isinstance(to, list) else [to],
@@ -344,23 +419,27 @@ class MessageEndpoint(BaseEndpoint):
     ) -> dict:
         """Delete multiple messages by their IDs.
 
+        Validates ownership before deletion.
+
         Args:
-            tenant_id: Tenant identifier (for authorization check).
+            tenant_id: Tenant identifier for authorization check.
             ids: List of message IDs to delete.
 
         Returns:
-            Dict with ok=True, removed count, not_found list, unauthorized list.
+            Dict with:
+                - ok: True
+                - removed: Number of messages deleted
+                - not_found: List of IDs that don't exist
+                - unauthorized: List of IDs belonging to other tenants
         """
         removed = 0
         not_found: list[str] = []
         unauthorized: list[str] = []
 
-        # Get messages that belong to this tenant
         tenant_ids = await self.table.get_ids_for_tenant(ids, tenant_id)
 
         for msg_id in ids:
             if msg_id not in tenant_ids:
-                # Check if message exists at all
                 existing = await self.table.existing_ids([msg_id])
                 if msg_id in existing:
                     unauthorized.append(msg_id)
@@ -368,7 +447,6 @@ class MessageEndpoint(BaseEndpoint):
                     not_found.append(msg_id)
                 continue
 
-            # Get message pk and delete
             msg = await self.table.get(msg_id, tenant_id)
             if msg and await self.table.remove_by_pk(msg["pk"]):
                 removed += 1
@@ -389,6 +467,9 @@ class MessageEndpoint(BaseEndpoint):
     ) -> dict:
         """Clean up fully reported messages older than retention period.
 
+        Removes messages that have been delivered and reported to the
+        client, freeing up database space.
+
         Args:
             tenant_id: Tenant identifier.
             older_than_seconds: Messages reported before (now - older_than_seconds)
@@ -404,7 +485,14 @@ class MessageEndpoint(BaseEndpoint):
         return {"ok": True, "removed": removed}
 
     def _add_status(self, message: dict) -> dict:
-        """Add computed status field to message dict."""
+        """Add computed status field to message dict.
+
+        Args:
+            message: Message dict from database.
+
+        Returns:
+            Message dict with 'status' field added.
+        """
         if message.get("smtp_ts") is not None:
             if message.get("error"):
                 message["status"] = MessageStatus.ERROR.value

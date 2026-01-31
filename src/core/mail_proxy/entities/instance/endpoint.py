@@ -1,14 +1,34 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
-"""Instance endpoint: service-level operations for genro-mail-proxy.
+"""Instance REST API endpoint for service-level operations.
 
-Operations exposed via API and CLI (auto-generated from signatures):
-- health: Container orchestration health check
-- status: Authenticated service status
-- run_now: Trigger immediate dispatch cycle
-- suspend: Pause sending for tenant/batch
-- activate: Resume sending for tenant/batch
-- get: Get instance configuration
-- update: Update instance configuration
+This module provides the InstanceEndpoint class exposing service-level
+operations for the mail proxy via REST API and CLI commands.
+
+Operations include:
+    - health: Container orchestration health check (unauthenticated)
+    - status: Authenticated service status with active state
+    - run_now: Trigger immediate dispatch cycle
+    - suspend/activate: Control message sending per tenant/batch
+    - get/update: Instance configuration management
+    - get_sync_status: Monitor tenant synchronization health
+    - upgrade_to_ee: Transition from Community to Enterprise Edition
+
+Example:
+    CLI commands auto-generated::
+
+        mail-proxy instance health
+        mail-proxy instance status
+        mail-proxy instance run-now --tenant-id acme
+        mail-proxy instance suspend --tenant-id acme
+        mail-proxy instance activate --tenant-id acme
+        mail-proxy instance get
+        mail-proxy instance update --name production
+        mail-proxy instance get-sync-status
+        mail-proxy instance upgrade-to-ee
+
+Note:
+    Enterprise Edition (EE) extends this with InstanceEndpoint_EE mixin
+    adding bounce detection configuration operations.
 """
 
 from __future__ import annotations
@@ -22,16 +42,41 @@ if TYPE_CHECKING:
 
 
 class InstanceEndpoint(BaseEndpoint):
-    """Instance-level operations. Methods are introspected for API/CLI generation."""
+    """REST API endpoint for instance-level operations.
+
+    Provides service management operations including health checks,
+    dispatch control, and configuration management.
+
+    Attributes:
+        name: Endpoint name used in URL paths ("instance").
+        table: InstanceTable instance for configuration storage.
+        proxy: Optional MailProxy instance for service operations.
+
+    Example:
+        Using the endpoint programmatically::
+
+            endpoint = InstanceEndpoint(db.table("instance"), proxy)
+
+            # Check service health
+            health = await endpoint.health()
+
+            # Trigger dispatch
+            await endpoint.run_now(tenant_id="acme")
+
+            # Update configuration
+            await endpoint.update(name="production")
+    """
 
     name = "instance"
 
     def __init__(self, table: InstanceTable, proxy: object | None = None):
-        """Initialize endpoint with instance table and optional proxy reference.
+        """Initialize endpoint with table and optional proxy reference.
 
         Args:
             table: InstanceTable for configuration storage.
             proxy: Optional MailProxy instance for service operations.
+                   When provided, enables run_now, suspend, activate,
+                   and get_sync_status to interact with the running service.
         """
         super().__init__(table)
         self.proxy = proxy
@@ -39,16 +84,30 @@ class InstanceEndpoint(BaseEndpoint):
     async def health(self) -> dict:
         """Health check for container orchestration.
 
+        Lightweight endpoint for liveness/readiness probes. Does not
+        require authentication. Returns immediately without database access.
+
         Returns:
             Dict with status "ok".
+
+        Example:
+            ::
+
+                # Kubernetes liveness probe
+                # GET /instance/health
+                {"status": "ok"}
         """
         return {"status": "ok"}
 
     async def status(self) -> dict:
         """Authenticated service status.
 
+        Returns the current active state of the mail proxy service.
+        Requires authentication.
+
         Returns:
-            Dict with ok=True and active state.
+            Dict with ok=True and active boolean indicating if
+            the dispatch loop is running.
         """
         active = True
         if self.proxy is not None:
@@ -59,8 +118,12 @@ class InstanceEndpoint(BaseEndpoint):
     async def run_now(self, tenant_id: str | None = None) -> dict:
         """Trigger immediate dispatch cycle.
 
+        Resets the tenant's sync timer, causing the next dispatch loop
+        iteration to process messages immediately.
+
         Args:
             tenant_id: If provided, only reset this tenant's sync timer.
+                       If None, triggers dispatch for all tenants.
 
         Returns:
             Dict with ok=True.
@@ -78,12 +141,15 @@ class InstanceEndpoint(BaseEndpoint):
     ) -> dict:
         """Suspend message sending for a tenant.
 
+        Prevents messages from being dispatched for the specified tenant
+        or batch. Messages remain in queue and will be sent when activated.
+
         Args:
-            tenant_id: The tenant to suspend.
-            batch_code: Optional batch code. If None, suspends all.
+            tenant_id: Tenant to suspend.
+            batch_code: Optional batch code. If None, suspends all batches.
 
         Returns:
-            Dict with suspended batches and pending count.
+            Dict with suspended batches list and pending message count.
         """
         if self.proxy is not None:
             result = await self.proxy.handle_command("suspend", {
@@ -101,12 +167,15 @@ class InstanceEndpoint(BaseEndpoint):
     ) -> dict:
         """Resume message sending for a tenant.
 
+        Removes suspension for the specified tenant or batch, allowing
+        queued messages to be dispatched.
+
         Args:
-            tenant_id: The tenant to activate.
-            batch_code: Optional batch code. If None, clears all.
+            tenant_id: Tenant to activate.
+            batch_code: Optional batch code. If None, clears all suspensions.
 
         Returns:
-            Dict with remaining suspended batches.
+            Dict with remaining suspended batches list.
         """
         if self.proxy is not None:
             result = await self.proxy.handle_command("activate", {
@@ -120,7 +189,7 @@ class InstanceEndpoint(BaseEndpoint):
         """Get instance configuration.
 
         Returns:
-            Instance configuration dict.
+            Dict with ok=True and all instance configuration fields.
         """
         instance = await self.table.get_instance()
         if instance is None:
@@ -137,9 +206,9 @@ class InstanceEndpoint(BaseEndpoint):
         """Update instance configuration.
 
         Args:
-            name: Instance name.
-            api_token: API token.
-            edition: Edition (ce or ee).
+            name: New instance display name.
+            api_token: New master API token.
+            edition: New edition ("ce" or "ee").
 
         Returns:
             Dict with ok=True.
@@ -159,15 +228,15 @@ class InstanceEndpoint(BaseEndpoint):
     async def get_sync_status(self) -> dict:
         """Get sync status for all tenants.
 
-        Returns the last sync timestamp and Do Not Disturb status for each tenant.
-        Useful for monitoring tenant synchronization health.
+        Returns synchronization health information for each tenant,
+        useful for monitoring and debugging delivery issues.
 
         Returns:
-            Dict with ok=True and tenants list containing:
-            - id: Tenant identifier
-            - last_sync_ts: Unix timestamp of last sync (or future for DND)
-            - next_sync_due: True if sync interval has expired
-            - in_dnd: True if tenant is in Do Not Disturb mode
+            Dict with ok=True and tenants list. Each tenant contains:
+                - id: Tenant identifier
+                - last_sync_ts: Unix timestamp of last sync
+                - next_sync_due: True if sync interval has expired
+                - in_dnd: True if tenant is in Do Not Disturb mode
         """
         if self.proxy is not None:
             result = await self.proxy.handle_command("listTenantsSyncStatus", {})
@@ -176,17 +245,18 @@ class InstanceEndpoint(BaseEndpoint):
 
     @POST
     async def upgrade_to_ee(self) -> dict:
-        """Upgrade instance from Community Edition to Enterprise Edition.
+        """Upgrade from Community Edition to Enterprise Edition.
 
-        Performs an explicit upgrade from CE to EE mode:
-        1. Verifies that Enterprise modules are installed
-        2. Sets edition="ee" in the instance configuration
-        3. If a "default" tenant exists without an API key, generates one
+        Performs explicit upgrade from CE to EE mode:
+            1. Verifies Enterprise modules are installed
+            2. Sets edition="ee" in instance configuration
+            3. Optionally generates API key for "default" tenant
 
-        The upgrade is idempotent - calling it when already in EE mode is safe.
+        The upgrade is idempotent - calling when already EE is safe.
 
         Returns:
-            Dict with ok=True, edition, optional default_tenant_token, and message.
+            Dict with ok=True, edition, optional default_tenant_token,
+            and descriptive message.
 
         Raises:
             ValueError: If Enterprise modules are not installed.

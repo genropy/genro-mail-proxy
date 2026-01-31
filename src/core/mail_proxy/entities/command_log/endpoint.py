@@ -1,8 +1,24 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
-"""Command log endpoint: API audit trail operations.
+"""Command log REST API endpoint.
 
-Designed for introspection by api_base/cli_base to auto-generate routes/commands.
-Schema is derived from method signatures via inspect + pydantic.create_model.
+This module provides the CommandLogEndpoint class exposing operations
+for querying and managing the API command audit trail.
+
+The endpoint is designed for automatic introspection by api_base and
+cli_base modules, which generate FastAPI routes and Typer commands
+from method signatures.
+
+Example:
+    CLI commands auto-generated::
+
+        mail-proxy command_log list --tenant-id acme --limit 50
+        mail-proxy command_log get --command-id 123
+        mail-proxy command_log export --tenant-id acme
+        mail-proxy command_log purge --threshold-ts 1700000000
+
+Note:
+    The command log is append-only during normal operation. Only the
+    purge command removes entries, for log rotation purposes.
 """
 
 from __future__ import annotations
@@ -16,11 +32,35 @@ if TYPE_CHECKING:
 
 
 class CommandLogEndpoint(BaseEndpoint):
-    """Command log endpoint. Methods are introspected for API/CLI generation."""
+    """REST API endpoint for command log audit trail.
+
+    Provides read access to the command log with filtering and
+    export capabilities, plus a purge operation for log rotation.
+
+    Attributes:
+        name: Endpoint name used in URL paths ("command_log").
+        table: CommandLogTable instance for database operations.
+
+    Example:
+        Using the endpoint programmatically::
+
+            endpoint = CommandLogEndpoint(db.table("command_log"))
+
+            # List recent commands
+            commands = await endpoint.list(tenant_id="acme", limit=10)
+
+            # Export for backup
+            export = await endpoint.export(tenant_id="acme")
+    """
 
     name = "command_log"
 
     def __init__(self, table: CommandLogTable):
+        """Initialize endpoint with table reference.
+
+        Args:
+            table: CommandLogTable instance for database operations.
+        """
         super().__init__(table)
 
     async def list(
@@ -36,14 +76,14 @@ class CommandLogEndpoint(BaseEndpoint):
 
         Args:
             tenant_id: Filter by tenant.
-            since_ts: Filter commands after this timestamp.
-            until_ts: Filter commands before this timestamp.
+            since_ts: Include commands with command_ts >= since_ts.
+            until_ts: Include commands with command_ts <= until_ts.
             endpoint_filter: Filter by endpoint (partial match).
-            limit: Max results.
-            offset: Skip first N results.
+            limit: Maximum results to return.
+            offset: Skip first N results for pagination.
 
         Returns:
-            List of command records.
+            List of command records ordered by timestamp.
         """
         return await self.table.list_commands(
             tenant_id=tenant_id,
@@ -55,13 +95,13 @@ class CommandLogEndpoint(BaseEndpoint):
         )
 
     async def get(self, command_id: int) -> dict[str, Any]:
-        """Get a specific command by ID.
+        """Retrieve a specific command by ID.
 
         Args:
             command_id: Command log entry ID.
 
         Returns:
-            Command record dict.
+            Command record dict with parsed JSON fields.
 
         Raises:
             ValueError: If command not found.
@@ -79,13 +119,15 @@ class CommandLogEndpoint(BaseEndpoint):
     ) -> list[dict[str, Any]]:
         """Export commands in replay-friendly format.
 
+        Returns minimal fields needed for replay, excluding response data.
+
         Args:
             tenant_id: Filter by tenant.
-            since_ts: Filter commands after this timestamp.
-            until_ts: Filter commands before this timestamp.
+            since_ts: Include commands with command_ts >= since_ts.
+            until_ts: Include commands with command_ts <= until_ts.
 
         Returns:
-            List of commands with endpoint, tenant_id, payload, command_ts.
+            List of command dicts with: endpoint, tenant_id, payload, command_ts.
         """
         return await self.table.export_commands(
             tenant_id=tenant_id,
@@ -97,11 +139,13 @@ class CommandLogEndpoint(BaseEndpoint):
     async def purge(self, threshold_ts: int) -> dict[str, Any]:
         """Delete command logs older than threshold.
 
+        Used for log rotation to prevent unbounded growth.
+
         Args:
-            threshold_ts: Delete commands with command_ts < threshold.
+            threshold_ts: Delete commands with command_ts < threshold_ts.
 
         Returns:
-            Dict with deleted count.
+            Dict with "ok" status and "deleted" count.
         """
         count = await self.table.purge_before(threshold_ts)
         return {"ok": True, "deleted": count}

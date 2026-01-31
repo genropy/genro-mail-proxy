@@ -1,18 +1,41 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
-"""API base: generates FastAPI routes from endpoint classes via introspection.
+"""FastAPI route generation from endpoint classes via introspection.
 
-Provides:
-- Authentication middleware (verify_tenant_token, require_admin_token, require_token)
-- Exception handlers for validation errors
-- create_app() factory that registers endpoints dynamically
-- register_endpoint() for introspecting endpoint classes
+This module generates REST API routes automatically from endpoint classes
+by introspecting method signatures and creating appropriate handlers.
 
-Usage:
-    from core.mail_proxy.interface import create_app
-    from core.mail_proxy.proxy import MailProxy
+Components:
+    create_app: FastAPI application factory.
+    register_endpoint: Register endpoint methods as FastAPI routes.
+    verify_tenant_token: Token verification for tenant-scoped requests.
+    require_admin_token: Admin-only endpoint protection.
+    require_token: General authentication dependency.
 
-    proxy = MailProxy(db_path="/data/mail.db")
-    app = create_app(proxy, api_token="secret")
+Example:
+    Create and run the API server::
+
+        from core.mail_proxy.interface import create_app
+        from core.mail_proxy.proxy import MailProxy
+
+        proxy = MailProxy(db_path="/data/mail.db")
+        app = create_app(proxy, api_token="secret")
+
+        # Run with uvicorn
+        import uvicorn
+        uvicorn.run(app, host="0.0.0.0", port=8000)
+
+    Register custom endpoints::
+
+        from fastapi import FastAPI
+        from core.mail_proxy.interface import register_endpoint
+
+        app = FastAPI()
+        endpoint = MyCustomEndpoint(table)
+        register_endpoint(app, endpoint)
+
+Note:
+    Authentication uses X-API-Token header. Global token grants admin
+    access to all tenants. Tenant tokens restrict access to own resources.
 """
 
 from __future__ import annotations
@@ -45,7 +68,14 @@ _service: MailProxy | None = None
 
 
 def _get_http_method_fallback(method_name: str) -> str:
-    """Fallback: determine HTTP method from method name."""
+    """Infer HTTP method from method name prefix.
+
+    Args:
+        method_name: Name of the endpoint method.
+
+    Returns:
+        HTTP method string (GET, POST, DELETE, PATCH, PUT).
+    """
     if method_name.startswith(("add", "create", "post", "run", "suspend", "activate")):
         return "POST"
     elif method_name.startswith(("delete", "remove")):
@@ -58,13 +88,28 @@ def _get_http_method_fallback(method_name: str) -> str:
 
 
 def _count_params_fallback(method: Callable) -> int:
-    """Fallback: count non-self parameters."""
+    """Count non-self parameters for a method.
+
+    Args:
+        method: The method to introspect.
+
+    Returns:
+        Number of parameters excluding 'self'.
+    """
     sig = inspect.signature(method)
     return sum(1 for p in sig.parameters if p != "self")
 
 
 def _create_model_fallback(method: Callable, method_name: str) -> type:
-    """Fallback: create Pydantic model from method signature."""
+    """Create Pydantic model from method signature.
+
+    Args:
+        method: The method to introspect.
+        method_name: Name used for model class name.
+
+    Returns:
+        Dynamically created Pydantic model class.
+    """
     from typing import get_type_hints
     from pydantic import create_model
 
@@ -96,15 +141,24 @@ def _create_model_fallback(method: Callable, method_name: str) -> type:
 def register_endpoint(app: FastAPI | APIRouter, endpoint: Any, prefix: str = "") -> None:
     """Register all methods of an endpoint as FastAPI routes.
 
+    Introspects the endpoint to discover async methods and creates
+    appropriate GET (query params) or POST (body) routes.
+
     Args:
         app: FastAPI app or APIRouter to register routes on.
         endpoint: Endpoint instance (BaseEndpoint or duck-typed).
-        prefix: Optional URL prefix (default: uses endpoint.name).
+        prefix: Optional URL prefix. Defaults to /{endpoint.name}.
+
+    Example:
+        ::
+
+            endpoint = AccountEndpoint(db.table("accounts"))
+            register_endpoint(app, endpoint)
+            # Creates routes: GET /accounts/list, POST /accounts/add, etc.
     """
     name = getattr(endpoint, "name", endpoint.__class__.__name__.lower())
     base_path = prefix or f"/{name}"
 
-    # Use BaseEndpoint methods if available, otherwise iterate manually
     if isinstance(endpoint, BaseEndpoint):
         methods = endpoint.get_methods()
     else:
@@ -117,7 +171,6 @@ def register_endpoint(app: FastAPI | APIRouter, endpoint: Any, prefix: str = "")
                 methods.append((method_name, method))
 
     for method_name, method in methods:
-        # Use endpoint methods for introspection if available
         if isinstance(endpoint, BaseEndpoint):
             http_method = endpoint.get_http_method(method_name)
             param_count = endpoint.count_params(method_name)
@@ -128,12 +181,9 @@ def register_endpoint(app: FastAPI | APIRouter, endpoint: Any, prefix: str = "")
         path = f"{base_path}/{method_name}"
         doc = method.__doc__ or f"{method_name} operation"
 
-        # Create route handler
         if http_method == "GET" or (http_method == "DELETE" and param_count <= 3):
-            # Simple params → query parameters
             _register_query_route(app, path, method, http_method, doc)
         else:
-            # Complex → request body
             _register_body_route(app, path, method, http_method, doc, method_name, endpoint)
 
 
@@ -147,7 +197,6 @@ def _register_query_route(
     """Register route with query parameters."""
     sig = inspect.signature(method)
 
-    # Build parameter annotations for FastAPI
     params = []
     for param_name, param in sig.parameters.items():
         if param_name == "self":
@@ -157,11 +206,9 @@ def _register_query_route(
         default = param.default if param.default is not inspect.Parameter.empty else ...
         params.append((param_name, ann, default))
 
-    # Create dynamic handler
     async def handler(**kwargs: Any) -> Any:
         return await method(**kwargs)
 
-    # Update handler signature for FastAPI
     new_params = [
         inspect.Parameter(
             name=p[0],
@@ -174,7 +221,6 @@ def _register_query_route(
     handler.__signature__ = inspect.Signature(parameters=new_params)  # type: ignore
     handler.__doc__ = doc
 
-    # Register route
     if http_method == "GET":
         app.get(path, summary=doc.split("\n")[0])(handler)
     elif http_method == "DELETE":
@@ -186,7 +232,6 @@ def _make_body_handler(method: Callable, RequestModel: type) -> Callable:
     async def handler(data: RequestModel) -> Any:  # type: ignore
         return await method(**data.model_dump())
 
-    # Set proper signature so FastAPI recognizes data as Body
     handler.__signature__ = inspect.Signature(  # type: ignore
         parameters=[
             inspect.Parameter(
@@ -209,7 +254,6 @@ def _register_body_route(
     endpoint: Any = None,
 ) -> None:
     """Register route with request body."""
-    # Create Pydantic model from signature - use endpoint method if available
     if isinstance(endpoint, BaseEndpoint):
         RequestModel = endpoint.create_request_model(method_name)
     else:
@@ -218,7 +262,6 @@ def _register_body_route(
     handler = _make_body_handler(method, RequestModel)
     handler.__doc__ = doc
 
-    # Register route
     if http_method == "POST":
         app.post(path, summary=doc.split("\n")[0])(handler)
     elif http_method == "PUT":
@@ -241,10 +284,6 @@ async def verify_tenant_token(
 ) -> None:
     """Verify API token for a tenant-scoped request.
 
-    Authentication logic:
-    1. Global token (admin) → can access any tenant
-    2. Tenant token → can ONLY access own tenant resources
-
     Args:
         tenant_id: The tenant ID from the request.
         api_token: The token from X-API-Token header.
@@ -252,26 +291,27 @@ async def verify_tenant_token(
 
     Raises:
         HTTPException: 401 if token is invalid or tenant_id mismatch.
+
+    Note:
+        - Global token grants access to any tenant
+        - Tenant token grants access ONLY to own resources
+        - No token configured = open access
     """
     if not api_token:
         if global_token is not None:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing API token")
-        return  # No token configured, allow access
+        return
 
-    # Check global token first (admin can access everything)
     if global_token is not None and secrets.compare_digest(api_token, global_token):
-        return  # Global admin token, full access
+        return
 
-    # Look up token in tenants table
     if _service and getattr(_service, "db", None):
         token_tenant = await _service.db.table("tenants").get_tenant_by_token(api_token)
         if token_tenant:
-            # Token belongs to a tenant - verify tenant_id matches
             if tenant_id and token_tenant["id"] != tenant_id:
                 raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token not authorized for this tenant")
-            return  # Valid tenant token for own resources
+            return
 
-    # Token didn't match global or any tenant
     raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing API token")
 
 
@@ -281,27 +321,26 @@ async def require_admin_token(
 ) -> None:
     """Require global admin token for admin-only endpoints.
 
-    Admin-only endpoints include:
-    - Creating/deleting tenants
-    - Listing all tenants
-    - Managing tenant API keys
-    - Instance configuration
+    Admin-only endpoints include tenant management, API key operations,
+    and instance configuration.
+
+    Args:
+        request: FastAPI request object.
+        api_token: Token from X-API-Token header (via Depends).
 
     Raises:
-        HTTPException: 401 if token is not the global admin token.
+        HTTPException: 401 if not global admin token, 403 if tenant token.
     """
     expected = getattr(request.app.state, "api_token", None)
 
     if not api_token:
         if expected is not None:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Admin token required")
-        return  # No global token configured, allow access
+        return
 
-    # Only accept global admin token
     if expected is not None and secrets.compare_digest(api_token, expected):
-        return  # Valid admin token
+        return
 
-    # Check if it's a tenant token (to give a helpful error message)
     if _service and getattr(_service, "db", None):
         token_tenant = await _service.db.table("tenants").get_tenant_by_token(api_token)
         if token_tenant:
@@ -317,38 +356,38 @@ async def require_token(
     request: Request,
     api_token: str | None = Depends(api_key_scheme),
 ) -> None:
-    """Validate the API token carried in the X-API-Token header.
+    """Validate API token from X-API-Token header.
 
-    Accepts either:
-    - The global API token - admin, full access
-    - A valid tenant-specific API key - limited to own tenant resources
+    Accepts global admin token (full access) or tenant token (own resources).
+    Stores token info in request.state for downstream verification.
+
+    Args:
+        request: FastAPI request object.
+        api_token: Token from X-API-Token header (via Depends).
+
+    Raises:
+        HTTPException: 401 if token is invalid.
     """
-    # Store token in request state for later tenant-aware verification
     request.state.api_token = api_token
 
     expected = getattr(request.app.state, "api_token", None)
 
-    # No token provided
     if not api_token:
         if expected is not None:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing API token")
-        return  # No global token configured, allow access
+        return
 
-    # Check global token first (admin)
     if expected is not None and secrets.compare_digest(api_token, expected):
         request.state.is_admin = True
-        return  # Global admin token
+        return
 
-    # Check tenant token
     if _service and getattr(_service, "db", None):
         token_tenant = await _service.db.table("tenants").get_tenant_by_token(api_token)
         if token_tenant:
-            # Valid tenant token - store tenant info for scope verification
             request.state.token_tenant_id = token_tenant["id"]
             request.state.is_admin = False
             return
 
-    # Token didn't match global or any tenant
     raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing API token")
 
 
@@ -372,18 +411,30 @@ def create_app(
 
     Args:
         svc: MailProxy instance implementing business logic.
-        api_token: Optional secret for X-API-Token header authentication.
-        lifespan: Optional lifespan context manager for startup/shutdown.
-            If None, creates default lifespan that starts/stops the proxy.
+        api_token: Optional global token for X-API-Token authentication.
+        lifespan: Optional lifespan context manager. If None, creates
+            default that starts/stops the proxy service.
         tenant_tokens_enabled: When True, enables per-tenant API keys.
 
     Returns:
-        Configured FastAPI application.
+        Configured FastAPI application with all routes registered.
+
+    Example:
+        ::
+
+            from core.mail_proxy.proxy import MailProxy
+            from core.mail_proxy.interface import create_app
+
+            proxy = MailProxy(db_path="/data/mail.db")
+            app = create_app(proxy, api_token="admin-secret")
+
+            # Run with uvicorn
+            import uvicorn
+            uvicorn.run(app)
     """
     global _service
     _service = svc
 
-    # Create default lifespan if not provided
     if lifespan is None:
         from contextlib import asynccontextmanager
         from collections.abc import AsyncGenerator
@@ -407,7 +458,6 @@ def create_app(
     app.state.api_token = api_token
     app.state.tenant_tokens_enabled = tenant_tokens_enabled
 
-    # Exception handler for validation errors
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(
         request: Request, exc: RequestValidationError
@@ -419,10 +469,7 @@ def create_app(
         logger.error(f"Validation errors: {exc.errors()}")
         return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
-    # Register entity endpoints
     _register_entity_endpoints(app, svc)
-
-    # Register instance endpoints
     _register_instance_endpoints(app, svc)
 
     return app
@@ -430,12 +477,9 @@ def create_app(
 
 def _register_entity_endpoints(app: FastAPI, svc: MailProxy) -> None:
     """Register entity endpoints via autodiscovery."""
-    # Create router with authentication
     router = APIRouter(dependencies=[auth_dependency])
 
-    # Autodiscover and register all entity endpoints
     for endpoint_class in BaseEndpoint.discover():
-        # Skip instance endpoint - handled separately with special routes
         if endpoint_class.name == "instance":
             continue
 
@@ -447,8 +491,7 @@ def _register_entity_endpoints(app: FastAPI, svc: MailProxy) -> None:
 
 
 def _register_instance_endpoints(app: FastAPI, svc: MailProxy) -> None:
-    """Register instance-level endpoints (health, metrics, and instance operations)."""
-    # Find InstanceEndpoint from discovery
+    """Register instance-level endpoints (health, metrics, operations)."""
     instance_class = None
     for endpoint_class in BaseEndpoint.discover():
         if endpoint_class.name == "instance":
@@ -462,19 +505,16 @@ def _register_instance_endpoints(app: FastAPI, svc: MailProxy) -> None:
     instance_table = svc.db.table("instance")
     instance_endpoint = instance_class(instance_table, proxy=svc)
 
-    # Health endpoint (no auth required)
     @app.get("/health")
     async def health() -> dict:
         """Health check endpoint for container orchestration."""
         return await instance_endpoint.health()
 
-    # Metrics endpoint (no auth required)
     @app.get("/metrics")
     async def metrics() -> Response:
         """Export Prometheus metrics in text exposition format."""
         return Response(content=svc.metrics.generate_latest(), media_type="text/plain; version=0.0.4")
 
-    # Instance operations (auto-generated from InstanceEndpoint)
     router = APIRouter(dependencies=[auth_dependency])
     register_endpoint(router, instance_endpoint)
     app.include_router(router)

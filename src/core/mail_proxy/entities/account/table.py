@@ -1,36 +1,139 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
-"""Accounts table manager for SMTP configurations (CE base)."""
+"""SMTP account configuration table manager.
+
+This module provides the AccountsTable class for managing SMTP server
+configurations in a multi-tenant environment. Each account belongs to
+a tenant and defines connection parameters for outgoing email delivery.
+
+The table uses a UUID primary key (pk) with a unique constraint on
+(tenant_id, id) for multi-tenant isolation. This allows each tenant
+to use their own account identifiers without conflicts.
+
+Example:
+    Basic account management::
+
+        from core.mail_proxy.proxy_base import MailProxyBase
+
+        proxy = MailProxyBase(db_path=":memory:")
+        await proxy.init()
+
+        accounts = proxy.db.table("accounts")
+
+        # Add an SMTP account
+        pk = await accounts.add({
+            "id": "main",
+            "tenant_id": "acme",
+            "host": "smtp.gmail.com",
+            "port": 587,
+            "user": "sender@acme.com",
+            "password": "app-password",
+            "use_tls": True,
+        })
+
+        # Retrieve account
+        account = await accounts.get("acme", "main")
+
+        # List all accounts for a tenant
+        all_accounts = await accounts.list_all(tenant_id="acme")
+
+Attributes:
+    name: Table name in database ("accounts").
+    pkey: Primary key column name ("pk").
+
+Note:
+    Enterprise Edition (EE) extends this class with PEC (Posta Elettronica
+    Certificata) support via AccountsTable_EE mixin, adding IMAP polling
+    for delivery receipts.
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
-from sql import Integer, String, Table, Timestamp
 from genro_toolbox import get_uuid
+
+from sql import Integer, String, Table, Timestamp
 
 
 class AccountsTable(Table):
-    """Accounts table: SMTP server configurations (CE base).
+    """SMTP account configurations for outgoing email delivery.
 
-    CE provides: add(), get(), list_all(), remove(), migrations.
-    EE extends with: add_pec_account(), list_pec_accounts(),
-                     get_pec_account_ids(), update_imap_sync_state().
+    Manages SMTP server connection parameters including host, port,
+    credentials, TLS settings, and rate limits. Each account belongs
+    to a tenant and is identified by a client-provided ID.
 
-    Schema: pk (UUID), tenant_id+id (unique), host, port, user, password,
-            rate limits, use_tls, IMAP/PEC columns, timestamps.
+    The table schema includes:
+        - pk: Internal UUID primary key
+        - id: Client-provided account identifier (unique per tenant)
+        - tenant_id: Foreign key to tenants table
+        - host, port: SMTP server connection
+        - user, password: Authentication credentials (password encrypted)
+        - ttl: Connection cache TTL in seconds
+        - limit_per_minute/hour/day: Rate limiting thresholds
+        - limit_behavior: Action when rate exceeded ("defer" or "reject")
+        - use_tls: TLS/STARTTLS mode
+        - batch_size: Max messages per connection
+
+    Example:
+        Adding an account with rate limits::
+
+            pk = await accounts.add({
+                "id": "transactional",
+                "tenant_id": "acme",
+                "host": "smtp.sendgrid.net",
+                "port": 587,
+                "user": "apikey",
+                "password": "SG.xxxxx",
+                "use_tls": True,
+                "limit_per_hour": 1000,
+                "limit_per_day": 10000,
+                "limit_behavior": "defer",
+            })
     """
 
     name = "accounts"
     pkey = "pk"
 
     def create_table_sql(self) -> str:
-        """Generate CREATE TABLE with UNIQUE (tenant_id, id) for multi-tenant isolation."""
+        """Generate CREATE TABLE statement with multi-tenant unique constraint.
+
+        Adds UNIQUE (tenant_id, id) constraint to ensure each tenant
+        has unique account identifiers while allowing the same ID
+        across different tenants.
+
+        Returns:
+            SQL CREATE TABLE statement with UNIQUE constraint.
+        """
         sql = super().create_table_sql()
         # Add UNIQUE constraint before final closing parenthesis
         last_paren = sql.rfind(")")
         return sql[:last_paren] + ',\n    UNIQUE ("tenant_id", "id")\n)'
 
     def configure(self) -> None:
+        """Define table columns.
+
+        Columns:
+            pk: UUID primary key (auto-generated on insert).
+            id: Client account identifier (required).
+            tenant_id: Owning tenant (FK to tenants, required).
+            host: SMTP server hostname (required).
+            port: SMTP server port (required).
+            user: SMTP username for authentication.
+            password: SMTP password (encrypted at rest).
+            ttl: Connection cache TTL in seconds (default: 300).
+            limit_per_minute: Max emails per minute.
+            limit_per_hour: Max emails per hour.
+            limit_per_day: Max emails per day.
+            limit_behavior: Rate limit action ("defer" or "reject").
+            use_tls: TLS mode (1=STARTTLS, 0=none, NULL=auto).
+            batch_size: Messages per SMTP connection.
+            created_at: Record creation timestamp.
+            updated_at: Last modification timestamp.
+
+        Note:
+            EE columns (is_pec_account, imap_*) are added by
+            AccountsTable_EE.configure() when enterprise package is installed.
+        """
         c = self.columns
         c.column("pk", String)  # UUID generated internally
         c.column("id", String, nullable=False)  # account_id from client
@@ -51,13 +154,24 @@ class AccountsTable(Table):
         # EE columns added by AccountsTable_EE.configure()
 
     async def migrate_from_legacy_schema(self) -> bool:
-        """Migrate from legacy schema (composite PK) to new schema (UUID pk).
+        """Migrate from composite primary key to UUID primary key.
 
-        This migration is needed for databases created before this version where
-        the accounts table used a composite PRIMARY KEY (tenant_id, id).
+        Legacy databases used PRIMARY KEY (tenant_id, id). This migration
+        adds a UUID 'pk' column as the new primary key while preserving
+        the UNIQUE constraint on (tenant_id, id).
+
+        The migration process:
+            1. Create new table with UUID pk column
+            2. Copy existing rows, generating UUIDs
+            3. Drop old table and rename new table
 
         Returns:
-            True if migration was performed, False if not needed.
+            True if migration was performed, False if not needed
+            (pk column already exists or table doesn't exist).
+
+        Note:
+            Safe to call on every startup. Skips silently if migration
+            is not needed.
         """
         # Check if migration is needed by looking for pk column
         try:
@@ -141,12 +255,43 @@ class AccountsTable(Table):
         return True
 
     async def add(self, acc: dict[str, Any]) -> str:
-        """Insert or update an SMTP account.
+        """Insert or update an SMTP account configuration.
 
-        Supports both regular SMTP accounts and PEC accounts with IMAP config.
+        Performs an upsert based on (tenant_id, id). If the account exists,
+        updates all fields. If new, generates a UUID for the pk column.
+
+        Args:
+            acc: Account configuration dict with keys:
+                - id (required): Client account identifier.
+                - tenant_id (required): Owning tenant ID.
+                - host (required): SMTP server hostname.
+                - port (required): SMTP server port.
+                - user: SMTP username.
+                - password: SMTP password (will be encrypted).
+                - ttl: Connection cache TTL (default: 300).
+                - limit_per_minute/hour/day: Rate limits.
+                - limit_behavior: "defer" or "reject" (default: "defer").
+                - use_tls: True/False/None for TLS mode.
+                - batch_size: Messages per connection.
+                - is_pec_account: True for PEC accounts (EE).
+                - imap_*: IMAP settings for PEC (EE).
 
         Returns:
-            The account's internal pk (UUID).
+            The account's internal UUID (pk).
+
+        Example:
+            ::
+
+                pk = await accounts.add({
+                    "id": "marketing",
+                    "tenant_id": "acme",
+                    "host": "smtp.mailgun.org",
+                    "port": 587,
+                    "user": "postmaster@acme.com",
+                    "password": "secret",
+                    "use_tls": True,
+                    "limit_per_hour": 500,
+                })
         """
         tenant_id = acc["tenant_id"]
         account_id = acc["id"]
@@ -192,14 +337,26 @@ class AccountsTable(Table):
         return pk
 
     async def get(self, tenant_id: str, account_id: str) -> dict[str, Any]:
-        """Fetch a single SMTP account or raise if not found.
+        """Retrieve a single SMTP account by tenant and ID.
 
         Args:
             tenant_id: The tenant that owns this account.
-            account_id: The account identifier.
+            account_id: The client-provided account identifier.
+
+        Returns:
+            Account dict with use_tls converted to bool/None.
 
         Raises:
             ValueError: If account not found for this tenant.
+
+        Example:
+            ::
+
+                try:
+                    account = await accounts.get("acme", "main")
+                    print(f"SMTP host: {account['host']}")
+                except ValueError:
+                    print("Account not found")
         """
         account = await self.select_one(where={"tenant_id": tenant_id, "id": account_id})
         if not account:
@@ -207,7 +364,23 @@ class AccountsTable(Table):
         return self._decode_use_tls(account)
 
     async def list_all(self, tenant_id: str | None = None) -> list[dict[str, Any]]:
-        """Return SMTP accounts, optionally filtered by tenant."""
+        """List SMTP accounts, optionally filtered by tenant.
+
+        Args:
+            tenant_id: Filter by tenant ID. If None, returns all accounts.
+
+        Returns:
+            List of account dicts ordered by ID, with boolean fields decoded.
+
+        Example:
+            ::
+
+                # All accounts for a tenant
+                acme_accounts = await accounts.list_all(tenant_id="acme")
+
+                # All accounts across all tenants (admin view)
+                all_accounts = await accounts.list_all()
+        """
         columns = [
             "pk", "id", "tenant_id", "host", "port", "user", "ttl",
             "limit_per_minute", "limit_per_hour", "limit_per_day",
@@ -224,26 +397,36 @@ class AccountsTable(Table):
         return [self._decode_account(acc) for acc in rows]
 
     async def remove(self, tenant_id: str, account_id: str) -> None:
-        """Remove an SMTP account for a specific tenant.
+        """Delete an SMTP account.
 
         Args:
             tenant_id: The tenant that owns this account.
-            account_id: The account identifier.
+            account_id: The account identifier to delete.
 
-        Note: Related messages should be cleaned by the calling code
-        or via foreign key constraints.
+        Note:
+            Messages referencing this account should be cleaned up
+            separately or via foreign key CASCADE constraints.
         """
         await self.delete(where={"tenant_id": tenant_id, "id": account_id})
 
     def _decode_use_tls(self, account: dict[str, Any]) -> dict[str, Any]:
-        """Convert use_tls INTEGER to bool/None."""
+        """Convert use_tls from INTEGER to bool/None.
+
+        Database stores: 1=True, 0=False, NULL=None (auto-detect).
+        API returns: True, False, or None.
+        """
         if "use_tls" in account:
             val = account["use_tls"]
             account["use_tls"] = bool(val) if val is not None else None
         return account
 
     def _decode_account(self, account: dict[str, Any]) -> dict[str, Any]:
-        """Convert database integers to booleans for API response."""
+        """Decode all boolean fields for API response.
+
+        Converts:
+            - use_tls: INTEGER → bool/None
+            - is_pec_account: INTEGER → bool
+        """
         self._decode_use_tls(account)
         # Convert is_pec_account to bool
         if "is_pec_account" in account:
@@ -252,10 +435,12 @@ class AccountsTable(Table):
         return account
 
     async def sync_schema(self) -> None:
-        """Sync table schema.
+        """Synchronize table schema with column definitions.
 
-        For new databases, pk is PRIMARY KEY and UNIQUE(tenant_id, id) is created.
-        For existing databases, ensures the unique index exists as fallback.
+        Adds missing columns and ensures the UNIQUE index on
+        (tenant_id, id) exists for multi-tenant isolation.
+
+        Safe to call on every startup.
         """
         await super().sync_schema()
         # Ensure UNIQUE index for tenant isolation

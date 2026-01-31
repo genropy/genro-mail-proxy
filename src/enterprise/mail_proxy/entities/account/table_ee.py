@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from sql import Integer, String, Timestamp
+
 
 class AccountsTable_EE:
     """Enterprise Edition: PEC account support with IMAP configuration.
@@ -34,17 +36,17 @@ class AccountsTable_EE:
         super().configure()  # type: ignore[misc]
         c = self.columns  # type: ignore[attr-defined]
         # PEC account flag
-        c.column("is_pec_account", "Integer", default=0)
+        c.column("is_pec_account", Integer, default=0)
         # IMAP configuration for receipt polling
-        c.column("imap_host", "String")
-        c.column("imap_port", "Integer", default=993)
-        c.column("imap_user", "String")
-        c.column("imap_password", "String")
-        c.column("imap_folder", "String", default="INBOX")
+        c.column("imap_host", String)
+        c.column("imap_port", Integer, default=993)
+        c.column("imap_user", String)
+        c.column("imap_password", String, encrypted=True)
+        c.column("imap_folder", String, default="INBOX")
         # IMAP sync state
-        c.column("imap_last_uid", "Integer")
-        c.column("imap_last_sync", "Timestamp")
-        c.column("imap_uidvalidity", "Integer")
+        c.column("imap_last_uid", Integer)
+        c.column("imap_last_sync", Timestamp)
+        c.column("imap_uidvalidity", Integer)
 
     async def add_pec_account(self, acc: dict[str, Any]) -> str:
         """Insert or update a PEC account with IMAP configuration.

@@ -1,5 +1,53 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
-"""Messages table manager for email queue (CE base)."""
+"""Email message queue table manager.
+
+This module provides the MessagesTable class for managing email messages
+in the delivery queue. Each message contains a JSON payload with email
+content and is associated with a tenant and SMTP account.
+
+Messages progress through states:
+    - Pending: smtp_ts IS NULL, deferred_ts IS NULL
+    - Deferred: smtp_ts IS NULL, deferred_ts IS NOT NULL
+    - Processed: smtp_ts IS NOT NULL
+
+The table uses a UUID primary key (pk) with a unique constraint on
+(tenant_id, id) for multi-tenant isolation and idempotent inserts.
+
+Example:
+    Queue and send messages::
+
+        from core.mail_proxy.proxy_base import MailProxyBase
+
+        proxy = MailProxyBase(db_path=":memory:")
+        await proxy.init()
+
+        messages = proxy.db.table("messages")
+
+        # Queue a message batch
+        result = await messages.insert_batch([{
+            "id": "msg-001",
+            "tenant_id": "acme",
+            "account_id": "main",
+            "payload": {
+                "from": "sender@acme.com",
+                "to": ["user@example.com"],
+                "subject": "Hello",
+                "body": "Test message",
+            },
+        }])
+
+        # Fetch messages ready for delivery
+        import time
+        ready = await messages.fetch_ready(limit=10, now_ts=int(time.time()))
+
+        # Mark as sent
+        for msg in ready:
+            await messages.mark_sent(msg["pk"], int(time.time()))
+
+Note:
+    Enterprise Edition (EE) extends this class with MessagesTable_EE
+    mixin, adding PEC-specific methods for Italian certified email.
+"""
 
 from __future__ import annotations
 
@@ -12,69 +60,117 @@ from genro_toolbox import get_uuid
 
 
 class MessagesTable(Table):
-    """Messages table: email queue with scheduling (CE base).
+    """Email message queue with scheduling and deferred delivery.
 
-    CE provides: insert_batch(), fetch_ready(), mark_sent/error(), get(),
-                 list_all(), count_active(), purge methods, migrations.
-    EE extends with: clear_pec_flag(), get_pec_without_acceptance().
+    Manages the email delivery queue with support for priority ordering,
+    deferred delivery (retry scheduling), batch operations, and
+    multi-tenant isolation.
 
-    Schema: pk (UUID), tenant_id+id (unique), account_id, priority,
-            payload (JSON), batch_code, deferred_ts, smtp_ts, is_pec.
+    Attributes:
+        name: Table name ("messages").
+        pkey: Primary key column ("pk", UUID string).
+
+    Table Schema:
+        - pk: UUID primary key (generated on insert)
+        - id: Client-provided message identifier (unique per tenant)
+        - tenant_id: Tenant identifier for isolation
+        - account_id: Legacy account reference (business key)
+        - account_pk: FK to accounts.pk (UUID)
+        - priority: Delivery priority (0=immediate, 1=high, 2=medium, 3=low)
+        - payload: JSON email content (from, to, subject, body, etc.)
+        - batch_code: Optional campaign/batch identifier
+        - deferred_ts: Retry timestamp (NULL = ready for delivery)
+        - smtp_ts: SMTP attempt timestamp (NULL = pending)
+        - is_pec: PEC flag for Italian certified email (EE)
+        - created_at, updated_at: Timestamps
+
+    Example:
+        Basic message queue operations::
+
+            messages = proxy.db.table("messages")
+
+            # Insert messages
+            await messages.insert_batch([
+                {"id": "m1", "tenant_id": "t1", "account_id": "a1",
+                 "payload": {"from": "a@b.com", "to": ["c@d.com"], ...}},
+            ])
+
+            # Fetch ready messages
+            ready = await messages.fetch_ready(limit=100, now_ts=now)
+
+            # Mark sent/error
+            await messages.mark_sent(pk, now)
+            await messages.mark_error(pk, now)
     """
 
     name = "messages"
     pkey = "pk"
 
     def create_table_sql(self) -> str:
-        """Generate CREATE TABLE with UNIQUE (tenant_id, id) for multi-tenant isolation."""
+        """Generate CREATE TABLE with UNIQUE constraint.
+
+        Adds UNIQUE (tenant_id, id) constraint to ensure idempotent
+        inserts and multi-tenant isolation.
+
+        Returns:
+            SQL CREATE TABLE statement with UNIQUE constraint.
+        """
         sql = super().create_table_sql()
-        # Add UNIQUE constraint before final closing parenthesis
         last_paren = sql.rfind(")")
         return sql[:last_paren] + ',\n    UNIQUE ("tenant_id", "id")\n)'
 
     def configure(self) -> None:
+        """Define table columns.
+
+        Columns:
+            pk: UUID primary key (generated via get_uuid()).
+            id: Client message identifier (unique per tenant).
+            tenant_id: Owning tenant (denormalized for query efficiency).
+            account_id: Legacy account reference (business key).
+            account_pk: FK to accounts.pk UUID.
+            priority: Delivery priority (0-3, default 2).
+            payload: JSON email content.
+            batch_code: Optional batch/campaign identifier.
+            created_at, updated_at: Timestamps.
+            deferred_ts: Unix timestamp for retry scheduling.
+            smtp_ts: Unix timestamp when SMTP was attempted.
+            is_pec: PEC flag (1=awaiting receipts, EE only).
+        """
         c = self.columns
-        c.column("pk", String)  # get_uuid() generated
-        c.column("id", String, nullable=False)  # message_id from client
-        c.column("tenant_id", String, nullable=False)  # denormalized for isolation
-        c.column("account_id", String)  # Legacy: business key (tenant_id, account_id)
-        c.column("account_pk", String)  # FK to accounts.pk (UUID)
+        c.column("pk", String)
+        c.column("id", String, nullable=False)
+        c.column("tenant_id", String, nullable=False)
+        c.column("account_id", String)
+        c.column("account_pk", String)
         c.column("priority", Integer, nullable=False, default=2)
-        c.column("payload", String, nullable=False)  # JSON but handled specially
-        c.column("batch_code", String)  # Optional batch/campaign identifier
+        c.column("payload", String, nullable=False)
+        c.column("batch_code", String)
         c.column("created_at", Timestamp, default="CURRENT_TIMESTAMP")
         c.column("updated_at", Timestamp, default="CURRENT_TIMESTAMP")
-        c.column("deferred_ts", Integer)  # For retry scheduling
-        c.column("smtp_ts", Integer)  # When SMTP send was attempted (NULL = pending)
-        c.column("is_pec", Integer, default=0)  # PEC flag (1=awaiting receipts)
+        c.column("deferred_ts", Integer)
+        c.column("smtp_ts", Integer)
+        c.column("is_pec", Integer, default=0)
 
     async def migrate_from_legacy_schema(self) -> bool:
-        """Migrate from legacy schema (INTEGER pk) to new schema (UUID pk).
+        """Migrate from INTEGER pk to UUID pk schema.
 
-        This migration is needed for databases created before v0.6.5 where
-        the messages table used an INTEGER autoincrement primary key.
+        Legacy databases used INTEGER autoincrement primary key.
+        This migration adds UUID 'pk' column as new primary key.
 
         Returns:
-            True if migration was performed, False if not needed.
+            True if migration performed, False if not needed.
         """
-        # Check if migration is needed by looking for pk column
         try:
-            await self.db.adapter.fetch_one(
-                "SELECT pk FROM messages LIMIT 1"
-            )
-            return False  # pk column exists, no migration needed
+            await self.db.adapter.fetch_one("SELECT pk FROM messages LIMIT 1")
+            return False
         except Exception:
-            pass  # pk column doesn't exist, need migration
+            pass
 
-        # Check if old table exists at all
         try:
-            await self.db.adapter.fetch_one(
-                "SELECT id FROM messages LIMIT 1"
-            )
+            await self.db.adapter.fetch_one("SELECT id FROM messages LIMIT 1")
         except Exception:
-            return False  # Table doesn't exist, will be created fresh
+            return False
 
-        # Migration: create new table, copy data with generated UUIDs, swap
         await self.db.adapter.execute("""
             CREATE TABLE messages_new (
                 pk TEXT PRIMARY KEY,
@@ -93,7 +189,6 @@ class MessagesTable(Table):
             )
         """)
 
-        # Copy data, generating UUIDs for pk
         rows = await self.db.adapter.fetch_all(
             "SELECT id, tenant_id, account_id, priority, payload, batch_code, "
             "created_at, updated_at, deferred_ts, smtp_ts, is_pec FROM messages"
@@ -110,36 +205,31 @@ class MessagesTable(Table):
                 {"pk": pk, **dict(row)}
             )
 
-        # Swap tables
         await self.db.adapter.execute("DROP TABLE messages")
         await self.db.adapter.execute("ALTER TABLE messages_new RENAME TO messages")
 
         return True
 
     async def migrate_account_pk(self) -> bool:
-        """Populate account_pk from existing account_id + tenant_id.
+        """Populate account_pk from account_id + tenant_id.
 
-        This migration is needed after adding account_pk column to link
-        messages to accounts via UUID instead of business key.
+        Links messages to accounts via UUID instead of business key.
 
         Returns:
-            True if migration was performed, False if not needed.
+            True if migration performed, False if not needed.
         """
-        # Check if account_pk column exists
         try:
             await self.db.adapter.fetch_one("SELECT account_pk FROM messages LIMIT 1")
         except Exception:
-            return False  # Column doesn't exist yet, sync_schema will add it
+            return False
 
-        # Check if there are messages with account_id but no account_pk
         row = await self.db.adapter.fetch_one(
             """SELECT COUNT(*) as cnt FROM messages
                WHERE account_id IS NOT NULL AND account_pk IS NULL"""
         )
         if not row or row["cnt"] == 0:
-            return False  # No migration needed
+            return False
 
-        # Populate account_pk from accounts table
         await self.db.adapter.execute(
             """UPDATE messages
                SET account_pk = (
@@ -161,30 +251,47 @@ class MessagesTable(Table):
     ) -> list[dict[str, str]]:
         """Persist a batch of messages for delivery.
 
-        Returns list of dicts with 'id' (message_id) and 'pk' (internal key)
-        for each successfully inserted/updated message.
-
-        Uses record() context manager to ensure triggers are called properly.
-        If message exists and smtp_ts IS NULL, updates it.
-        If message doesn't exist, inserts it.
-        If message exists but smtp_ts IS NOT NULL, skips it (already processed).
+        Performs upsert based on (tenant_id, id):
+            - New message: insert with generated UUID pk
+            - Existing pending: update fields
+            - Existing processed: skip (already sent)
 
         Args:
-            entries: List of message entries to insert.
+            entries: List of message dicts. Each must have:
+                - id: Client message identifier
+                - tenant_id or use tenant_id param
+                - account_id: SMTP account identifier
+                - payload: Email content dict
+                Optional: priority, deferred_ts, batch_code, account_pk.
             pec_account_ids: Set of account IDs that are PEC accounts.
-                Messages sent via these accounts will have is_pec=1.
-                If None and auto_pec=True, fetched automatically from accounts table.
-            tenant_id: Tenant ID for multi-tenant isolation. Required unless
-                each entry has its own tenant_id.
-            auto_pec: If True (default), auto-fetch PEC account IDs when not provided.
+                If None and auto_pec=True, fetched from accounts table.
+            tenant_id: Default tenant ID if not in each entry.
+            auto_pec: If True, auto-fetch PEC account IDs.
 
         Returns:
             List of {"id": msg_id, "pk": pk} for inserted/updated messages.
+
+        Example:
+            ::
+
+                result = await messages.insert_batch([
+                    {
+                        "id": "msg-001",
+                        "tenant_id": "acme",
+                        "account_id": "main",
+                        "payload": {
+                            "from": "sender@acme.com",
+                            "to": ["user@example.com"],
+                            "subject": "Test",
+                            "body": "Hello",
+                        },
+                    },
+                ])
+                # Returns: [{"id": "msg-001", "pk": "uuid-..."}]
         """
         if not entries:
             return []
 
-        # Auto-fetch PEC account IDs if not provided
         if pec_account_ids is None and auto_pec:
             pec_account_ids = await self.db.table('accounts').get_pec_account_ids()
 
@@ -198,14 +305,13 @@ class MessagesTable(Table):
                 continue
 
             account_id = entry.get("account_id")
-            account_pk = entry.get("account_pk")  # UUID reference to accounts.pk
+            account_pk = entry.get("account_pk")
             priority = int(entry.get("priority", 2))
             deferred_ts = entry.get("deferred_ts")
             batch_code = entry.get("batch_code")
             is_pec = 1 if account_id in pec_accounts else 0
             payload = json.dumps(entry["payload"])
 
-            # Resolve account_pk from account_id if not provided
             if account_id and not account_pk:
                 acc_row = await self.db.adapter.fetch_one(
                     "SELECT pk FROM accounts WHERE tenant_id = :tenant_id AND id = :account_id",
@@ -214,16 +320,14 @@ class MessagesTable(Table):
                 if acc_row:
                     account_pk = acc_row["pk"]
 
-            # Check if message already exists
             existing = await self.db.adapter.fetch_one(
                 "SELECT pk, smtp_ts FROM messages WHERE tenant_id = :tenant_id AND id = :id",
                 {"tenant_id": entry_tenant_id, "id": msg_id},
             )
 
             if existing:
-                # Message exists - only update if not yet processed
                 if existing["smtp_ts"] is not None:
-                    continue  # Already processed, skip
+                    continue
 
                 pk = existing["pk"]
                 async with self.record(pk) as rec:
@@ -235,7 +339,6 @@ class MessagesTable(Table):
                     rec["deferred_ts"] = deferred_ts
                     rec["is_pec"] = is_pec
             else:
-                # New message - insert
                 pk = get_uuid()
                 await self.insert({
                     "pk": pk,
@@ -264,10 +367,23 @@ class MessagesTable(Table):
     ) -> list[dict[str, Any]]:
         """Fetch messages ready for SMTP delivery.
 
-        Excludes messages from suspended tenants/batches:
-        - If tenant.suspended_batches = "*", all messages are skipped
-        - If tenant.suspended_batches contains message.batch_code, message is skipped
-        - Messages without batch_code are only skipped when suspended_batches = "*"
+        Returns pending messages ordered by priority and creation time.
+        Excludes messages from suspended tenants/batches.
+
+        Args:
+            limit: Maximum messages to fetch.
+            now_ts: Current Unix timestamp for deferred check.
+            priority: Exact priority to filter (0-3).
+            min_priority: Minimum priority to filter.
+
+        Returns:
+            List of message dicts with decoded payload.
+
+        Note:
+            Suspension logic:
+                - tenant.suspended_batches = "*": all messages skipped
+                - tenant.suspended_batches contains batch_code: skipped
+                - Messages without batch_code: only skipped when "*"
         """
         conditions = [
             "m.smtp_ts IS NULL",
@@ -282,12 +398,6 @@ class MessagesTable(Table):
             conditions.append("m.priority >= :min_priority")
             params["min_priority"] = min_priority
 
-        # Exclude suspended batches:
-        # - t.suspended_batches IS NULL → not suspended
-        # - t.suspended_batches = '*' → fully suspended (skip all)
-        # - m.batch_code is in suspended list → skip
-        # - m.batch_code IS NULL and suspended_batches != '*' → not suspended
-        # Note: Use named placeholders for LIKE wildcards to avoid psycopg % interpretation
         suspension_filter = """
             (
                 t.suspended_batches IS NULL
@@ -318,65 +428,68 @@ class MessagesTable(Table):
         return [self._decode_payload(row) for row in rows]
 
     async def set_deferred(self, pk: str, deferred_ts: int) -> None:
-        """Put message back in queue for retry at deferred_ts.
+        """Schedule message for retry at specified timestamp.
 
-        Resets smtp_ts to NULL so the message becomes "pending" again.
+        Resets smtp_ts to NULL so message becomes pending again.
 
         Args:
-            pk: Internal primary key of the message (UUID string).
-            deferred_ts: Timestamp when message can be retried.
+            pk: Message UUID primary key.
+            deferred_ts: Unix timestamp for retry.
         """
         async with self.record(pk) as rec:
             rec["deferred_ts"] = deferred_ts
             rec["smtp_ts"] = None
 
     async def clear_deferred(self, pk: str) -> None:
-        """Clear the deferred timestamp for a message.
+        """Clear deferred timestamp, making message immediately ready.
 
         Args:
-            pk: Internal primary key of the message (UUID string).
+            pk: Message UUID primary key.
         """
         async with self.record(pk) as rec:
             rec["deferred_ts"] = None
 
     async def mark_sent(self, pk: str, smtp_ts: int) -> None:
-        """Mark a message as processed (SMTP attempted successfully).
+        """Mark message as successfully sent.
 
         Args:
-            pk: Internal primary key of the message (UUID string).
-            smtp_ts: Timestamp when SMTP send was attempted.
+            pk: Message UUID primary key.
+            smtp_ts: Unix timestamp of successful SMTP send.
         """
         async with self.record(pk) as rec:
             rec["smtp_ts"] = smtp_ts
             rec["deferred_ts"] = None
 
     async def mark_error(self, pk: str, smtp_ts: int) -> None:
-        """Mark a message as processed (SMTP attempted with error).
+        """Mark message as sent with error.
 
         Args:
-            pk: Internal primary key of the message (UUID string).
-            smtp_ts: Timestamp when SMTP send was attempted.
+            pk: Message UUID primary key.
+            smtp_ts: Unix timestamp of failed SMTP attempt.
         """
         async with self.record(pk) as rec:
             rec["smtp_ts"] = smtp_ts
             rec["deferred_ts"] = None
 
     async def update_payload(self, pk: str, payload: dict[str, Any]) -> None:
-        """Update the payload field of a message.
+        """Update message payload.
 
         Args:
-            pk: Internal primary key of the message (UUID string).
-            payload: New payload data.
+            pk: Message UUID primary key.
+            payload: New email content dict.
         """
         async with self.record(pk) as rec:
             rec["payload"] = json.dumps(payload)
 
     async def get(self, msg_id: str, tenant_id: str) -> dict[str, Any] | None:
-        """Get a single message by ID. Returns None if not found.
+        """Get message by client ID and tenant.
 
         Args:
             msg_id: Client-provided message ID.
-            tenant_id: Tenant ID for multi-tenant lookup.
+            tenant_id: Tenant identifier.
+
+        Returns:
+            Message dict with decoded payload, or None if not found.
         """
         row = await self.db.adapter.fetch_one(
             "SELECT * FROM messages WHERE tenant_id = :tenant_id AND id = :id",
@@ -387,10 +500,13 @@ class MessagesTable(Table):
         return self._decode_payload(row)
 
     async def get_by_pk(self, pk: str) -> dict[str, Any] | None:
-        """Get a single message by internal primary key.
+        """Get message by internal primary key.
 
         Args:
-            pk: Internal primary key (UUID string).
+            pk: Message UUID primary key.
+
+        Returns:
+            Message dict with decoded payload, or None if not found.
         """
         row = await self.db.adapter.fetch_one(
             "SELECT * FROM messages WHERE pk = :pk",
@@ -401,20 +517,34 @@ class MessagesTable(Table):
         return self._decode_payload(row)
 
     async def remove_by_pk(self, pk: str) -> bool:
-        """Remove a message by internal primary key. Returns True if deleted.
+        """Delete message by primary key.
 
         Args:
-            pk: Internal primary key (UUID string).
+            pk: Message UUID primary key.
+
+        Returns:
+            True if deleted, False if not found.
         """
         rowcount = await self.delete(where={"pk": pk})
         return rowcount > 0
 
     async def purge_for_account(self, account_id: str) -> None:
-        """Delete every message linked to the given account."""
+        """Delete all messages for an account.
+
+        Args:
+            account_id: Account identifier.
+        """
         await self.delete(where={"account_id": account_id})
 
     async def existing_ids(self, ids: Iterable[str]) -> set[str]:
-        """Return the subset of ids that already exist in storage."""
+        """Check which message IDs already exist.
+
+        Args:
+            ids: Iterable of message IDs to check.
+
+        Returns:
+            Set of IDs that exist in the messages table.
+        """
         id_list = [mid for mid in ids if mid]
         if not id_list:
             return set()
@@ -428,16 +558,16 @@ class MessagesTable(Table):
         return {row["id"] for row in rows}
 
     async def get_ids_for_tenant(self, ids: list[str], tenant_id: str) -> set[str]:
-        """Return the subset of ids that belong to the specified tenant.
+        """Get message IDs that belong to a tenant.
 
-        Validates ownership by joining with accounts table.
+        Validates ownership by checking tenant_id in accounts table.
 
         Args:
             ids: List of message IDs to check.
-            tenant_id: Tenant ID to validate ownership against.
+            tenant_id: Tenant identifier.
 
         Returns:
-            Set of message IDs that belong to the tenant.
+            Set of message IDs owned by the tenant.
         """
         if not ids:
             return set()
@@ -459,12 +589,15 @@ class MessagesTable(Table):
         return {row["id"] for row in rows}
 
     async def remove_fully_reported_before(self, threshold_ts: int) -> int:
-        """Delete messages whose all events have been reported before threshold.
+        """Delete messages whose events are all reported before threshold.
 
         A message can be removed when:
-        - It has been processed (smtp_ts IS NOT NULL)
-        - All its events have been reported
-        - The most recent reported_ts is older than threshold
+            - It has been processed (smtp_ts IS NOT NULL)
+            - All its events have been reported
+            - Most recent reported_ts is older than threshold
+
+        Args:
+            threshold_ts: Unix timestamp threshold.
 
         Returns:
             Number of deleted messages.
@@ -492,7 +625,11 @@ class MessagesTable(Table):
     async def remove_fully_reported_before_for_tenant(
         self, threshold_ts: int, tenant_id: str
     ) -> int:
-        """Delete fully reported messages older than threshold for a tenant.
+        """Delete fully reported messages for a tenant.
+
+        Args:
+            threshold_ts: Unix timestamp threshold.
+            tenant_id: Tenant identifier.
 
         Returns:
             Number of deleted messages.
@@ -525,23 +662,19 @@ class MessagesTable(Table):
         active_only: bool = False,
         include_history: bool = False,
     ) -> list[dict[str, Any]]:
-        """Return messages for inspection purposes, optionally filtered by tenant.
+        """List messages with optional filters.
 
         Args:
-            tenant_id: If provided, filter messages to those belonging to this tenant
-                (via the account's tenant_id).
-            active_only: If True, only return messages pending delivery.
-            include_history: If True, include event history for each message.
+            tenant_id: Filter by tenant.
+            active_only: Only return pending messages (smtp_ts IS NULL).
+            include_history: Include event history for each message.
 
         Returns:
-            List of message dicts including error info from message_events.
-            If include_history=True, each message includes a 'history' field with
-            the list of events ordered chronologically.
+            List of message dicts with decoded payload and optional history.
         """
         params: dict[str, Any] = {}
         where_clauses: list[str] = []
 
-        # Subquery to get the latest error event for each message
         error_subquery = """
             SELECT message_pk, event_ts as error_ts, description as error
             FROM message_events
@@ -554,7 +687,6 @@ class MessagesTable(Table):
         """
 
         if tenant_id:
-            # Join with accounts and tenants to filter by tenant_id and get tenant_name
             query = f"""
                 SELECT m.pk, m.id, m.tenant_id, m.account_id, m.priority, m.payload, m.batch_code,
                        m.deferred_ts, m.smtp_ts, m.created_at, m.updated_at, m.is_pec,
@@ -597,7 +729,14 @@ class MessagesTable(Table):
     async def _add_history_to_messages(
         self, messages: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        """Add event history to each message in a single query."""
+        """Add event history to each message in a single query.
+
+        Args:
+            messages: List of message dicts.
+
+        Returns:
+            Messages with 'history' field containing event list.
+        """
         message_pks = [m["pk"] for m in messages]
         placeholders = ", ".join(f":pk_{i}" for i in range(len(message_pks)))
         params = {f"pk_{i}": pk for i, pk in enumerate(message_pks)}
@@ -611,7 +750,6 @@ class MessagesTable(Table):
         """
         event_rows = await self.db.adapter.fetch_all(events_query, params)
 
-        # Group events by message_pk
         events_by_pk: dict[str, list[dict[str, Any]]] = {m["pk"]: [] for m in messages}
         for row in event_rows:
             event = dict(row)
@@ -624,31 +762,30 @@ class MessagesTable(Table):
             if msg_pk in events_by_pk:
                 events_by_pk[msg_pk].append(event)
 
-        # Add history to each message
         for msg in messages:
             msg["history"] = events_by_pk.get(msg["pk"], [])
 
         return messages
 
     async def count_active(self) -> int:
-        """Return the number of messages still awaiting delivery."""
+        """Count messages awaiting delivery.
+
+        Returns:
+            Number of messages with smtp_ts IS NULL.
+        """
         row = await self.db.adapter.fetch_one(
-            """
-            SELECT COUNT(*) as cnt FROM messages
-            WHERE smtp_ts IS NULL
-            """
+            "SELECT COUNT(*) as cnt FROM messages WHERE smtp_ts IS NULL"
         )
         return int(row["cnt"]) if row else 0
 
     async def count_pending_for_tenant(
         self, tenant_id: str, batch_code: str | None = None
     ) -> int:
-        """Count pending messages for a tenant, optionally filtered by batch_code.
+        """Count pending messages for a tenant.
 
         Args:
-            tenant_id: Tenant ID to filter by.
-            batch_code: Optional batch code. If provided, only count messages
-                with this batch_code. If None, count all pending messages.
+            tenant_id: Tenant identifier.
+            batch_code: Optional batch code filter.
 
         Returns:
             Number of pending messages.
@@ -678,7 +815,14 @@ class MessagesTable(Table):
         return int(row["cnt"]) if row else 0
 
     def _decode_payload(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Decode payload JSON in message dict and convert is_pec to bool."""
+        """Decode payload JSON and convert is_pec to bool.
+
+        Args:
+            data: Raw database row dict.
+
+        Returns:
+            Dict with 'message' field containing parsed payload.
+        """
         payload = data.pop("payload", None)
         if payload is not None:
             try:
@@ -687,7 +831,6 @@ class MessagesTable(Table):
                 data["message"] = {"raw_payload": payload}
         else:
             data["message"] = None
-        # Convert is_pec to bool
         if "is_pec" in data:
             data["is_pec"] = bool(data["is_pec"]) if data["is_pec"] else False
         return data

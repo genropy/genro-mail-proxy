@@ -1,19 +1,44 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
-"""Special CLI commands not derived from endpoints.
+"""Special CLI commands not derived from endpoint introspection.
 
-These commands provide functionality that doesn't map to REST endpoints:
-- connect: Interactive REPL for remote administration
-- stats: Aggregate statistics
-- send: Send email from .eml file
+This module provides CLI commands that don't map directly to REST API
+endpoints. These are administrative and utility commands requiring
+special handling (interactive sessions, file I/O, server communication).
 
-Usage:
-    from core.mail_proxy.interface.cli_commands import add_special_commands
+Components:
+    add_connect_command: Interactive Python REPL with pre-configured client.
+    add_stats_command: Display aggregate queue statistics.
+    add_send_command: Queue email from .eml file.
+    add_token_command: API token management (show/regenerate).
+    add_run_now_command: Trigger immediate dispatch cycle via HTTP.
 
-    @click.group()
-    def cli():
-        pass
+Example:
+    Add special commands to CLI group::
 
-    add_special_commands(cli, db, instance_name)
+        from core.mail_proxy.interface.cli_commands import (
+            add_connect_command,
+            add_stats_command,
+            add_send_command,
+        )
+
+        @click.group()
+        def cli():
+            pass
+
+        add_connect_command(cli, get_url, get_token, "myinstance")
+        add_stats_command(cli, db)
+        add_send_command(cli, db, "tenant1")
+
+    Run commands::
+
+        mail-proxy myinstance connect
+        mail-proxy myinstance stats --json
+        mail-proxy myinstance tenant1 send email.eml
+
+Note:
+    These commands are registered separately from endpoint-derived
+    commands because they require special parameters (callbacks,
+    file paths) or interactive behavior not suitable for introspection.
 """
 
 from __future__ import annotations
@@ -34,7 +59,7 @@ console = Console()
 
 
 def _run_async(coro: Any) -> Any:
-    """Run async code in sync context."""
+    """Run async coroutine in synchronous Click command context."""
     return asyncio.run(coro)
 
 
@@ -44,13 +69,26 @@ def add_connect_command(
     get_token: Callable[[], str | None],
     instance_name: str,
 ) -> None:
-    """Add connect command for interactive REPL.
+    """Register 'connect' command for interactive Python REPL.
+
+    Creates a REPL session with a pre-configured MailProxyClient
+    for interactive server administration and debugging.
 
     Args:
-        group: Click group to add command to.
-        get_url: Callable that returns the server URL.
-        get_token: Callable that returns the API token.
-        instance_name: Name of the instance.
+        group: Click group to register command on.
+        get_url: Callback returning server URL (from instance config).
+        get_token: Callback returning API token (from instance config).
+        instance_name: Instance name for display and client configuration.
+
+    Example:
+        ::
+
+            mail-proxy myserver connect
+            mail-proxy myserver connect --url http://remote:8000 --token secret
+
+            # In REPL:
+            >>> proxy.status()
+            >>> proxy.messages.list(tenant_id="acme")
     """
 
     @group.command("connect")
@@ -128,7 +166,20 @@ def add_stats_command(
     group: click.Group,
     db: MailProxyDb,
 ) -> None:
-    """Add stats command for aggregate statistics."""
+    """Register 'stats' command for aggregate queue statistics.
+
+    Displays tenant/account/message counts with breakdown by status.
+
+    Args:
+        group: Click group to register command on.
+        db: Database instance for querying statistics.
+
+    Example:
+        ::
+
+            mail-proxy myserver stats
+            mail-proxy myserver stats --json
+    """
 
     @group.command("stats")
     @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
@@ -181,7 +232,21 @@ def add_send_command(
     db: MailProxyDb,
     tenant_id: str,
 ) -> None:
-    """Add send command for sending email from .eml file."""
+    """Register 'send' command to queue email from .eml file.
+
+    Parses RFC 5322 email file and queues for delivery.
+
+    Args:
+        group: Click group to register command on.
+        db: Database instance for message operations.
+        tenant_id: Tenant context for the send operation.
+
+    Example:
+        ::
+
+            mail-proxy myserver acme send email.eml
+            mail-proxy myserver acme send email.eml --account smtp1 --priority 1
+    """
 
     @group.command("send")
     @click.argument("file", type=click.Path(exists=True))
@@ -262,7 +327,20 @@ def add_token_command(
     group: click.Group,
     db: MailProxyDb,
 ) -> None:
-    """Add token command for API token management."""
+    """Register 'token' command for API token management.
+
+    Shows current token or regenerates a new one.
+
+    Args:
+        group: Click group to register command on.
+        db: Database instance for token storage.
+
+    Example:
+        ::
+
+            mail-proxy myserver token
+            mail-proxy myserver token --regenerate
+    """
 
     @group.command("token")
     @click.option("--regenerate", "-r", is_flag=True, help="Generate a new token.")
@@ -298,7 +376,22 @@ def add_run_now_command(
     get_token: Callable[[], str | None],
     tenant_id: str | None = None,
 ) -> None:
-    """Add run-now command to trigger immediate dispatch cycle."""
+    """Register 'run-now' command to trigger immediate dispatch.
+
+    Sends HTTP POST to running server to force dispatch cycle.
+
+    Args:
+        group: Click group to register command on.
+        get_url: Callback returning server URL.
+        get_token: Callback returning API token.
+        tenant_id: Optional tenant scope (None = all tenants).
+
+    Example:
+        ::
+
+            mail-proxy myserver run-now
+            mail-proxy myserver acme run-now
+    """
 
     @group.command("run-now")
     def run_now_cmd() -> None:
