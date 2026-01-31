@@ -67,9 +67,9 @@ jobs:
 
       - name: Run database integration tests
         env:
-          GMP_DB_PATH: postgresql://test:test@localhost:5432/test
+          GMP_TEST_PG_URL: postgresql://test:test@localhost:5432/test
         run: |
-          pytest -m "db" -v
+          pytest tests/sql/ -v
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.11'
