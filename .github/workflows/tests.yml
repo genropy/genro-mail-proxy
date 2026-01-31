@@ -41,6 +41,8 @@ jobs:
           files: ./coverage.xml
           fail_ci_if_error: false
           verbose: true
+          flags: unittests
+          name: codecov-py311
 
   db-integration:
     runs-on: ubuntu-latest
