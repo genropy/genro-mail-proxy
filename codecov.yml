@@ -19,7 +19,9 @@ flag_management:
     carryforward: false
 
 ignore:
-  - "tests/**/*"
-  - "docs/**/*"
+  - "tests/**"
+  - "docs/**"
   - "**/__pycache__/**"
   - "**/conftest.py"
+  - "setup.py"
+  - "*.py"
