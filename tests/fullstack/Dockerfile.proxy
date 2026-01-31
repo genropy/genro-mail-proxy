@@ -1,7 +1,7 @@
 # Dockerfile for genro-mail-proxy fullstack tests
 #
-# Builds a minimal image with the proxy service configured
-# to connect to Mailpit for SMTP delivery.
+# Builds an image with the proxy service configured
+# to connect to Mailpit (SMTP) and Minio (S3 storage).
 
 FROM python:3.12-slim
 
@@ -16,8 +16,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
 
-# Install the package with minimal dependencies
-RUN pip install --no-cache-dir -e .
+# Install the package with enterprise-s3 for Minio storage tests
+RUN pip install --no-cache-dir -e ".[enterprise-s3]"
 
 # Create data directory
 RUN mkdir -p /data
@@ -28,6 +28,12 @@ ENV MAIL_PROXY_SMTP_HOST=mailpit
 ENV MAIL_PROXY_SMTP_PORT=1025
 ENV MAIL_PROXY_TEST_MODE=true
 
+# Minio/S3 storage configuration
+ENV MAIL_PROXY_STORAGE_URL=s3://test-attachments
+ENV AWS_ENDPOINT_URL=http://minio:9000
+ENV AWS_ACCESS_KEY_ID=minioadmin
+ENV AWS_SECRET_ACCESS_KEY=minioadmin
+
 # Expose FastAPI port
 EXPOSE 8000
 
@@ -35,5 +41,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=5s --timeout=3s --retries=5 \
     CMD curl -f http://localhost:8000/instance/health || exit 1
 
-# Start the proxy server using the entry point
+# Start the proxy server using the CLI entry point
 CMD ["mail-proxy", "serve", "--host", "0.0.0.0", "--port", "8000"]

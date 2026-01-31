@@ -20,4 +20,4 @@ EXPOSE 8000
 
 # Use tini as init to properly handle signals
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["uvicorn", "mail_proxy.server:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "10"]
+CMD ["uvicorn", "core.mail_proxy.server:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "10"]

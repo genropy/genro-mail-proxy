@@ -70,11 +70,18 @@ services:
       MAIL_PROXY_IMAP_HOST: mailpit
       MAIL_PROXY_IMAP_PORT: 1143
       MAIL_PROXY_TEST_MODE: "true"
+      # Minio/S3 storage
+      MAIL_PROXY_STORAGE_URL: s3://test-attachments
+      AWS_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
     volumes:
       - proxy-data:/data
     depends_on:
       mailpit:
         condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/instance/health"]
       interval: 5s
