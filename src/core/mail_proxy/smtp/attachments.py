@@ -54,52 +54,86 @@ class Base64Fetcher:
             raise ValueError(f"Invalid base64 content: {e}") from e
 
 
-class FilesystemFetcher:
-    """Fetcher for local filesystem attachments with path traversal protection."""
+class StorageFetcher:
+    """Fetcher for attachments via StorageManager (mount:path format).
 
-    def __init__(self, base_dir: str | None = None):
-        self._base_dir: Path | None = None
-        if base_dir:
-            self._base_dir = Path(base_dir).resolve()
+    In CE: supports only 'local' protocol (filesystem).
+    In EE: supports S3, GCS, Azure via fsspec.
+
+    Path formats:
+    - "mount:path/to/file" → uses configured mount point
+    - "/absolute/path" → direct filesystem access (legacy compatibility)
+    """
+
+    def __init__(self, storage_manager: Any = None):
+        """Initialize with optional StorageManager.
+
+        Args:
+            storage_manager: StorageManager instance. If None, only absolute paths work.
+        """
+        self._storage_manager = storage_manager
 
     async def fetch(self, path: str) -> bytes | None:
+        """Fetch file content from storage.
+
+        Args:
+            path: Either "mount:relative/path" or "/absolute/path".
+
+        Returns:
+            File content as bytes.
+
+        Raises:
+            ValueError: If path format invalid or mount not configured.
+            FileNotFoundError: If file doesn't exist.
+        """
         if not path:
             raise ValueError("Empty path provided")
 
-        resolved_path = self._resolve_and_validate(path)
-        return await asyncio.to_thread(resolved_path.read_bytes)
+        # Mount-based path (mount:path)
+        if ":" in path and not path.startswith("/"):
+            return await self._fetch_from_mount(path)
 
-    def _resolve_and_validate(self, path: str) -> Path:
-        path_obj = Path(path)
+        # Absolute path (legacy filesystem)
+        if path.startswith("/"):
+            return await self._fetch_absolute(path)
 
-        if path_obj.is_absolute():
-            resolved = path_obj.resolve()
-        elif self._base_dir:
-            resolved = (self._base_dir / path_obj).resolve()
-        else:
+        raise ValueError(
+            f"Invalid path format: '{path}'. Use 'mount:path' or absolute path."
+        )
+
+    async def _fetch_from_mount(self, path: str) -> bytes:
+        """Fetch from a configured mount point."""
+        if not self._storage_manager:
             raise ValueError(
-                f"Relative path '{path}' not allowed without base_dir configuration"
+                "StorageManager not configured. Cannot resolve mount paths."
             )
 
-        if self._base_dir:
-            try:
-                resolved.relative_to(self._base_dir)
-            except ValueError:
-                raise ValueError(
-                    f"Path traversal detected: '{path}' resolves outside base directory"
-                ) from None
+        node = self._storage_manager.node(path)
 
-        if not resolved.exists():
-            raise FileNotFoundError(f"File not found: {resolved}")
+        if not await node.exists():
+            raise FileNotFoundError(f"File not found: {path}")
 
-        if not resolved.is_file():
-            raise ValueError(f"Not a regular file: {resolved}")
+        if not await node.is_file():
+            raise ValueError(f"Not a regular file: {path}")
 
-        return resolved
+        return await node.read_bytes()
+
+    async def _fetch_absolute(self, path: str) -> bytes:
+        """Fetch from absolute filesystem path (legacy compatibility)."""
+        file_path = Path(path).resolve()
+
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        if not file_path.is_file():
+            raise ValueError(f"Not a regular file: {file_path}")
+
+        return await asyncio.to_thread(file_path.read_bytes)
 
     @property
-    def base_dir(self) -> Path | None:
-        return self._base_dir
+    def storage_manager(self) -> Any:
+        """Get the StorageManager instance."""
+        return self._storage_manager
 
 
 class HttpFetcher:
@@ -177,13 +211,13 @@ class AttachmentManager:
 
     def __init__(
         self,
-        base_dir: str | None = None,
+        storage_manager: Any = None,
         http_endpoint: str | None = None,
         http_auth_config: dict[str, str] | None = None,
         cache: TieredCache | None = None,
     ):
         self._base64_fetcher = Base64Fetcher()
-        self._filesystem_fetcher = FilesystemFetcher(base_dir=base_dir)
+        self._storage_fetcher = StorageFetcher(storage_manager=storage_manager)
         self._http_fetcher = HttpFetcher(
             default_endpoint=http_endpoint,
             auth_config=http_auth_config,
@@ -218,7 +252,9 @@ class AttachmentManager:
             elif path.startswith(("http://", "https://")):
                 fetch_mode = "http_url"
             elif path.startswith("/"):
-                fetch_mode = "filesystem"
+                fetch_mode = "storage"  # absolute path → storage fetcher
+            elif ":" in path:
+                fetch_mode = "storage"  # mount:path → storage fetcher
             else:
                 fetch_mode = "endpoint"
 
@@ -230,8 +266,8 @@ class AttachmentManager:
             if path.startswith("base64:"):
                 path = path[7:]
             return ("base64", path)
-        if fetch_mode == "filesystem":
-            return ("filesystem", path)
+        if fetch_mode in ("storage", "filesystem"):
+            return ("storage", path)
 
         raise ValueError(f"Unknown fetch_mode: {fetch_mode}")
 
@@ -278,8 +314,8 @@ class AttachmentManager:
         if path_type == "base64":
             return await self._base64_fetcher.fetch(parsed_path)
 
-        if path_type == "filesystem":
-            return await self._filesystem_fetcher.fetch(parsed_path)
+        if path_type == "storage":
+            return await self._storage_fetcher.fetch(parsed_path)
 
         if path_type == "http":
             return await self._http_fetcher.fetch(parsed_path, auth_override)

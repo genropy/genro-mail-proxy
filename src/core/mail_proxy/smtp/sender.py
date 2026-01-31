@@ -930,7 +930,15 @@ class SmtpSender:
         tenant_attachment_url = get_tenant_attachment_url(tenant)
         tenant_auth = tenant.get("client_auth")
 
-        if not tenant_attachment_url and not tenant_auth:
+        # Get tenant's storage manager for mount:path resolution
+        storage_manager = None
+        try:
+            storages_table = self.db.table("storages")
+            storage_manager = await storages_table.get_storage_manager(tenant_id)
+        except (ValueError, KeyError):
+            pass  # No storages configured for tenant
+
+        if not tenant_attachment_url and not tenant_auth and not storage_manager:
             return self.attachments
 
         # Build http_auth_config from tenant's auth config
@@ -944,6 +952,7 @@ class SmtpSender:
             }
 
         return AttachmentManager(
+            storage_manager=storage_manager,
             http_endpoint=tenant_attachment_url,
             http_auth_config=http_auth_config,
             cache=self._attachment_cache,
