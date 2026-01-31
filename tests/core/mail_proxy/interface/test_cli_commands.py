@@ -187,6 +187,52 @@ Body
         assert result.exit_code == 1
         assert "not found" in result.output
 
+    def test_send_multipart_email(self, cli_group, mock_db, tmp_path):
+        """send command handles multipart .eml file."""
+        # Create multipart email with both text and html
+        eml_content = b"""From: sender@test.com
+To: recipient@test.com
+Subject: Multipart Test
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="boundary123"
+
+--boundary123
+Content-Type: text/plain; charset="utf-8"
+
+This is plain text.
+--boundary123
+Content-Type: text/html; charset="utf-8"
+
+<html><body>This is HTML.</body></html>
+--boundary123--
+"""
+        eml_file = tmp_path / "multipart.eml"
+        eml_file.write_bytes(eml_content)
+
+        add_send_command(cli_group, mock_db, "t1")
+        runner = CliRunner()
+        result = runner.invoke(cli_group, ["send", str(eml_file)])
+
+        assert result.exit_code == 0
+
+    def test_send_html_only_email(self, cli_group, mock_db, tmp_path):
+        """send command handles HTML-only .eml file."""
+        eml_content = b"""From: sender@test.com
+To: recipient@test.com
+Subject: HTML Test
+Content-Type: text/html; charset="utf-8"
+
+<html><body>Hello HTML</body></html>
+"""
+        eml_file = tmp_path / "html.eml"
+        eml_file.write_bytes(eml_content)
+
+        add_send_command(cli_group, mock_db, "t1")
+        runner = CliRunner()
+        result = runner.invoke(cli_group, ["send", str(eml_file)])
+
+        assert result.exit_code == 0
+
 
 class TestAddTokenCommand:
     """Tests for add_token_command."""
@@ -338,3 +384,50 @@ class TestAddConnectCommand:
             # Should fail but try to connect to the specified URL
             assert result.exit_code == 1
             assert "failed" in result.output.lower() or "error" in result.output.lower()
+
+
+class TestRunNowHttpErrors:
+    """Tests for run-now HTTP error handling."""
+
+    @pytest.fixture
+    def cli_group(self):
+        @click.group()
+        def cli():
+            pass
+        return cli
+
+    def test_run_now_http_error(self, cli_group):
+        """run-now handles HTTP errors gracefully."""
+        import httpx
+        with patch('httpx.Client') as mock_client:
+            mock_client.return_value.__enter__.return_value.post.side_effect = httpx.HTTPError("Server error")
+
+            add_run_now_command(
+                cli_group,
+                get_url=lambda: "http://localhost:8000",
+                get_token=lambda: "token123",
+            )
+            runner = CliRunner()
+            result = runner.invoke(cli_group, ["run-now"])
+
+            assert result.exit_code == 1
+            assert "failed" in result.output.lower() or "error" in result.output.lower()
+
+    def test_run_now_server_returns_not_ok(self, cli_group):
+        """run-now shows error when server returns not ok."""
+        with patch('httpx.Client') as mock_client:
+            mock_response = MagicMock()
+            mock_response.json.return_value = {"ok": False, "error": "Something went wrong"}
+            mock_response.raise_for_status = MagicMock()
+            mock_client.return_value.__enter__.return_value.post.return_value = mock_response
+
+            add_run_now_command(
+                cli_group,
+                get_url=lambda: "http://localhost:8000",
+                get_token=lambda: None,
+            )
+            runner = CliRunner()
+            result = runner.invoke(cli_group, ["run-now"])
+
+            assert result.exit_code == 0
+            assert "error" in result.output.lower()

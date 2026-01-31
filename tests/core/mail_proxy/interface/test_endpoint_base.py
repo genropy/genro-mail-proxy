@@ -391,3 +391,231 @@ class TestComplexTypeDetection:
 
         assert endpoint._is_complex_type(Optional[str]) is False
         assert endpoint._is_complex_type(str | None) is False
+
+
+class TestCreateRequestModelEdgeCases:
+    """Tests for create_request_model edge cases."""
+
+    def test_create_request_model_without_type_hints(self):
+        """create_request_model should handle methods without type hints."""
+
+        class NoHintsEndpoint(BaseEndpoint):
+            name = "nohints"
+
+            async def simple_method(self, param1, param2=None):
+                return {"ok": True}
+
+        endpoint = NoHintsEndpoint(MockTable())
+        model = endpoint.create_request_model("simple_method")
+
+        # Should create model even without type hints
+        assert model is not None
+        assert "param1" in model.model_fields
+        assert "param2" in model.model_fields
+
+
+class TestIsSimpleParamsEdgeCases:
+    """Tests for is_simple_params edge cases."""
+
+    def test_is_simple_params_without_type_hints(self):
+        """is_simple_params should handle methods without type hints."""
+
+        class NoHintsEndpoint(BaseEndpoint):
+            name = "nohints"
+
+            async def method_no_hints(self, param1, param2):
+                return {"ok": True}
+
+        endpoint = NoHintsEndpoint(MockTable())
+        # Methods without hints are considered simple
+        assert endpoint.is_simple_params("method_no_hints") is True
+
+
+class TestEndpointDiscoveryFilters:
+    """Tests for endpoint discovery filtering logic."""
+
+    def test_get_class_from_module_filters_base_classes(self):
+        """_get_class_from_module should filter out BaseEndpoint."""
+        # Create a mock module with BaseEndpoint
+        mock_module = type('MockModule', (), {})()
+        mock_module.BaseEndpoint = BaseEndpoint
+
+        result = BaseEndpoint._get_class_from_module(mock_module, "Endpoint")
+        assert result is None
+
+    def test_get_class_from_module_filters_private_classes(self):
+        """_get_class_from_module should filter out private classes."""
+        mock_module = type('MockModule', (), {})()
+
+        class _PrivateEndpoint(BaseEndpoint):
+            name = "private"
+
+        mock_module._PrivateEndpoint = _PrivateEndpoint
+
+        result = BaseEndpoint._get_class_from_module(mock_module, "Endpoint")
+        assert result is None
+
+    def test_get_class_from_module_filters_ee_classes(self):
+        """_get_class_from_module should filter out _EE classes."""
+        mock_module = type('MockModule', (), {})()
+
+        class TestEndpoint_EE:
+            name = "test"
+
+        mock_module.TestEndpoint_EE = TestEndpoint_EE
+
+        result = BaseEndpoint._get_class_from_module(mock_module, "Endpoint")
+        assert result is None
+
+    def test_get_class_from_module_filters_classes_without_name(self):
+        """_get_class_from_module should filter out classes without name attr."""
+        mock_module = type('MockModule', (), {})()
+
+        class NoNameEndpoint:
+            pass  # No name attribute
+
+        mock_module.NoNameEndpoint = NoNameEndpoint
+
+        result = BaseEndpoint._get_class_from_module(mock_module, "Endpoint")
+        assert result is None
+
+    def test_get_ee_mixin_from_module_returns_mixin(self):
+        """_get_ee_mixin_from_module should find _EE mixin."""
+        mock_module = type('MockModule', (), {})()
+
+        class MyEndpoint_EE:
+            pass
+
+        mock_module.MyEndpoint_EE = MyEndpoint_EE
+
+        result = BaseEndpoint._get_ee_mixin_from_module(mock_module, "_EE")
+        assert result is MyEndpoint_EE
+
+    def test_get_ee_mixin_from_module_filters_private(self):
+        """_get_ee_mixin_from_module should filter private classes."""
+        mock_module = type('MockModule', (), {})()
+
+        class _PrivateEndpoint_EE:
+            pass
+
+        mock_module._PrivateEndpoint_EE = _PrivateEndpoint_EE
+
+        result = BaseEndpoint._get_ee_mixin_from_module(mock_module, "_EE")
+        assert result is None
+
+    def test_get_ee_mixin_from_module_returns_none_when_not_found(self):
+        """_get_ee_mixin_from_module should return None if no mixin."""
+        mock_module = type('MockModule', (), {})()
+
+        class SomeClass:
+            pass
+
+        mock_module.SomeClass = SomeClass
+
+        result = BaseEndpoint._get_ee_mixin_from_module(mock_module, "_EE")
+        assert result is None
+
+
+class TestDispatcherMapPayload:
+    """Tests for _map_payload edge cases."""
+
+    @pytest.fixture
+    def dispatcher(self):
+        mock_db = MagicMock()
+        return EndpointDispatcher(mock_db)
+
+    def test_map_payload_delete_account_id(self, dispatcher):
+        """_map_payload should map id to account_id for deleteAccount."""
+        payload = {"id": "acc1", "tenant_id": "t1"}
+        result = dispatcher._map_payload("deleteAccount", payload)
+
+        assert "account_id" in result
+        assert result["account_id"] == "acc1"
+        assert "id" not in result
+
+    def test_map_payload_list_messages_defaults(self, dispatcher):
+        """_map_payload should add defaults for listMessages."""
+        payload = {"tenant_id": "t1"}
+        result = dispatcher._map_payload("listMessages", payload)
+
+        assert result["active_only"] is False
+        assert result["include_history"] is False
+
+    def test_map_payload_preserves_existing_keys(self, dispatcher):
+        """_map_payload should preserve existing keys."""
+        payload = {"tenant_id": "t1", "extra": "value"}
+        result = dispatcher._map_payload("listTenants", payload)
+
+        assert result["tenant_id"] == "t1"
+        assert result["extra"] == "value"
+
+
+class TestDispatcherWrapResultEdgeCases:
+    """Tests for _wrap_result edge cases."""
+
+    @pytest.fixture
+    def dispatcher(self):
+        mock_db = MagicMock()
+        return EndpointDispatcher(mock_db)
+
+    def test_wrap_result_scalar_value(self, dispatcher):
+        """_wrap_result should wrap scalar values."""
+        result = dispatcher._wrap_result("someCommand", "scalar_value")
+
+        assert result["ok"] is True
+        assert result["value"] == "scalar_value"
+
+    def test_wrap_result_list_default_key(self, dispatcher):
+        """_wrap_result should use 'items' as default key for unlisted commands."""
+        result = dispatcher._wrap_result("unknownListCommand", [{"id": "1"}])
+
+        assert result["ok"] is True
+        assert "items" in result
+        assert result["items"] == [{"id": "1"}]
+
+
+class TestDispatcherCreateEndpoint:
+    """Tests for _create_endpoint."""
+
+    @pytest.fixture
+    def mock_db(self):
+        db = MagicMock()
+        db.table.return_value = MagicMock()
+        return db
+
+    def test_create_endpoint_messages(self, mock_db):
+        """_create_endpoint should create MessageEndpoint."""
+        from core.mail_proxy.entities.message import MessageEndpoint
+
+        dispatcher = EndpointDispatcher(mock_db)
+        endpoint = dispatcher._create_endpoint("messages")
+
+        assert isinstance(endpoint, MessageEndpoint)
+
+    def test_create_endpoint_accounts(self, mock_db):
+        """_create_endpoint should create AccountEndpoint."""
+        from core.mail_proxy.entities.account import AccountEndpoint
+
+        dispatcher = EndpointDispatcher(mock_db)
+        endpoint = dispatcher._create_endpoint("accounts")
+
+        assert isinstance(endpoint, AccountEndpoint)
+
+    def test_create_endpoint_tenants(self, mock_db):
+        """_create_endpoint should create TenantEndpoint."""
+        from core.mail_proxy.entities.tenant import TenantEndpoint
+
+        dispatcher = EndpointDispatcher(mock_db)
+        endpoint = dispatcher._create_endpoint("tenants")
+
+        assert isinstance(endpoint, TenantEndpoint)
+
+    def test_create_endpoint_instance(self, mock_db):
+        """_create_endpoint should create InstanceEndpoint with proxy."""
+        from core.mail_proxy.entities.instance import InstanceEndpoint
+
+        mock_proxy = MagicMock()
+        dispatcher = EndpointDispatcher(mock_db, proxy=mock_proxy)
+        endpoint = dispatcher._create_endpoint("instance")
+
+        assert isinstance(endpoint, InstanceEndpoint)

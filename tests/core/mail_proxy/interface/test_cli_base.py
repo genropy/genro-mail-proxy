@@ -391,6 +391,68 @@ class TestInstanceEndpointViaCli:
 # Command Generation Tests
 # =============================================================================
 
+class TestAnnotationToClickType:
+    """Tests for _annotation_to_click_type() helper to cover all type conversions."""
+
+    def test_empty_annotation_returns_str(self):
+        """Empty annotation returns str type."""
+        import inspect
+        from core.mail_proxy.interface.cli_base import _annotation_to_click_type
+        result = _annotation_to_click_type(inspect.Parameter.empty)
+        assert result is str
+
+    def test_any_annotation_returns_str(self):
+        """Any annotation returns str type."""
+        from typing import Any
+        from core.mail_proxy.interface.cli_base import _annotation_to_click_type
+        result = _annotation_to_click_type(Any)
+        assert result is str
+
+    def test_none_type_returns_str(self):
+        """NoneType returns str."""
+        from core.mail_proxy.interface.cli_base import _annotation_to_click_type
+        result = _annotation_to_click_type(type(None))
+        assert result is str
+
+    def test_int_annotation(self):
+        """int annotation returns int type."""
+        from core.mail_proxy.interface.cli_base import _annotation_to_click_type
+        result = _annotation_to_click_type(int)
+        assert result is int
+
+    def test_bool_annotation(self):
+        """bool annotation returns bool type."""
+        from core.mail_proxy.interface.cli_base import _annotation_to_click_type
+        result = _annotation_to_click_type(bool)
+        assert result is bool
+
+    def test_float_annotation(self):
+        """float annotation returns float type."""
+        from core.mail_proxy.interface.cli_base import _annotation_to_click_type
+        result = _annotation_to_click_type(float)
+        assert result is float
+
+    def test_str_annotation(self):
+        """str annotation returns str type."""
+        from core.mail_proxy.interface.cli_base import _annotation_to_click_type
+        result = _annotation_to_click_type(str)
+        assert result is str
+
+    def test_optional_int_returns_int(self):
+        """Optional[int] (int | None) returns int type."""
+        from core.mail_proxy.interface.cli_base import _annotation_to_click_type
+        result = _annotation_to_click_type(int | None)
+        assert result is int
+
+    def test_literal_returns_choice(self):
+        """Literal annotation returns click.Choice."""
+        from typing import Literal
+        from core.mail_proxy.interface.cli_base import _annotation_to_click_type
+        result = _annotation_to_click_type(Literal["plain", "html"])
+        assert isinstance(result, click.Choice)
+        assert list(result.choices) == ["plain", "html"]
+
+
 class TestCommandGeneration:
     """Test that cli_base generates correct commands."""
 

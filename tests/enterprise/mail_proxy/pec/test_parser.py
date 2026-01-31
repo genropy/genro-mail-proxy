@@ -298,3 +298,222 @@ class TestPecReceiptTypeMap:
 
         for header_value, expected_type in expected_mappings.items():
             assert parser.RECEIPT_TYPE_MAP.get(header_value) == expected_type
+
+
+class TestPecReceiptParserXTrasporto:
+    """Tests for X-Trasporto header handling (line 117)."""
+
+    @pytest.fixture
+    def parser(self):
+        return PecReceiptParser()
+
+    def test_x_trasporto_with_subject_fallback(self, parser):
+        """X-Trasporto posta-certificata triggers subject check when no X-Ricevuta."""
+        msg = MIMEText("Ricevuta PEC.\n\nX-Genro-Mail-ID: msg-trasporto-001", "plain")
+        msg["From"] = "pec@pec.test.it"
+        msg["To"] = "sender@pec.test.it"
+        msg["Subject"] = "ACCETTAZIONE: Test via X-Trasporto"
+        msg["X-Trasporto"] = "posta-certificata"
+        # No X-Ricevuta header
+
+        info = parser.parse(msg.as_bytes())
+
+        assert info.receipt_type == "accettazione"
+        assert info.original_message_id == "msg-trasporto-001"
+
+
+class TestPecReceiptParserXGenroMailIdHeader:
+    """Tests for X-Genro-Mail-ID as direct header (line 142)."""
+
+    @pytest.fixture
+    def parser(self):
+        return PecReceiptParser()
+
+    def test_extract_genro_id_from_header(self, parser):
+        """Extract X-Genro-Mail-ID from message part header."""
+        # Create multipart message with X-Genro-Mail-ID as header on a part
+        msg = MIMEMultipart()
+        msg["From"] = "pec@pec.test.it"
+        msg["Subject"] = "ACCETTAZIONE: Test"
+        msg["X-Ricevuta"] = "accettazione"
+
+        # Add a text part with X-Genro-Mail-ID as header
+        text_part = MIMEText("Body content without ID in text", "plain")
+        text_part["X-Genro-Mail-ID"] = "msg-header-direct-001"
+        msg.attach(text_part)
+
+        info = parser.parse(msg.as_bytes())
+
+        assert info.original_message_id == "msg-header-direct-001"
+
+
+class TestPecReceiptParserXDataRicevuta:
+    """Tests for X-Data-Ricevuta timestamp (line 166)."""
+
+    @pytest.fixture
+    def parser(self):
+        return PecReceiptParser()
+
+    def test_extract_timestamp_from_x_data_ricevuta(self, parser):
+        """Extract timestamp from X-Data-Ricevuta when no Date header."""
+        msg = MIMEText("Body", "plain")
+        msg["From"] = "pec@pec.test.it"
+        msg["Subject"] = "ACCETTAZIONE: Test"
+        msg["X-Ricevuta"] = "accettazione"
+        # No Date header, but X-Data-Ricevuta present
+        msg["X-Data-Ricevuta"] = "15/01/2025 14:30:00"
+
+        info = parser.parse(msg.as_bytes())
+
+        assert info.timestamp == "15/01/2025 14:30:00"
+
+
+class TestPecReceiptParserErrorPatterns:
+    """Tests for error extraction patterns (lines 179-191)."""
+
+    @pytest.fixture
+    def parser(self):
+        return PecReceiptParser()
+
+    def test_extract_error_with_motivo_pattern(self, parser):
+        """Extract error using 'Motivo:' pattern."""
+        msg = MIMEText(
+            "La consegna non è avvenuta.\n\nMotivo: Casella PEC piena\n\nContattare il destinatario.",
+            "plain",
+        )
+        msg["From"] = "pec@pec.test.it"
+        msg["Subject"] = "MANCATA CONSEGNA: Test"
+        msg["X-Ricevuta"] = "mancata-consegna"
+
+        info = parser.parse(msg.as_bytes())
+
+        assert info.error_reason is not None
+        assert "Casella PEC piena" in info.error_reason
+
+    def test_extract_error_with_causa_pattern(self, parser):
+        """Extract error using 'Causa:' pattern."""
+        msg = MIMEText(
+            "Impossibile consegnare il messaggio.\n\nCausa: Indirizzo non esistente\n\nFine.",
+            "plain",
+        )
+        msg["From"] = "pec@pec.test.it"
+        msg["Subject"] = "MANCATA CONSEGNA: Test"
+        msg["X-Ricevuta"] = "mancata-consegna"
+
+        info = parser.parse(msg.as_bytes())
+
+        assert info.error_reason is not None
+        assert "Indirizzo non esistente" in info.error_reason
+
+
+class TestPecReceiptParserGetTextBody:
+    """Tests for _get_text_body edge cases (lines 212-217, 222)."""
+
+    @pytest.fixture
+    def parser(self):
+        return PecReceiptParser()
+
+    def test_get_text_body_multipart_without_text_plain(self, parser):
+        """_get_text_body returns empty string when multipart has no text/plain."""
+        msg = MIMEMultipart()
+        msg["From"] = "pec@pec.test.it"
+        msg["Subject"] = "MANCATA CONSEGNA: Test"
+        msg["X-Ricevuta"] = "mancata-consegna"
+        # Add only HTML part, no text/plain
+        html_part = MIMEText("<html><body>Error</body></html>", "html")
+        msg.attach(html_part)
+
+        info = parser.parse(msg.as_bytes())
+
+        # Should not crash, error_reason will be None since no text body found
+        assert info.receipt_type == "mancata_consegna"
+
+    def test_get_text_body_non_multipart_string_payload(self, parser):
+        """_get_text_body handles non-bytes payload (str) on non-multipart."""
+        # Create a message where payload is a string not bytes
+        import email
+
+        raw = b"From: pec@pec.test.it\r\nSubject: MANCATA CONSEGNA: Test\r\nX-Ricevuta: mancata-consegna\r\n\r\nErrore: Test error string"
+        msg = email.message_from_bytes(raw)
+
+        info = parser.parse(raw)
+
+        assert info.receipt_type == "mancata_consegna"
+        # The error should be extracted from the string body
+        assert info.error_reason is not None
+        assert "Test error string" in info.error_reason
+
+
+class TestPecReceiptParserXRiferimentoMessageId:
+    """Tests for X-Riferimento-Message-ID header handling (line 135)."""
+
+    @pytest.fixture
+    def parser(self):
+        return PecReceiptParser()
+
+    def test_x_riferimento_message_id_without_genro_id(self, parser):
+        """X-Riferimento-Message-ID present but no X-Genro-Mail-ID found."""
+        msg = MIMEText("Ricevuta PEC senza X-Genro-Mail-ID nel body.", "plain")
+        msg["From"] = "pec@pec.test.it"
+        msg["Subject"] = "ACCETTAZIONE: Test"
+        msg["X-Ricevuta"] = "accettazione"
+        msg["X-Riferimento-Message-ID"] = "<original@message.id>"
+
+        info = parser.parse(msg.as_bytes())
+
+        # Should parse without error, original_message_id will be None
+        assert info.receipt_type == "accettazione"
+        assert info.original_message_id is None
+
+
+class TestPecReceiptParserPayloadEdgeCases:
+    """Tests for payload edge cases (lines 148, 214-216, 222)."""
+
+    @pytest.fixture
+    def parser(self):
+        return PecReceiptParser()
+
+    def test_extract_original_id_from_rfc822_part(self, parser):
+        """Extract X-Genro-Mail-ID from embedded message/rfc822 part."""
+        from email.mime.message import MIMEMessage
+
+        # Create the main message
+        msg = MIMEMultipart()
+        msg["From"] = "pec@pec.test.it"
+        msg["Subject"] = "ACCETTAZIONE: Test"
+        msg["X-Ricevuta"] = "accettazione"
+
+        # Create embedded original message with X-Genro-Mail-ID in body
+        original = MIMEText("Original message content\nX-Genro-Mail-ID: msg-embedded-rfc822", "plain")
+        original["From"] = "sender@test.com"
+        original["Subject"] = "Original"
+
+        # Attach as message/rfc822
+        rfc822_part = MIMEMessage(original)
+        msg.attach(rfc822_part)
+
+        info = parser.parse(msg.as_bytes())
+
+        assert info.original_message_id == "msg-embedded-rfc822"
+
+    def test_multipart_text_plain_with_none_payload(self, parser):
+        """Multipart message where text/plain part has None payload."""
+        # Manually construct a message where get_payload(decode=True) might return None
+        # This happens when the part has encoding issues
+        raw = b"""MIME-Version: 1.0
+From: pec@pec.test.it
+Subject: MANCATA CONSEGNA: Test
+X-Ricevuta: mancata-consegna
+Content-Type: multipart/mixed; boundary="boundary123"
+
+--boundary123
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: base64
+
+SW52YWxpZCBiYXNlNjQ=
+--boundary123--
+"""
+        info = parser.parse(raw)
+
+        # Should parse without error
+        assert info.receipt_type == "mancata_consegna"
