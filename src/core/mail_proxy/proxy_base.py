@@ -211,7 +211,7 @@ class MailProxyBase:
 
     async def _init_edition(self) -> None:
         """Detect CE/EE mode based on existing data and installed modules."""
-        from . import HAS_ENTERPRISE
+        import core.mail_proxy
 
         tenants_table = self.db.table("tenants")
         instance_table = self.db.table("instance")
@@ -220,7 +220,7 @@ class MailProxyBase:
         count = len(tenants)
 
         if count == 0:
-            if HAS_ENTERPRISE:
+            if core.mail_proxy.HAS_ENTERPRISE:
                 await instance_table.set_edition("ee")
             else:
                 await tenants_table.ensure_default()

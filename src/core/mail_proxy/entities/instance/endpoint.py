@@ -267,9 +267,9 @@ class InstanceEndpoint(BaseEndpoint):
         Raises:
             ValueError: If Enterprise modules are not installed.
         """
-        from ... import HAS_ENTERPRISE
+        import core.mail_proxy
 
-        if not HAS_ENTERPRISE:
+        if not core.mail_proxy.HAS_ENTERPRISE:
             raise ValueError(
                 "Enterprise modules not installed. Install with: pip install genro-mail-proxy[ee]"
             )
