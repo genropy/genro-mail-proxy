@@ -394,7 +394,9 @@ class MailProxy(MailProxyBase):
             )
 
         # Initialize attachment manager (tenant-specific config applied per-message)
-        self.attachments = AttachmentManager(cache=self._attachment_cache)
+        # storage_manager=None means only absolute paths work; tenant-specific managers are
+        # created in _get_attachment_manager_for_message() with tenant's storage config
+        self.attachments = AttachmentManager(storage_manager=None, cache=self._attachment_cache)
 
         # Initialize attachment fetch semaphore to limit memory pressure
         self._attachment_semaphore = asyncio.Semaphore(self._max_concurrent_attachments)

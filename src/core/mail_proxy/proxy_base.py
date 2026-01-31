@@ -92,11 +92,60 @@ class MailProxyBase:
         self.config = config or ProxyConfig()
         _db_path = db_path if db_path is not None else self.config.db_path
 
-        self.db = SqlDb(_db_path or ":memory:")
+        self._encryption_key: bytes | None = None
+        self._load_encryption_key()
+
+        self.db = SqlDb(_db_path or ":memory:", parent=self)
         self._discover_tables()
 
         self.endpoints: dict[str, BaseEndpoint] = {}
         self._discover_endpoints()
+
+    def _load_encryption_key(self) -> None:
+        """Load encryption key from environment or secrets file.
+
+        Sources (in priority order):
+        1. MAIL_PROXY_ENCRYPTION_KEY env var (base64-encoded 32 bytes)
+        2. /run/secrets/encryption_key file (Docker/K8s secrets)
+
+        If no key is configured, encryption is disabled (fields stored as plaintext).
+        """
+        import base64
+        import os
+        from pathlib import Path
+
+        # 1. Environment variable
+        key_b64 = os.environ.get("MAIL_PROXY_ENCRYPTION_KEY")
+        if key_b64:
+            try:
+                key = base64.b64decode(key_b64)
+                if len(key) == 32:
+                    self._encryption_key = key
+                    return
+            except Exception:
+                pass
+
+        # 2. Secrets file
+        secrets_path = Path("/run/secrets/encryption_key")
+        if secrets_path.exists():
+            try:
+                key = secrets_path.read_bytes().strip()
+                if len(key) == 32:
+                    self._encryption_key = key
+                    return
+            except Exception:
+                pass
+
+    @property
+    def encryption_key(self) -> bytes | None:
+        """Encryption key for database field encryption. None if not configured."""
+        return self._encryption_key
+
+    def set_encryption_key(self, key: bytes) -> None:
+        """Set encryption key programmatically (for testing)."""
+        if len(key) != 32:
+            raise ValueError("Encryption key must be 32 bytes")
+        self._encryption_key = key
 
     def _discover_tables(self) -> None:
         """Autodiscover Table classes from entities/ and compose with EE mixins."""

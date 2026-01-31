@@ -74,6 +74,7 @@ def add_connect_command(
             pass  # readline not available on all platforms
 
         from tools.http_client import MailProxyClient, connect as client_connect
+        from tools.repl import repl_wrap
 
         # Get URL and token
         server_url = url or get_url()
@@ -111,7 +112,7 @@ def add_connect_command(
             console.print()
 
             namespace = {
-                "proxy": proxy,
+                "proxy": repl_wrap(proxy),
                 "MailProxyClient": MailProxyClient,
                 "console": console,
             }

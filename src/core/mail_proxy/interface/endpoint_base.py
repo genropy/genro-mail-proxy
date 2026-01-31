@@ -25,6 +25,12 @@ _CE_ENTITIES_PACKAGE = "core.mail_proxy.entities"
 _EE_ENTITIES_PACKAGE = "enterprise.mail_proxy.entities"
 
 
+def POST(method: Callable) -> Callable:
+    """Decorator to mark an endpoint method as POST (uses JSON body)."""
+    method._http_post = True  # type: ignore[attr-defined]
+    return method
+
+
 class BaseEndpoint:
     """Base class for all endpoints. Provides introspection capabilities."""
 
@@ -45,15 +51,10 @@ class BaseEndpoint:
         return methods
 
     def get_http_method(self, method_name: str) -> str:
-        """Determine HTTP method from endpoint method name."""
-        if method_name.startswith(("add", "create", "post", "run", "suspend", "activate")):
+        """Determine HTTP method: POST if decorated with @POST, else GET."""
+        method = getattr(self, method_name)
+        if getattr(method, "_http_post", False):
             return "POST"
-        elif method_name.startswith(("delete", "remove")):
-            return "DELETE"
-        elif method_name.startswith(("update", "patch")):
-            return "PATCH"
-        elif method_name.startswith(("set", "put")):
-            return "PUT"
         return "GET"
 
     def create_request_model(self, method_name: str) -> type:
@@ -83,17 +84,57 @@ class BaseEndpoint:
         return create_model(model_name, **fields)
 
     def is_simple_params(self, method_name: str) -> bool:
-        """Check if method has only simple params (suitable for query string)."""
+        """Check if method has only simple params (suitable for query string).
+
+        Returns False if any parameter is a list or dict (including Optional[list]).
+        """
         method = getattr(self, method_name)
+
+        # Resolve string annotations to actual types
+        try:
+            hints = get_type_hints(method)
+        except Exception:
+            hints = {}
+
         sig = inspect.signature(method)
         for param_name, param in sig.parameters.items():
             if param_name == "self":
                 continue
-            ann = param.annotation
-            origin = get_origin(ann)
-            if origin in (list, dict) or ann in (list, dict):
+            # Prefer resolved hint, fallback to raw annotation
+            ann = hints.get(param_name, param.annotation)
+            if self._is_complex_type(ann):
                 return False
         return True
+
+    def _is_complex_type(self, ann: Any) -> bool:
+        """Check if annotation is a complex type (list, dict, or contains them)."""
+        import types
+        from typing import Union, get_args
+
+        if ann in (list, dict):
+            return True
+
+        origin = get_origin(ann)
+        if origin in (list, dict):
+            return True
+
+        # Check Union types: both typing.Union and Python 3.10+ X | Y syntax
+        if origin is Union or isinstance(origin, type) and origin is types.UnionType:
+            for arg in get_args(ann):
+                if arg is type(None):
+                    continue
+                if self._is_complex_type(arg):
+                    return True
+
+        # Also check for types.UnionType directly (Python 3.10+ X | Y)
+        if type(ann).__name__ == "UnionType":
+            for arg in get_args(ann):
+                if arg is type(None):
+                    continue
+                if self._is_complex_type(arg):
+                    return True
+
+        return False
 
     def count_params(self, method_name: str) -> int:
         """Count non-self parameters."""
@@ -375,4 +416,4 @@ class EndpointDispatcher:
         return self._get_endpoint(name)
 
 
-__all__ = ["BaseEndpoint", "EndpointDispatcher"]
+__all__ = ["BaseEndpoint", "EndpointDispatcher", "POST"]
