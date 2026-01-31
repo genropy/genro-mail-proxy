@@ -16,7 +16,7 @@ class DbAdapter(ABC):
     Provides a unified interface for SQLite and PostgreSQL with:
     - Connection management (connect, close)
     - Raw query execution (execute, fetch_one, fetch_all)
-    - CRUD helpers (insert, select, update, delete, upsert)
+    - CRUD helpers (insert, select, update, delete)
 
     Subclasses must implement the abstract methods and set the placeholder
     attribute for parameter binding (`:name` for SQLite, `%(name)s` for PostgreSQL).
@@ -27,6 +27,10 @@ class DbAdapter(ABC):
     def pk_column(self, name: str) -> str:
         """Return SQL definition for autoincrement primary key column."""
         return f'"{name}" INTEGER PRIMARY KEY'
+
+    def for_update_clause(self) -> str:
+        """Return FOR UPDATE clause if supported, empty string otherwise."""
+        return ""
 
     @abstractmethod
     async def connect(self) -> None:
@@ -84,12 +88,12 @@ class DbAdapter(ABC):
     # -------------------------------------------------------------------------
 
     def _sql_name(self, name: str) -> str:
-        """Return SQL identifier for column/table name.
+        """Return quoted SQL identifier for column/table name.
 
-        Override in subclasses to quote reserved words (PostgreSQL)
-        or map internal names to different SQL names.
+        Quotes with double quotes to handle reserved words like 'user'.
+        Works for both SQLite and PostgreSQL.
         """
-        return name
+        return f'"{name}"'
 
     def _placeholder(self, name: str) -> str:
         """Return placeholder for named parameter."""
@@ -110,6 +114,26 @@ class DbAdapter(ABC):
         col_list = ", ".join(self._sql_name(c) for c in cols)
         query = f"INSERT INTO {table} ({col_list}) VALUES ({placeholders})"
         return await self.execute(query, values)
+
+    async def insert_returning_id(
+        self, table: str, values: dict[str, Any], pk_col: str = "id"
+    ) -> Any:
+        """Insert a row and return the generated primary key.
+
+        Override in subclasses for database-specific implementation
+        (e.g., RETURNING for PostgreSQL, lastrowid for SQLite).
+
+        Args:
+            table: Table name.
+            values: Column-value pairs.
+            pk_col: Primary key column name.
+
+        Returns:
+            The generated primary key value, or None if not supported.
+        """
+        # Default: just insert and return None (subclasses override)
+        await self.insert(table, values)
+        return None
 
     async def select(
         self,
@@ -200,26 +224,6 @@ class DbAdapter(ABC):
         """Check if row exists."""
         result = await self.select_one(table, columns=["1"], where=where)
         return result is not None
-
-    async def upsert(
-        self,
-        table: str,
-        data: dict[str, Any],
-        conflict_columns: Sequence[str],
-        update_extras: Sequence[str] | None = None,
-    ) -> int:
-        """Insert or update row on conflict.
-
-        Args:
-            table: Table name.
-            data: Column-value pairs to insert/update.
-            conflict_columns: Columns that define uniqueness (typically PK).
-            update_extras: Extra SQL expressions for UPDATE (e.g., "updated_at = CURRENT_TIMESTAMP").
-
-        Returns:
-            Affected row count.
-        """
-        raise NotImplementedError("Subclasses must implement upsert()")
 
     async def count(self, table: str, where: dict[str, Any] | None = None) -> int:
         """Count rows in table.

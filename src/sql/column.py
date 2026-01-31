@@ -22,21 +22,19 @@ class Column:
         name: str,
         type_: str,
         *,
-        primary_key: bool = False,
-        autoincrement: bool = False,
         unique: bool = False,
         nullable: bool = True,
         default: Any = None,
         json_encoded: bool = False,
+        encrypted: bool = False,
     ):
         self.name = name
         self.type_ = type_
-        self.primary_key = primary_key
-        self.autoincrement = autoincrement
         self.unique = unique
         self.nullable = nullable
         self.default = default
         self.json_encoded = json_encoded
+        self.encrypted = encrypted
         # Relation info (set via relation() method)
         self.relation_table: str | None = None
         self.relation_pk: str | None = None
@@ -55,8 +53,11 @@ class Column:
         self.relation_sql = sql
         return self
 
-    def to_sql(self) -> str:
+    def to_sql(self, *, primary_key: bool = False) -> str:
         """Generate SQL column definition.
+
+        Args:
+            primary_key: If True, add PRIMARY KEY constraint.
 
         Column names are quoted with double quotes to handle reserved words
         like 'user' which is reserved in PostgreSQL.
@@ -65,14 +66,12 @@ class Column:
         quoted_name = f'"{self.name}"'
         parts = [quoted_name, self.type_]
 
-        if self.primary_key:
+        if primary_key:
             parts.append("PRIMARY KEY")
-            if self.autoincrement:
-                parts.append("AUTOINCREMENT")
         elif self.unique:
             parts.append("UNIQUE")
 
-        if not self.nullable and not self.primary_key:
+        if not self.nullable and not primary_key:
             parts.append("NOT NULL")
 
         if self.default is not None:
@@ -100,23 +99,21 @@ class Columns:
         name: str,
         type_: str,
         *,
-        primary_key: bool = False,
-        autoincrement: bool = False,
         unique: bool = False,
         nullable: bool = True,
         default: Any = None,
         json_encoded: bool = False,
+        encrypted: bool = False,
     ) -> Column:
         """Add a column definition. Returns the Column for fluent relation()."""
         col = Column(
             name=name,
             type_=type_,
-            primary_key=primary_key,
-            autoincrement=autoincrement,
             unique=unique,
             nullable=nullable,
             default=default,
             json_encoded=json_encoded,
+            encrypted=encrypted,
         )
         self._columns[name] = col
         return col
@@ -140,6 +137,10 @@ class Columns:
     def json_columns(self) -> list[str]:
         """Return names of JSON-encoded columns."""
         return [name for name, col in self._columns.items() if col.json_encoded]
+
+    def encrypted_columns(self) -> list[str]:
+        """Return names of encrypted columns."""
+        return [name for name, col in self._columns.items() if col.encrypted]
 
     def __iter__(self):
         return iter(self._columns)

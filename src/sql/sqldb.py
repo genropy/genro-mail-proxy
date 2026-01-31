@@ -23,9 +23,10 @@ class SqlDb:
     - Table access via table(name)
     - Schema creation and verification
     - CRUD operations via adapter
+    - Encryption key access via parent.encryption_key
 
     Usage:
-        db = SqlDb("/data/mail.db")
+        db = SqlDb("/data/mail.db", parent=proxy)
         await db.connect()
 
         db.add_table(TenantsTable)
@@ -37,15 +38,24 @@ class SqlDb:
         await db.close()
     """
 
-    def __init__(self, connection_string: str):
+    def __init__(self, connection_string: str, parent: Any = None):
         """Initialize database manager.
 
         Args:
             connection_string: Database connection string.
+            parent: Parent object (e.g., proxy) that provides encryption_key.
         """
         self.connection_string = connection_string
+        self.parent = parent
         self.adapter: DbAdapter = get_adapter(connection_string)
         self.tables: dict[str, Table] = {}
+
+    @property
+    def encryption_key(self) -> bytes | None:
+        """Get encryption key from parent. Returns None if not configured."""
+        if self.parent is None:
+            return None
+        return getattr(self.parent, "encryption_key", None)
 
     async def connect(self) -> None:
         """Connect to database."""

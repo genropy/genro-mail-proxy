@@ -81,6 +81,33 @@ class PostgresAdapter(DbAdapter):
             await conn.commit()
             return cur.rowcount
 
+    async def insert_returning_id(
+        self, table: str, values: dict[str, Any], pk_col: str = "id"
+    ) -> Any:
+        """Insert a row and return the generated primary key (RETURNING).
+
+        Args:
+            table: Table name.
+            values: Column-value pairs.
+            pk_col: Primary key column name for RETURNING clause.
+
+        Returns:
+            The generated primary key value.
+        """
+        from psycopg.rows import dict_row
+
+        cols = list(values.keys())
+        placeholders = ", ".join(self._placeholder(c) for c in cols)
+        col_list = ", ".join(self._sql_name(c) for c in cols)
+        query = f'INSERT INTO {table} ({col_list}) VALUES ({placeholders}) RETURNING "{pk_col}"'
+        query = self._convert_placeholders(query)
+        async with self._pool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(query, values)
+                await conn.commit()
+                row = await cur.fetchone()
+                return row[pk_col] if row else None
+
     async def execute_many(
         self, query: str, params_list: Sequence[dict[str, Any]]
     ) -> int:
@@ -126,31 +153,9 @@ class PostgresAdapter(DbAdapter):
         """Quote identifier for PostgreSQL (handles reserved words like 'user')."""
         return f'"{name}"'
 
-    async def upsert(
-        self,
-        table: str,
-        data: dict[str, Any],
-        conflict_columns: Sequence[str],
-        update_extras: Sequence[str] | None = None,
-    ) -> int:
-        """Insert or update using PostgreSQL ON CONFLICT DO UPDATE."""
-        columns = list(data.keys())
-        placeholders = ", ".join(f"%({c})s" for c in columns)
-        col_list = ", ".join(self._sql_name(c) for c in columns)
-        conflict_cols = ", ".join(self._sql_name(c) for c in conflict_columns)
-        update_parts = [f"{self._sql_name(c)} = EXCLUDED.{self._sql_name(c)}" for c in columns if c not in conflict_columns]
-        if update_extras:
-            update_parts.extend(update_extras)
-        update_cols = ", ".join(update_parts)
-
-        query = f"""
-            INSERT INTO {table} ({col_list}) VALUES ({placeholders})
-            ON CONFLICT ({conflict_cols}) DO UPDATE SET {update_cols}
-        """
-        async with self._pool.connection() as conn, conn.cursor() as cur:
-            await cur.execute(query, data)
-            await conn.commit()
-            return cur.rowcount
+    def for_update_clause(self) -> str:
+        """Return FOR UPDATE clause for row locking."""
+        return " FOR UPDATE"
 
     async def commit(self) -> None:
         """Commit is handled per-operation with connection pooling."""
