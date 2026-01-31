@@ -126,3 +126,135 @@ class TestEncryption:
         # But both decrypt to same plaintext
         assert decrypt_value_with_key(encrypted1, test_key) == plaintext
         assert decrypt_value_with_key(encrypted2, test_key) == plaintext
+
+    def test_invalid_base64_raises_error(self, test_key):
+        """Invalid base64 in encrypted value should raise EncryptionError."""
+        with pytest.raises(EncryptionError, match="Invalid encrypted data"):
+            decrypt_value_with_key("ENC:not-valid-base64!!!", test_key)
+
+    def test_truncated_ciphertext_raises_error(self, test_key):
+        """Encrypted data too short should raise EncryptionError."""
+        import base64
+        # Create data shorter than NONCE_SIZE + TAG_SIZE (12 + 16 = 28 bytes)
+        short_data = base64.b64encode(b"short").decode()
+        with pytest.raises(EncryptionError, match="too short"):
+            decrypt_value_with_key(f"ENC:{short_data}", test_key)
+
+
+class TestGlobalKeyEncryption:
+    """Tests for encrypt_value/decrypt_value using global key."""
+
+    def test_encrypt_decrypt_with_env_key(self, monkeypatch, test_key):
+        """Should use key from MAIL_PROXY_ENCRYPTION_KEY env var."""
+        import base64
+        from tools.encryption import (
+            decrypt_value,
+            encrypt_value,
+            set_key_for_testing,
+        )
+
+        # Clear any cached key
+        set_key_for_testing(None)
+
+        # Set key via environment
+        key_b64 = base64.b64encode(test_key).decode()
+        monkeypatch.setenv("MAIL_PROXY_ENCRYPTION_KEY", key_b64)
+
+        plaintext = "secret-password"
+        encrypted = encrypt_value(plaintext)
+        assert encrypted.startswith("ENC:")
+
+        decrypted = decrypt_value(encrypted)
+        assert decrypted == plaintext
+
+        # Cleanup
+        set_key_for_testing(None)
+
+    def test_missing_key_raises_error(self, monkeypatch):
+        """Should raise EncryptionKeyNotConfigured when no key available."""
+        from tools.encryption import (
+            EncryptionKeyNotConfigured,
+            encrypt_value,
+            set_key_for_testing,
+        )
+
+        # Clear cached key and env var
+        set_key_for_testing(None)
+        monkeypatch.delenv("MAIL_PROXY_ENCRYPTION_KEY", raising=False)
+
+        with pytest.raises(EncryptionKeyNotConfigured, match="not configured"):
+            encrypt_value("secret")
+
+    def test_invalid_env_key_raises_error(self, monkeypatch):
+        """Invalid base64 key in env var should raise EncryptionError."""
+        from tools.encryption import encrypt_value, set_key_for_testing
+
+        set_key_for_testing(None)
+        monkeypatch.setenv("MAIL_PROXY_ENCRYPTION_KEY", "not-valid-base64!!!")
+
+        with pytest.raises(EncryptionError, match="Invalid"):
+            encrypt_value("secret")
+
+        set_key_for_testing(None)
+
+    def test_wrong_size_env_key_raises_error(self, monkeypatch):
+        """Key with wrong size in env var should raise EncryptionError."""
+        import base64
+        from tools.encryption import encrypt_value, set_key_for_testing
+
+        set_key_for_testing(None)
+        wrong_size_key = base64.b64encode(b"only-16-bytes!!!").decode()
+        monkeypatch.setenv("MAIL_PROXY_ENCRYPTION_KEY", wrong_size_key)
+
+        with pytest.raises(EncryptionError, match="must be 32 bytes"):
+            encrypt_value("secret")
+
+        set_key_for_testing(None)
+
+    def test_set_key_for_testing(self, test_key):
+        """set_key_for_testing should set the global key."""
+        from tools.encryption import (
+            decrypt_value,
+            encrypt_value,
+            set_key_for_testing,
+        )
+
+        set_key_for_testing(test_key)
+
+        encrypted = encrypt_value("test-value")
+        assert encrypted.startswith("ENC:")
+
+        decrypted = decrypt_value(encrypted)
+        assert decrypted == "test-value"
+
+        # Cleanup
+        set_key_for_testing(None)
+
+    def test_set_key_for_testing_invalid_size(self):
+        """set_key_for_testing should reject invalid key size."""
+        from tools.encryption import set_key_for_testing
+
+        with pytest.raises(ValueError, match="must be 32 bytes"):
+            set_key_for_testing(b"too-short")
+
+    def test_decrypt_value_empty_passthrough(self, test_key):
+        """decrypt_value should pass through empty/None values."""
+        from tools.encryption import decrypt_value, set_key_for_testing
+
+        set_key_for_testing(test_key)
+
+        assert decrypt_value("") == ""
+        assert decrypt_value(None) is None
+        assert decrypt_value("not-encrypted") == "not-encrypted"
+
+        set_key_for_testing(None)
+
+    def test_encrypt_value_empty_passthrough(self, test_key):
+        """encrypt_value should pass through empty values."""
+        from tools.encryption import encrypt_value, set_key_for_testing
+
+        set_key_for_testing(test_key)
+
+        assert encrypt_value("") == ""
+
+        set_key_for_testing(None)

@@ -416,3 +416,614 @@ class TestDefaultSyncInterval:
     def test_default_sync_interval_is_5_minutes(self):
         """Default sync interval is 300 seconds (5 minutes)."""
         assert DEFAULT_SYNC_INTERVAL == 300
+
+
+# =============================================================================
+# Additional Coverage Tests
+# =============================================================================
+
+
+class TestClientReporterProcessCycleWithEvents:
+    """Tests for _process_cycle with actual events."""
+
+    @pytest.fixture
+    def reporter(self):
+        proxy = MockProxy()
+        proxy._tables["message_events"].fetch_unreported = AsyncMock(return_value=[])
+        proxy._tables["message_events"].mark_reported = AsyncMock()
+        proxy._tables["tenants"].list_all = AsyncMock(return_value=[])
+        proxy._tables["tenants"].get = AsyncMock(return_value=None)
+        proxy._tables["messages"].remove_fully_reported_before = AsyncMock(return_value=0)
+        return ClientReporter(proxy)
+
+    async def test_process_cycle_with_tenant_events(self, reporter):
+        """Process cycle handles events grouped by tenant."""
+        reporter.proxy._tables["message_events"].fetch_unreported = AsyncMock(
+            return_value=[
+                {"event_id": 1, "event_type": "sent", "message_id": "m1", "tenant_id": "t1", "event_ts": 1234567890},
+                {"event_id": 2, "event_type": "sent", "message_id": "m2", "tenant_id": "t1", "event_ts": 1234567891},
+            ]
+        )
+        reporter.proxy._tables["tenants"].get = AsyncMock(
+            return_value={"id": "t1", "client_base_url": "http://test.com", "client_sync_path": "/sync"}
+        )
+
+        # Mock _send_reports_to_tenant
+        with patch.object(reporter, "_send_reports_to_tenant") as mock_send:
+            mock_send.return_value = (["m1", "m2"], 5, None)
+            result = await reporter._process_cycle()
+
+            mock_send.assert_called_once()
+            assert result == 5
+
+    async def test_process_cycle_with_global_events(self, reporter):
+        """Process cycle handles events without tenant_id."""
+        reporter.proxy._client_sync_url = "http://global.com/sync"
+        reporter.proxy._tables["message_events"].fetch_unreported = AsyncMock(
+            return_value=[
+                {"event_id": 1, "event_type": "sent", "message_id": "m1", "tenant_id": None, "event_ts": 1234567890},
+            ]
+        )
+
+        with patch.object(reporter, "_send_delivery_reports") as mock_send:
+            mock_send.return_value = (["m1"], 3, None)
+            result = await reporter._process_cycle()
+
+            mock_send.assert_called_once()
+            assert result == 3
+
+    async def test_process_cycle_with_callable(self, reporter):
+        """Process cycle uses callable for events without tenant."""
+        callback = AsyncMock()
+        reporter.proxy._report_delivery_callable = callback
+        reporter.proxy._tables["message_events"].fetch_unreported = AsyncMock(
+            return_value=[
+                {"event_id": 1, "event_type": "sent", "message_id": "m1", "tenant_id": None, "event_ts": 1234567890},
+            ]
+        )
+
+        result = await reporter._process_cycle()
+        callback.assert_called_once()
+        reporter.proxy._tables["message_events"].mark_reported.assert_called()
+
+    async def test_process_cycle_marks_reported_events(self, reporter):
+        """Process cycle marks events as reported."""
+        reporter.proxy._report_delivery_callable = AsyncMock()
+        reporter.proxy._tables["message_events"].fetch_unreported = AsyncMock(
+            return_value=[
+                {"event_id": 1, "event_type": "sent", "message_id": "m1", "tenant_id": None, "event_ts": 1234567890},
+                {"event_id": 2, "event_type": "sent", "message_id": "m2", "tenant_id": None, "event_ts": 1234567891},
+            ]
+        )
+
+        await reporter._process_cycle()
+        reporter.proxy._tables["message_events"].mark_reported.assert_called_once()
+        call_args = reporter.proxy._tables["message_events"].mark_reported.call_args
+        assert 1 in call_args[0][0]  # event_id 1
+        assert 2 in call_args[0][0]  # event_id 2
+
+    async def test_process_cycle_handles_http_error(self, reporter):
+        """Process cycle handles HTTP errors gracefully."""
+        import aiohttp
+
+        reporter.proxy._client_sync_url = "http://global.com/sync"
+        reporter.proxy._tables["message_events"].fetch_unreported = AsyncMock(
+            return_value=[
+                {"event_id": 1, "event_type": "sent", "message_id": "m1", "tenant_id": None, "event_ts": 1234567890},
+            ]
+        )
+
+        with patch.object(reporter, "_send_delivery_reports") as mock_send:
+            mock_send.side_effect = aiohttp.ClientError("Connection failed")
+            # Should not raise, just log warning
+            result = await reporter._process_cycle()
+            assert result == 0
+
+    async def test_process_cycle_skips_missing_tenant(self, reporter):
+        """Process cycle skips events for non-existent tenant."""
+        reporter.proxy._tables["message_events"].fetch_unreported = AsyncMock(
+            return_value=[
+                {"event_id": 1, "event_type": "sent", "message_id": "m1", "tenant_id": "unknown", "event_ts": 1234567890},
+            ]
+        )
+        reporter.proxy._tables["tenants"].get = AsyncMock(return_value=None)
+
+        result = await reporter._process_cycle()
+        assert result == 0
+
+    async def test_process_cycle_fallback_to_global_url(self, reporter):
+        """Process cycle uses global URL when tenant has no sync URL."""
+        reporter.proxy._client_sync_url = "http://global.com/sync"
+        reporter.proxy._tables["message_events"].fetch_unreported = AsyncMock(
+            return_value=[
+                {"event_id": 1, "event_type": "sent", "message_id": "m1", "tenant_id": "t1", "event_ts": 1234567890},
+            ]
+        )
+        # Tenant exists but has no sync URL
+        reporter.proxy._tables["tenants"].get = AsyncMock(
+            return_value={"id": "t1", "client_base_url": None, "client_sync_path": None}
+        )
+
+        with patch.object(reporter, "_send_delivery_reports") as mock_send:
+            mock_send.return_value = (["m1"], 0, None)
+            await reporter._process_cycle()
+            mock_send.assert_called_once()
+
+
+class TestClientReporterSyncInterval:
+    """Tests for sync interval handling in _process_cycle."""
+
+    @pytest.fixture
+    def reporter(self):
+        proxy = MockProxy()
+        proxy._tables["message_events"].fetch_unreported = AsyncMock(return_value=[])
+        proxy._tables["message_events"].mark_reported = AsyncMock()
+        proxy._tables["tenants"].list_all = AsyncMock(return_value=[])
+        proxy._tables["tenants"].get = AsyncMock(return_value=None)
+        proxy._tables["messages"].remove_fully_reported_before = AsyncMock(return_value=0)
+        return ClientReporter(proxy)
+
+    async def test_calls_tenants_without_events_after_interval(self, reporter):
+        """Syncs tenants without events after sync interval."""
+        import time
+
+        reporter.proxy._tables["tenants"].list_all = AsyncMock(
+            return_value=[
+                {"id": "t1", "active": True, "client_base_url": "http://t1.com", "client_sync_path": "/sync"},
+            ]
+        )
+        # Set last sync to far past
+        reporter._last_sync["t1"] = time.time() - 1000
+
+        with patch.object(reporter, "_send_reports_to_tenant") as mock_send:
+            mock_send.return_value = ([], 2, None)
+            result = await reporter._process_cycle()
+
+            mock_send.assert_called_once()
+            assert result == 2
+
+    async def test_skips_tenant_within_interval(self, reporter):
+        """Skips tenant if within sync interval."""
+        import time
+
+        reporter.proxy._tables["tenants"].list_all = AsyncMock(
+            return_value=[
+                {"id": "t1", "active": True, "client_base_url": "http://t1.com", "client_sync_path": "/sync"},
+            ]
+        )
+        # Set last sync to recent
+        reporter._last_sync["t1"] = time.time()
+
+        with patch.object(reporter, "_send_reports_to_tenant") as mock_send:
+            mock_send.return_value = ([], 0, None)
+            await reporter._process_cycle()
+
+            mock_send.assert_not_called()
+
+    async def test_skips_inactive_tenant(self, reporter):
+        """Skips inactive tenants."""
+        reporter.proxy._tables["tenants"].list_all = AsyncMock(
+            return_value=[
+                {"id": "t1", "active": False, "client_base_url": "http://t1.com", "client_sync_path": "/sync"},
+            ]
+        )
+
+        with patch.object(reporter, "_send_reports_to_tenant") as mock_send:
+            await reporter._process_cycle()
+            mock_send.assert_not_called()
+
+    async def test_skips_tenant_without_sync_url(self, reporter):
+        """Skips tenants without sync URL configured."""
+        import time
+
+        reporter.proxy._tables["tenants"].list_all = AsyncMock(
+            return_value=[
+                {"id": "t1", "active": True, "client_base_url": None, "client_sync_path": None},
+            ]
+        )
+        reporter._last_sync["t1"] = time.time() - 1000
+
+        with patch.object(reporter, "_send_reports_to_tenant") as mock_send:
+            await reporter._process_cycle()
+            mock_send.assert_not_called()
+
+    async def test_run_now_filters_to_specific_tenant(self, reporter):
+        """wake(tenant_id) filters to specific tenant."""
+        import time
+
+        reporter.proxy._tables["tenants"].list_all = AsyncMock(
+            return_value=[
+                {"id": "t1", "active": True, "client_base_url": "http://t1.com", "client_sync_path": "/sync"},
+                {"id": "t2", "active": True, "client_base_url": "http://t2.com", "client_sync_path": "/sync"},
+            ]
+        )
+        reporter._last_sync["t1"] = time.time() - 1000
+        reporter._last_sync["t2"] = time.time() - 1000
+        reporter._run_now_tenant_id = "t1"
+
+        with patch.object(reporter, "_send_reports_to_tenant") as mock_send:
+            mock_send.return_value = ([], 0, None)
+            await reporter._process_cycle()
+
+            # Should only call for t1
+            assert mock_send.call_count == 1
+            call_tenant = mock_send.call_args[0][0]
+            assert call_tenant["id"] == "t1"
+
+
+class TestClientReporterSendReportsToTenant:
+    """Tests for _send_reports_to_tenant method."""
+
+    @pytest.fixture
+    def reporter(self):
+        proxy = MockProxy()
+        return ClientReporter(proxy)
+
+    async def test_raises_if_no_sync_url(self, reporter):
+        """Raises RuntimeError if tenant has no sync URL."""
+        tenant = {"id": "t1", "client_base_url": None}
+
+        with pytest.raises(RuntimeError, match="has no sync URL"):
+            await reporter._send_reports_to_tenant(tenant, [])
+
+    async def test_uses_bearer_auth(self, reporter):
+        """Uses bearer token from tenant config."""
+        tenant = {
+            "id": "t1",
+            "client_base_url": "http://t1.com",
+            "client_sync_path": "/sync",
+            "client_auth": {"method": "bearer", "token": "tenant-secret"},
+        }
+
+        with patch("aiohttp.ClientSession") as mock_session:
+            mock_response = AsyncMock()
+            mock_response.raise_for_status = MagicMock()
+            mock_response.json = AsyncMock(return_value={"ok": True, "queued": 0})
+            mock_response.text = AsyncMock(return_value="")
+            mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_response.__aexit__ = AsyncMock()
+
+            mock_post = MagicMock(return_value=mock_response)
+            mock_session_instance = MagicMock()
+            mock_session_instance.post = mock_post
+            mock_session_instance.__aenter__ = AsyncMock(return_value=mock_session_instance)
+            mock_session_instance.__aexit__ = AsyncMock()
+            mock_session.return_value = mock_session_instance
+
+            await reporter._send_reports_to_tenant(tenant, [{"id": "m1"}])
+
+            call_kwargs = mock_post.call_args[1]
+            assert call_kwargs["headers"]["Authorization"] == "Bearer tenant-secret"
+
+    async def test_uses_basic_auth(self, reporter):
+        """Uses basic auth from tenant config."""
+        tenant = {
+            "id": "t1",
+            "client_base_url": "http://t1.com",
+            "client_sync_path": "/sync",
+            "client_auth": {"method": "basic", "user": "admin", "password": "secret"},
+        }
+
+        with patch("aiohttp.ClientSession") as mock_session:
+            mock_response = AsyncMock()
+            mock_response.raise_for_status = MagicMock()
+            mock_response.json = AsyncMock(return_value={"ok": True, "queued": 0})
+            mock_response.text = AsyncMock(return_value="")
+            mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_response.__aexit__ = AsyncMock()
+
+            mock_post = MagicMock(return_value=mock_response)
+            mock_session_instance = MagicMock()
+            mock_session_instance.post = mock_post
+            mock_session_instance.__aenter__ = AsyncMock(return_value=mock_session_instance)
+            mock_session_instance.__aexit__ = AsyncMock()
+            mock_session.return_value = mock_session_instance
+
+            await reporter._send_reports_to_tenant(tenant, [{"id": "m1"}])
+
+            call_kwargs = mock_post.call_args[1]
+            assert call_kwargs["auth"] is not None
+            assert call_kwargs["auth"].login == "admin"
+
+    async def test_parses_next_sync_after(self, reporter):
+        """Parses next_sync_after from response."""
+        tenant = {
+            "id": "t1",
+            "client_base_url": "http://t1.com",
+            "client_sync_path": "/sync",
+        }
+
+        with patch("aiohttp.ClientSession") as mock_session:
+            mock_response = AsyncMock()
+            mock_response.raise_for_status = MagicMock()
+            mock_response.json = AsyncMock(return_value={"ok": True, "queued": 5, "next_sync_after": 1234567890.5})
+            mock_response.text = AsyncMock(return_value="")
+            mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_response.__aexit__ = AsyncMock()
+
+            mock_post = MagicMock(return_value=mock_response)
+            mock_session_instance = MagicMock()
+            mock_session_instance.post = mock_post
+            mock_session_instance.__aenter__ = AsyncMock(return_value=mock_session_instance)
+            mock_session_instance.__aexit__ = AsyncMock()
+            mock_session.return_value = mock_session_instance
+
+            _, queued, next_sync = await reporter._send_reports_to_tenant(tenant, [])
+
+            assert queued == 5
+            assert next_sync == 1234567890.5
+
+    async def test_handles_non_json_response(self, reporter):
+        """Handles non-JSON response gracefully."""
+        tenant = {
+            "id": "t1",
+            "client_base_url": "http://t1.com",
+            "client_sync_path": "/sync",
+        }
+
+        with patch("aiohttp.ClientSession") as mock_session:
+            mock_response = AsyncMock()
+            mock_response.raise_for_status = MagicMock()
+            mock_response.json = AsyncMock(side_effect=ValueError("Invalid JSON"))
+            mock_response.text = AsyncMock(return_value="Not JSON")
+            mock_response.content_type = "text/html"
+            mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_response.__aexit__ = AsyncMock()
+
+            mock_post = MagicMock(return_value=mock_response)
+            mock_session_instance = MagicMock()
+            mock_session_instance.post = mock_post
+            mock_session_instance.__aenter__ = AsyncMock(return_value=mock_session_instance)
+            mock_session_instance.__aexit__ = AsyncMock()
+            mock_session.return_value = mock_session_instance
+
+            # Should not raise
+            ids, queued, next_sync = await reporter._send_reports_to_tenant(tenant, [{"id": "m1"}])
+            assert ids == ["m1"]
+            assert queued == 0
+
+
+class TestClientReporterReportLoop:
+    """Tests for _report_loop method."""
+
+    @pytest.fixture
+    def reporter(self):
+        proxy = MockProxy()
+        proxy._tables["message_events"].fetch_unreported = AsyncMock(return_value=[])
+        proxy._tables["tenants"].list_all = AsyncMock(return_value=[])
+        proxy._tables["messages"].remove_fully_reported_before = AsyncMock(return_value=0)
+        return ClientReporter(proxy)
+
+    async def test_report_loop_waits_in_test_mode(self, reporter):
+        """In test mode, first iteration waits for wake."""
+        reporter.proxy._test_mode = True
+
+        # Start loop and stop immediately
+        async def stop_soon():
+            await asyncio.sleep(0.05)
+            reporter._stop.set()
+            reporter._wake_event.set()
+
+        asyncio.create_task(stop_soon())
+
+        # Should wait for wake event
+        await reporter._report_loop()
+
+    async def test_report_loop_continues_on_queued(self, reporter):
+        """Loop continues immediately when client has queued messages."""
+        reporter.proxy._test_mode = False
+        call_count = 0
+
+        async def mock_process():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return 5  # Has queued
+            elif call_count == 2:
+                reporter._stop.set()  # Stop after second call
+                return 0
+
+        with patch.object(reporter, "_process_cycle", side_effect=mock_process):
+            with patch.object(reporter, "_wait_for_wakeup"):
+                await reporter._report_loop()
+                assert call_count == 2
+
+
+class TestClientReporterSendDeliveryReportsExtended:
+    """Extended tests for _send_delivery_reports."""
+
+    @pytest.fixture
+    def reporter(self):
+        proxy = MockProxy()
+        return ClientReporter(proxy)
+
+    async def test_logs_delivery_with_ids_preview(self, reporter):
+        """Logs preview of message IDs when delivering."""
+        callback = AsyncMock()
+        reporter.proxy._report_delivery_callable = callback
+        reporter.proxy._log_delivery_activity = True
+
+        payloads = [{"id": f"m{i}"} for i in range(10)]
+        await reporter._send_delivery_reports(payloads)
+
+        # Should have logged with preview
+        reporter.proxy.logger.info.assert_called()
+
+    async def test_uses_basic_auth_for_sync_url(self, reporter):
+        """Uses basic auth when configured."""
+        reporter.proxy._client_sync_url = "http://sync.com"
+        reporter.proxy._client_sync_user = "user"
+        reporter.proxy._client_sync_password = "pass"
+
+        with patch("aiohttp.ClientSession") as mock_session:
+            mock_response = AsyncMock()
+            mock_response.raise_for_status = MagicMock()
+            mock_response.json = AsyncMock(return_value={"ok": True})
+            mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_response.__aexit__ = AsyncMock()
+
+            mock_post = MagicMock(return_value=mock_response)
+            mock_session_instance = MagicMock()
+            mock_session_instance.post = mock_post
+            mock_session_instance.__aenter__ = AsyncMock(return_value=mock_session_instance)
+            mock_session_instance.__aexit__ = AsyncMock()
+            mock_session.return_value = mock_session_instance
+
+            await reporter._send_delivery_reports([{"id": "m1"}])
+
+            call_kwargs = mock_post.call_args[1]
+            assert call_kwargs["auth"] is not None
+
+    async def test_parses_error_and_not_found_ids(self, reporter):
+        """Parses error and not_found IDs from response."""
+        reporter.proxy._client_sync_url = "http://sync.com"
+        reporter.proxy._log_delivery_activity = True
+
+        with patch("aiohttp.ClientSession") as mock_session:
+            mock_response = AsyncMock()
+            mock_response.raise_for_status = MagicMock()
+            mock_response.json = AsyncMock(
+                return_value={"ok": False, "error": ["m2"], "not_found": ["m3"], "queued": 0}
+            )
+            mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_response.__aexit__ = AsyncMock()
+
+            mock_post = MagicMock(return_value=mock_response)
+            mock_session_instance = MagicMock()
+            mock_session_instance.post = mock_post
+            mock_session_instance.__aenter__ = AsyncMock(return_value=mock_session_instance)
+            mock_session_instance.__aexit__ = AsyncMock()
+            mock_session.return_value = mock_session_instance
+
+            ids, queued, _ = await reporter._send_delivery_reports([{"id": "m1"}, {"id": "m2"}, {"id": "m3"}])
+
+            # All IDs should still be in processed list
+            assert "m1" in ids
+
+
+class TestClientReporterWaitForWakeupExtended:
+    """Extended tests for _wait_for_wakeup."""
+
+    @pytest.fixture
+    def reporter(self):
+        proxy = MockProxy()
+        return ClientReporter(proxy)
+
+    async def test_infinite_timeout_waits_for_event(self, reporter):
+        """math.inf timeout waits for event."""
+        import math
+
+        async def set_event():
+            await asyncio.sleep(0.05)
+            reporter._wake_event.set()
+
+        task = asyncio.create_task(set_event())
+        await reporter._wait_for_wakeup(math.inf)
+        await task
+
+    async def test_clears_wake_event_after_wait(self, reporter):
+        """Wake event is cleared after waiting."""
+        reporter._wake_event.set()
+        await reporter._wait_for_wakeup(0.01)
+        assert not reporter._wake_event.is_set()
+
+
+class TestClientReporterPropertiesExtended:
+    """Additional tests for property delegation."""
+
+    @pytest.fixture
+    def reporter(self):
+        proxy = MockProxy()
+        return ClientReporter(proxy)
+
+    def test_smtp_batch_size_delegates(self, reporter):
+        """_smtp_batch_size delegates to proxy."""
+        assert reporter._smtp_batch_size == reporter.proxy._smtp_batch_size
+
+    def test_report_retention_seconds_delegates(self, reporter):
+        """_report_retention_seconds delegates to proxy."""
+        assert reporter._report_retention_seconds == reporter.proxy._report_retention_seconds
+
+    def test_client_sync_url_delegates(self, reporter):
+        """_client_sync_url delegates to proxy."""
+        assert reporter._client_sync_url == reporter.proxy._client_sync_url
+
+    def test_client_sync_token_delegates(self, reporter):
+        """_client_sync_token delegates to proxy."""
+        assert reporter._client_sync_token == reporter.proxy._client_sync_token
+
+    def test_client_sync_user_delegates(self, reporter):
+        """_client_sync_user delegates to proxy."""
+        assert reporter._client_sync_user == reporter.proxy._client_sync_user
+
+    def test_client_sync_password_delegates(self, reporter):
+        """_client_sync_password delegates to proxy."""
+        assert reporter._client_sync_password == reporter.proxy._client_sync_password
+
+    def test_report_delivery_callable_delegates(self, reporter):
+        """_report_delivery_callable delegates to proxy."""
+        assert reporter._report_delivery_callable == reporter.proxy._report_delivery_callable
+
+    def test_log_delivery_activity_delegates(self, reporter):
+        """_log_delivery_activity delegates to proxy."""
+        assert reporter._log_delivery_activity == reporter.proxy._log_delivery_activity
+
+
+class TestClientReporterUtcNowEpoch:
+    """Tests for _utc_now_epoch static method."""
+
+    def test_returns_int(self):
+        """_utc_now_epoch returns an integer."""
+        result = ClientReporter._utc_now_epoch()
+        assert isinstance(result, int)
+
+    def test_returns_reasonable_timestamp(self):
+        """_utc_now_epoch returns a reasonable timestamp."""
+        import time
+
+        result = ClientReporter._utc_now_epoch()
+        # Should be close to current time (within 5 seconds)
+        assert abs(result - time.time()) < 5
+
+
+class TestClientReporterEventsToPayloadsExtended:
+    """Extended tests for _events_to_payloads."""
+
+    @pytest.fixture
+    def reporter(self):
+        proxy = MockProxy()
+        return ClientReporter(proxy)
+
+    def test_pec_event_without_description(self, reporter):
+        """PEC events without description don't add pec_details."""
+        events = [{
+            "event_type": "pec_delivery",
+            "message_id": "m1",
+            "event_ts": 1234567890,
+            "description": None,
+        }]
+        payloads = reporter._events_to_payloads(events)
+        assert "pec_details" not in payloads[0]
+        assert payloads[0]["pec_event"] == "pec_delivery"
+
+
+class TestStopWithTask:
+    """Tests for stop() with running task."""
+
+    async def test_stop_awaits_task(self):
+        """stop() awaits the running task."""
+        proxy = MockProxy()
+        reporter = ClientReporter(proxy)
+
+        # Create a task that completes when stop is set
+        async def mock_loop():
+            while not reporter._stop.is_set():
+                await asyncio.sleep(0.01)
+
+        reporter._task = asyncio.create_task(mock_loop())
+        await asyncio.sleep(0.02)  # Let task start
+
+        await reporter.stop()
+
+        assert reporter._stop.is_set()
+        assert reporter._task.done()
