@@ -247,3 +247,113 @@ Troubleshooting
    - Enable disk cache (``cache_disk_dir``)
    - Use smaller ``cache_memory_max_mb``
    - Avoid base64 for large files; use HTTP endpoints instead
+
+Security
+--------
+
+**How are SMTP credentials stored?**
+   Passwords are encrypted at rest using **AES-256-GCM**. The encryption key is loaded
+   from the ``MAIL_PROXY_ENCRYPTION_KEY`` environment variable or from
+   ``/run/secrets/encryption_key`` (Docker/Kubernetes secret).
+
+**How do I generate an encryption key?**
+   Use the built-in utility::
+
+      python -c "from mail_proxy.encryption import generate_key; print(generate_key())"
+
+   This generates a base64-encoded 32-byte key suitable for AES-256.
+
+**Can I rotate the encryption key?**
+   Yes, but you must re-encrypt all existing credentials. Export accounts, update
+   the key, and re-add them. See :doc:`security` for the rotation procedure.
+
+**What happens if I lose the encryption key?**
+   You cannot decrypt existing SMTP passwords. You'll need to re-add all accounts
+   with new credentials.
+
+**Is the API traffic encrypted?**
+   The proxy itself doesn't enforce HTTPS. Use a reverse proxy (nginx, Traefik)
+   with TLS termination in production.
+
+Licensing
+---------
+
+**What's the difference between CE and EE?**
+   **Community Edition (CE)** is Apache 2.0 licensed and includes core features:
+   message queue, retry, rate limiting, priority, attachments, SMTP pooling,
+   REST API, CLI, and credential encryption.
+
+   **Enterprise Edition (EE)** is BSL 1.1 licensed and adds: multi-tenancy,
+   bounce detection (IMAP), PEC support, and large file offloading to cloud storage.
+
+**Can I use EE features for free?**
+   Yes, for testing, development, and non-production environments. Production use
+   requires a commercial license from Softwell S.r.l.
+
+**When does BSL convert to Apache 2.0?**
+   Each version converts 4 years after its release. For example, v0.7.0 (released
+   January 2026) becomes Apache 2.0 on January 2030. This is tracked per-version
+   in ``LICENSE-BSL-1.1``.
+
+**How do I get a commercial license?**
+   Contact Softwell S.r.l. at info@softwell.it or visit https://www.softwell.it
+
+Bounce Detection (Enterprise)
+-----------------------------
+
+**What is bounce detection?**
+   Automatic monitoring of an IMAP mailbox for bounced emails (delivery failures).
+   The proxy parses DSN (Delivery Status Notification) messages and updates the
+   original message status.
+
+**Why IMAP polling instead of webhooks?**
+   We chose IMAP polling for **provider independence**:
+
+   - **Webhooks** (SendGrid, Mailgun, SES) require a specific provider that supports
+     bounce webhooks, plus a public endpoint on your side to receive them.
+   - **IMAP polling** works with **any SMTP provider** that has a mailbox: Gmail,
+     Office 365, your corporate server, or any standard IMAP server.
+
+   This makes genro-mail-proxy portable across providers without code changes.
+   You can switch from SendGrid to your own Postfix server and bounce detection
+   still works.
+
+**How do I enable bounce detection?**
+   Configure IMAP credentials on the instance via ``PUT /instance/bounce`` or CLI.
+   The proxy will poll the configured folder for bounce messages.
+
+**What's the difference between hard and soft bounces?**
+   - **Hard bounce** (5xx): Permanent failure (invalid address, domain doesn't exist)
+   - **Soft bounce** (4xx): Temporary failure (mailbox full, server unavailable)
+
+   Hard bounces should trigger address cleanup; soft bounces may resolve on retry.
+
+**How are bounces linked to original messages?**
+   The proxy injects an ``X-Genro-Mail-ID`` header in outgoing emails. When a bounce
+   arrives, this header is extracted from the DSN to correlate with the original message.
+
+**Can I use webhooks if my provider supports them?**
+   Currently no. The proxy uses IMAP polling exclusively. If you need webhook support
+   for a specific provider, open a feature request on GitHub.
+
+PEC Support (Enterprise)
+------------------------
+
+**What is PEC?**
+   Posta Elettronica Certificata (PEC) is Italy's legally-binding certified email
+   system. PEC messages have the same legal value as registered mail.
+
+**What PEC features are supported?**
+   - Automatic parsing of acceptance receipts (ricevuta di accettazione)
+   - Automatic parsing of delivery receipts (ricevuta di consegna)
+   - Status correlation back to original messages
+
+**Do I need a special SMTP account for PEC?**
+   Yes. PEC requires a certified provider (Aruba, Legalmail, etc.). Configure
+   the PEC account with the provider's SMTP/IMAP settings.
+
+**How do I track PEC delivery status?**
+   The proxy polls the PEC mailbox for receipts and updates message status.
+   Delivery reports include ``pec_acceptance_ts`` and ``pec_delivery_ts`` fields.
+
+See :doc:`pec` for complete PEC configuration and workflow.
