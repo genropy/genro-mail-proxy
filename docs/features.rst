@@ -15,8 +15,8 @@ genro-mail-proxy is available in two editions:
 
 **Enterprise Edition (EE)** - BSL 1.1 License
    Free for testing, development, and non-production use. Production use requires
-   a commercial license from Softwell S.r.l. After 2030-01-25, EE features convert
-   to Apache 2.0.
+   a commercial license from Softwell S.r.l. Each version converts to Apache 2.0
+   four years after its release (e.g., v0.7.0 → Apache 2.0 on 2030-01-25).
 
 Community Edition Features
 --------------------------

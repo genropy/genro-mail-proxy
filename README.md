@@ -240,7 +240,7 @@ This project uses a **dual-license** model:
 
 **Apache 2.0** ([LICENSE](LICENSE)): Free for any use.
 
-**BSL 1.1** ([LICENSE-BSL-1.1](LICENSE-BSL-1.1)): Free for testing, development, and non-production. Production use requires a commercial license from Softwell S.r.l. After 2030-01-25, these features convert to Apache 2.0.
+**BSL 1.1** ([LICENSE-BSL-1.1](LICENSE-BSL-1.1)): Free for testing, development, and non-production. Production use requires a commercial license from Softwell S.r.l. Each version converts to Apache 2.0 four years after its release (e.g., v0.7.0 released Jan 2026 → Apache 2.0 on Jan 2030).
 
 See [NOTICE](NOTICE) for full details.
 

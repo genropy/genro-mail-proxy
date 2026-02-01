@@ -18,6 +18,18 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Update BSL Change Date for this version
+        run: |
+          # Calculate Change Date = today + 4 years
+          CHANGE_DATE=$(date -d "+4 years" +%Y-%m-%d)
+          VERSION="${GITHUB_REF_NAME#v}"  # Remove 'v' prefix from tag
+
+          # Update LICENSE-BSL-1.1 with new Change Date and version
+          sed -i "s/^Change Date: .*/Change Date: $CHANGE_DATE [4 years from v$VERSION release]/" LICENSE-BSL-1.1
+
+          echo "Updated BSL Change Date to $CHANGE_DATE for version $VERSION"
+          cat LICENSE-BSL-1.1 | head -15
+
       - name: Install build dependencies
         run: |
           python -m pip install --upgrade pip
