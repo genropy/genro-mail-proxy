@@ -97,7 +97,7 @@ def _create_click_command(method: Callable, run_async: Callable) -> click.Comman
         tenant_id is treated specially: it becomes an optional positional
         argument with fallback to the current context (via resolve_context).
     """
-    from .cli_commands import require_context
+    from .cli_commands import require_context, resolve_context
 
     sig = inspect.signature(method)
     doc = method.__doc__ or f"{method.__name__} operation"
@@ -145,12 +145,23 @@ def _create_click_command(method: Callable, run_async: Callable) -> click.Comman
             arguments.append(click.argument(param_name, type=click_type))
 
     def cmd_func(**kwargs: Any) -> None:
+        from rich.console import Console
+
+        console = Console(stderr=True)
         py_kwargs = {k.replace("-", "_"): v for k, v in kwargs.items()}
 
         # Resolve tenant_id from context if not provided
         if has_tenant_id and not py_kwargs.get("tenant_id"):
             _, tenant = require_context(require_tenant=True)
             py_kwargs["tenant_id"] = tenant
+
+        # Print context prefix (virtualenv-style)
+        instance, tenant = resolve_context()
+        if instance:
+            if tenant:
+                console.print(f"[dim]({instance}/{tenant})[/dim]")
+            else:
+                console.print(f"[dim]({instance})[/dim]")
 
         result = run_async(method(**py_kwargs))
         if result is not None:
