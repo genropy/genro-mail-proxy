@@ -100,7 +100,7 @@ Repository = "https://github.com/genropy/genro-mail-proxy"
 Issues = "https://github.com/genropy/genro-mail-proxy/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/core", "src/enterprise"]
+packages = ["src/core", "src/enterprise", "src/sql", "src/storage", "src/tools"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
