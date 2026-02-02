@@ -605,23 +605,35 @@ def add_list_command(group: click.Group) -> None:
         for item in mail_proxy_dir.iterdir():
             if item.is_dir():
                 config_file = item / "config.ini"
+                db_file = item / "mail_service.db"
+                instance_name = item.name
+
+                # Check for config.ini (new format) or mail_service.db (legacy)
                 if config_file.exists():
                     config = configparser.ConfigParser()
                     config.read(config_file)
-
-                    instance_name = item.name
                     port = config.getint("server", "port", fallback=8000)
                     host = config.get("server", "host", fallback="0.0.0.0")
+                    is_legacy = False
+                elif db_file.exists():
+                    # Legacy instance: has database but no config.ini
+                    port = 8000
+                    host = "0.0.0.0"
+                    is_legacy = True
+                else:
+                    # Neither config nor database - skip this directory
+                    continue
 
-                    is_running, pid, running_port = _is_instance_running(instance_name)
+                is_running, pid, running_port = _is_instance_running(instance_name)
 
-                    instances.append({
-                        "name": instance_name,
-                        "port": running_port or port,
-                        "host": host,
-                        "running": is_running,
-                        "pid": pid,
-                    })
+                instances.append({
+                    "name": instance_name,
+                    "port": running_port or port,
+                    "host": host,
+                    "running": is_running,
+                    "pid": pid,
+                    "legacy": is_legacy,
+                })
 
         if not instances:
             console.print("[dim]No instances configured.[/dim]")
@@ -634,6 +646,7 @@ def add_list_command(group: click.Group) -> None:
         table.add_column("Port", justify="right")
         table.add_column("PID", justify="right")
         table.add_column("URL")
+        table.add_column("Note")
 
         for inst in sorted(instances, key=lambda x: x["name"]):
             if inst["running"]:
@@ -645,12 +658,15 @@ def add_list_command(group: click.Group) -> None:
                 pid_str = "[dim]-[/dim]"
                 url = "[dim]-[/dim]"
 
+            note = "[yellow]legacy[/yellow]" if inst.get("legacy") else ""
+
             table.add_row(
                 inst["name"],
                 status,
                 str(inst["port"]),
                 pid_str,
                 url,
+                note,
             )
 
         console.print(table)
