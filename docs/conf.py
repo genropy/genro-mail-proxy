@@ -144,4 +144,5 @@ linkcheck_anchors_ignore_for_url = [
 linkcheck_ignore = [
     r"http://localhost:\d+",  # Local development URLs
     r"http://127\.0\.0\.1:\d+",  # Local development URLs
+    r"https://files\.example\.com/.*",  # Example URLs in documentation
 ]
