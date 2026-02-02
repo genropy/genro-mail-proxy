@@ -83,12 +83,68 @@ def _annotation_to_click_type(annotation: Any) -> type | click.Choice:
     return str
 
 
-def _create_click_command(method: Callable, run_async: Callable) -> click.Command:
+def _format_list_as_table(data: list[dict], console: Any) -> None:
+    """Format a list of dicts as a Rich table.
+
+    Automatically selects columns based on the data:
+    - id, name, active for tenants
+    - id, tenant_id, host, port for accounts
+    - id, tenant_id, status, subject for messages
+    """
+    from rich.table import Table
+
+    if not data:
+        console.print("[dim]No records found.[/dim]")
+        return
+
+    # Define column priorities for different entity types
+    priority_columns = ["id", "tenant_id", "name", "active", "host", "port", "status", "subject"]
+    all_keys = set()
+    for row in data:
+        all_keys.update(row.keys())
+
+    # Select columns: priority columns first, then others (limited)
+    columns = [c for c in priority_columns if c in all_keys]
+    remaining = [k for k in all_keys if k not in columns]
+    columns.extend(remaining[:3])  # Add up to 3 more columns
+
+    table = Table(show_header=True, header_style="bold")
+    for col in columns:
+        table.add_column(col.replace("_", " ").title())
+
+    for row in data:
+        values = []
+        for col in columns:
+            val = row.get(col)
+            if val is None:
+                values.append("[dim]-[/dim]")
+            elif isinstance(val, bool):
+                values.append("[green]✓[/green]" if val else "[dim]✗[/dim]")
+            elif col == "active":
+                values.append("[green]✓[/green]" if val else "[dim]✗[/dim]")
+            elif isinstance(val, dict):
+                values.append("[dim]{...}[/dim]")
+            elif isinstance(val, list):
+                values.append(f"[dim][{len(val)} items][/dim]")
+            else:
+                str_val = str(val)
+                if len(str_val) > 40:
+                    str_val = str_val[:37] + "..."
+                values.append(str_val)
+        table.add_row(*values)
+
+    console.print(table)
+
+
+def _create_click_command(
+    method: Callable, run_async: Callable, endpoint_name: str = ""
+) -> click.Command:
     """Create a Click command from an async method.
 
     Args:
         method: Async method to wrap.
         run_async: Function to run async code (e.g., asyncio.run).
+        endpoint_name: Name of the endpoint (for formatting delete messages).
 
     Returns:
         Click command ready to be added to a group.
@@ -96,11 +152,21 @@ def _create_click_command(method: Callable, run_async: Callable) -> click.Comman
     Note:
         tenant_id is treated specially: it becomes an optional positional
         argument with fallback to the current context (via resolve_context).
+
+        Output formatting:
+        - delete methods: show success message instead of True/False
+        - list methods: show Rich table (use --json for JSON output)
+        - other methods: show JSON for dicts/lists, plain text otherwise
     """
     from .cli_commands import require_context, resolve_context
 
     sig = inspect.signature(method)
     doc = method.__doc__ or f"{method.__name__} operation"
+    method_name = method.__name__
+
+    # Determine if this is a list command (needs --json flag)
+    is_list_command = method_name in ("list", "list_all")
+    is_delete_command = method_name in ("delete", "remove")
 
     options = []
     arguments = []
@@ -144,10 +210,18 @@ def _create_click_command(method: Callable, run_async: Callable) -> click.Comman
         else:
             arguments.append(click.argument(param_name, type=click_type))
 
+    # Add --json flag for list commands
+    if is_list_command:
+        options.append(
+            click.option("--json", "output_json", is_flag=True, help="Output as JSON")
+        )
+
     def cmd_func(**kwargs: Any) -> None:
         from rich.console import Console
 
         console = Console(stderr=True)
+        output_console = Console()  # For table output to stdout
+        output_json = kwargs.pop("output_json", False)
         py_kwargs = {k.replace("-", "_"): v for k, v in kwargs.items()}
 
         # Resolve tenant_id from context if not provided
@@ -164,7 +238,25 @@ def _create_click_command(method: Callable, run_async: Callable) -> click.Comman
                 console.print(f"[dim]({instance})[/dim]")
 
         result = run_async(method(**py_kwargs))
-        if result is not None:
+
+        # Format output based on method type
+        if is_delete_command:
+            # Show success message instead of True/False
+            if result is True or result is None:
+                # Try to get the ID from kwargs
+                deleted_id = py_kwargs.get("id") or py_kwargs.get("account_id") or py_kwargs.get("message_id") or py_kwargs.get("tenant_id")
+                if deleted_id:
+                    output_console.print(f"[green]✓[/green] {endpoint_name.rstrip('s').title()} '{deleted_id}' deleted")
+                else:
+                    output_console.print(f"[green]✓[/green] Deleted successfully")
+            elif result is False:
+                output_console.print("[red]✗[/red] Delete failed")
+            else:
+                click.echo(result)
+        elif is_list_command and isinstance(result, list) and not output_json:
+            # Show table for list commands (unless --json)
+            _format_list_as_table(result, output_console)
+        elif result is not None:
             if isinstance(result, (dict, list)):
                 click.echo(json.dumps(result, indent=2, default=str))
             else:
@@ -230,7 +322,7 @@ def register_endpoint(
         if not callable(method) or not inspect.iscoroutinefunction(method):
             continue
 
-        cmd = _create_click_command(method, run_async)
+        cmd = _create_click_command(method, run_async, endpoint_name=name)
         cmd.name = method_name.replace("_", "-")
         endpoint_group.add_command(cmd)
 
