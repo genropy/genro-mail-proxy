@@ -329,6 +329,7 @@ class MailProxyBase:
             add_list_command,
             add_restart_command,
             add_run_now_command,
+            add_serve_command,
             add_stats_command,
             add_stop_command,
             add_token_command,
@@ -358,25 +359,10 @@ class MailProxyBase:
         add_run_now_command(cli, get_url, get_token)
 
         # Instance management commands
+        add_serve_command(cli)
         add_list_command(cli)
         add_stop_command(cli)
         add_restart_command(cli)
-
-        # Add serve command
-        @cli.command("serve")
-        @click.option("--host", default="0.0.0.0", help="Bind host")
-        @click.option("--port", "-p", default=self.config.port, help="Bind port")
-        @click.option("--reload", is_flag=True, help="Enable auto-reload")
-        def serve_cmd(host: str, port: int, reload: bool) -> None:
-            """Start the API server."""
-            import uvicorn
-
-            uvicorn.run(
-                "core.mail_proxy.server:app",
-                host=host,
-                port=port,
-                reload=reload,
-            )
 
         return cli
 

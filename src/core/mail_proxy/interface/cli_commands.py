@@ -564,6 +564,98 @@ def _get_instance_config(name: str) -> dict[str, Any] | None:
         "db_path": config.get("server", "db_path", fallback=str(_get_instance_dir(name) / "mail_service.db")),
         "host": config.get("server", "host", fallback="0.0.0.0"),
         "port": config.getint("server", "port", fallback=8000),
+        "api_token": config.get("server", "api_token", fallback=""),
+        "config_file": str(config_file),
+    }
+
+
+def _write_pid_file(name: str, pid: int, port: int, host: str) -> None:
+    """Write PID file for an instance."""
+    from datetime import datetime
+
+    pid_file = _get_pid_file(name)
+    pid_file.write_text(json.dumps({
+        "pid": pid,
+        "port": port,
+        "host": host,
+        "started_at": datetime.now().isoformat(),
+    }, indent=2))
+
+
+_DEFAULT_CONFIG_TEMPLATE = """\
+# genro-mail-proxy configuration
+# Generated automatically - edit as needed
+
+[server]
+# Instance name for identification
+name = {name}
+
+# Database path
+db_path = {db_path}
+
+# Server binding
+host = {host}
+port = {port}
+
+# API token for authentication (auto-generated, change if needed)
+api_token = {api_token}
+
+[scheduler]
+# Start scheduler active (true/false)
+start_active = true
+
+# Dispatch loop interval in seconds
+send_loop_interval = 0.5
+
+# Messages per account per dispatch cycle
+batch_size_per_account = 50
+
+[retry]
+# Maximum retry attempts for temporary failures
+max_retries = 5
+
+# Retry delays in seconds (comma-separated)
+retry_delays = 60, 300, 900, 3600, 7200
+"""
+
+
+def _generate_api_token() -> str:
+    """Generate a random API token."""
+    import secrets
+    return secrets.token_urlsafe(32)
+
+
+def _ensure_instance_config(name: str, port: int, host: str) -> dict[str, Any]:
+    """Ensure instance config exists, creating with defaults if needed.
+
+    Returns the instance configuration dict.
+    """
+    config_dir = _get_instance_dir(name)
+    config_file = config_dir / "config.ini"
+    db_path = str(config_dir / "mail_service.db")
+
+    if not config_file.exists():
+        config_dir.mkdir(parents=True, exist_ok=True)
+
+        api_token = _generate_api_token()
+        config_content = _DEFAULT_CONFIG_TEMPLATE.format(
+            name=name,
+            db_path=db_path,
+            port=port,
+            host=host,
+            api_token=api_token,
+        )
+        config_file.write_text(config_content)
+        console.print(f"[green]Created new instance:[/green] {name}")
+        console.print(f"  Config: {config_file}")
+        console.print(f"  API Token: {api_token}")
+
+    return _get_instance_config(name) or {
+        "name": name,
+        "db_path": db_path,
+        "host": host,
+        "port": port,
+        "api_token": "",
         "config_file": str(config_file),
     }
 
@@ -571,6 +663,139 @@ def _get_instance_config(name: str) -> dict[str, Any] | None:
 # ============================================================================
 # Instance management commands
 # ============================================================================
+
+
+def add_serve_command(group: click.Group) -> None:
+    """Register 'serve' command to start a mail-proxy server instance.
+
+    Args:
+        group: Click group to register command on.
+
+    Example:
+        ::
+
+            mail-proxy serve                    # Start default-mailer
+            mail-proxy serve myserver           # Start/create myserver
+            mail-proxy serve myserver -p 8080   # Start on specific port
+            mail-proxy serve myserver -c        # Start and open REPL
+    """
+    import os
+
+    @group.command("serve")
+    @click.argument("name", default="default-mailer")
+    @click.option("--host", "-h", default=None, help="Host to bind to (default: 0.0.0.0).")
+    @click.option("--port", "-p", type=int, default=None, help="Port to listen on (default: 8000).")
+    @click.option("--reload", is_flag=True, help="Enable auto-reload for development.")
+    @click.option("--connect", "-c", is_flag=True, help="Start in background and open REPL.")
+    @click.option("--foreground", "-f", is_flag=True, help="Run in foreground (default behavior).")
+    def serve_cmd(
+        name: str,
+        host: str | None,
+        port: int | None,
+        reload: bool,
+        connect: bool,
+        foreground: bool,
+    ) -> None:
+        """Start a mail-proxy server instance.
+
+        If the instance doesn't exist, creates it with default config.
+        If already running, shows status and exits.
+
+        NAME is the instance name (default: default-mailer).
+        """
+        import subprocess
+        import time
+
+        import uvicorn
+
+        # Check if already running
+        is_running, pid, running_port = _is_instance_running(name)
+        if is_running:
+            if connect:
+                console.print(f"[dim]Instance '{name}' already running, connecting...[/dim]")
+                # TODO: invoke connect command
+                console.print(f"[yellow]Connect to:[/yellow] http://localhost:{running_port}")
+                return
+            console.print(f"[yellow]Instance '{name}' is already running[/yellow]")
+            console.print(f"  PID:  {pid}")
+            console.print(f"  Port: {running_port}")
+            console.print(f"  URL:  http://localhost:{running_port}")
+            sys.exit(0)
+
+        # Get or create instance config
+        instance_config = _get_instance_config(name)
+
+        if instance_config is None:
+            # New instance - use provided values or defaults
+            effective_host: str = host or "0.0.0.0"
+            effective_port: int = port or 8000
+            instance_config = _ensure_instance_config(name, effective_port, effective_host)
+        else:
+            # Existing instance - use config values, allow override
+            effective_host = host or instance_config["host"]
+            effective_port = port or instance_config["port"]
+
+        db_path: str = instance_config["db_path"]
+        config_file: str = instance_config["config_file"]
+
+        if connect:
+            # Start in background and show connection info
+            console.print(f"[bold cyan]Starting {name} in background...[/bold cyan]")
+
+            cmd = ["mail-proxy", "serve", name, "--host", effective_host, "--port", str(effective_port)]
+            if reload:
+                cmd.append("--reload")
+
+            subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+
+            # Wait for server to be ready
+            for _ in range(50):  # Max 5 seconds
+                time.sleep(0.1)
+                is_running, pid, _ = _is_instance_running(name)
+                if is_running:
+                    break
+
+            if is_running:
+                console.print(f"  PID:  {pid}")
+                console.print(f"  Port: {effective_port}")
+                console.print(f"  URL:  http://localhost:{effective_port}")
+                # TODO: invoke connect command or open REPL
+            else:
+                console.print("[red]Error:[/red] Failed to start server")
+            return
+
+        # Set environment variables for config (used by server.py)
+        os.environ["GMP_CONFIG_FILE"] = config_file
+        os.environ["GMP_INSTANCE_NAME"] = name
+        os.environ["GMP_DB_PATH"] = db_path
+        os.environ["GMP_PORT"] = str(effective_port)
+        os.environ["GMP_HOST"] = effective_host
+
+        console.print(f"\n[bold cyan]Starting {name}[/bold cyan]")
+        console.print(f"  Config:  {config_file}")
+        console.print(f"  DB:      {db_path}")
+        console.print(f"  Listen:  {effective_host}:{effective_port}")
+        console.print()
+
+        # Write PID file before starting uvicorn
+        _write_pid_file(name, os.getpid(), effective_port, effective_host)
+
+        try:
+            uvicorn.run(
+                "core.mail_proxy.server:app",
+                host=effective_host,
+                port=effective_port,
+                reload=reload,
+                log_level="info",
+            )
+        finally:
+            # Clean up PID file on exit
+            _remove_pid_file(name)
 
 
 def add_list_command(group: click.Group) -> None:
@@ -835,6 +1060,7 @@ __all__ = [
     "add_send_command",
     "add_token_command",
     "add_run_now_command",
+    "add_serve_command",
     "add_list_command",
     "add_stop_command",
     "add_restart_command",
