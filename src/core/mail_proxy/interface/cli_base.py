@@ -24,12 +24,13 @@ Example:
 
     Generated commands::
 
-        mail-proxy myinstance accounts list --active-only
-        mail-proxy myinstance accounts add main --host smtp.example.com
-        mail-proxy myinstance messages list --tenant-id acme
+        mail-proxy accounts list                    # uses context tenant
+        mail-proxy accounts list acme               # explicit tenant
+        mail-proxy accounts add main --host smtp.example.com
 
 Note:
-    - Required params become positional arguments
+    - tenant_id is special: optional positional with context fallback
+    - Other required params become positional arguments
     - Optional params become --options
     - Boolean params become --flag/--no-flag toggles
     - Method underscores become dashes (add_batch → add-batch)
@@ -91,12 +92,19 @@ def _create_click_command(method: Callable, run_async: Callable) -> click.Comman
 
     Returns:
         Click command ready to be added to a group.
+
+    Note:
+        tenant_id is treated specially: it becomes an optional positional
+        argument with fallback to the current context (via resolve_context).
     """
+    from .cli_commands import require_context
+
     sig = inspect.signature(method)
     doc = method.__doc__ or f"{method.__name__} operation"
 
     options = []
     arguments = []
+    has_tenant_id = False
 
     for param_name, param in sig.parameters.items():
         if param_name == "self":
@@ -108,7 +116,14 @@ def _create_click_command(method: Callable, run_async: Callable) -> click.Comman
 
         cli_name = param_name.replace("_", "-")
 
-        if is_bool:
+        # Special case: required tenant_id becomes optional positional with context fallback
+        # (if tenant_id already has a default, it remains an option as before)
+        if param_name == "tenant_id" and not has_default:
+            has_tenant_id = True
+            arguments.append(
+                click.argument("tenant_id", type=click_type, required=False, default=None)
+            )
+        elif is_bool:
             options.append(
                 click.option(
                     f"--{cli_name}/--no-{cli_name}",
@@ -131,6 +146,12 @@ def _create_click_command(method: Callable, run_async: Callable) -> click.Comman
 
     def cmd_func(**kwargs: Any) -> None:
         py_kwargs = {k.replace("-", "_"): v for k, v in kwargs.items()}
+
+        # Resolve tenant_id from context if not provided
+        if has_tenant_id and not py_kwargs.get("tenant_id"):
+            _, tenant = require_context(require_tenant=True)
+            py_kwargs["tenant_id"] = tenant
+
         result = run_async(method(**py_kwargs))
         if result is not None:
             if isinstance(result, (dict, list)):
@@ -138,13 +159,13 @@ def _create_click_command(method: Callable, run_async: Callable) -> click.Comman
             else:
                 click.echo(result)
 
-    cmd_func = click.command(help=doc)(cmd_func)
+    cmd: click.Command = click.command(help=doc)(cmd_func)
     for opt in reversed(options):
-        cmd_func = opt(cmd_func)
+        cmd = opt(cmd)
     for arg in reversed(arguments):
-        cmd_func = arg(cmd_func)
+        cmd = arg(cmd)
 
-    return cmd_func
+    return cmd
 
 
 def register_endpoint(

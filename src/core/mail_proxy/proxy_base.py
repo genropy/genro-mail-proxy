@@ -326,6 +326,7 @@ class MailProxyBase:
 
         from .interface import (
             add_connect_command,
+            add_current_command,
             add_list_command,
             add_restart_command,
             add_run_now_command,
@@ -333,6 +334,7 @@ class MailProxyBase:
             add_stats_command,
             add_stop_command,
             add_token_command,
+            add_use_command,
             register_cli_endpoint,
         )
 
@@ -363,6 +365,10 @@ class MailProxyBase:
         add_list_command(cli)
         add_stop_command(cli)
         add_restart_command(cli)
+
+        # Context management commands
+        add_use_command(cli)
+        add_current_command(cli)
 
         return cli
 

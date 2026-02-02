@@ -457,10 +457,202 @@ def add_run_now_command(
 # Instance management helpers
 # ============================================================================
 
+_MAIL_PROXY_DIR = Path.home() / ".mail-proxy"
+_CURRENT_INSTANCE_FILE = _MAIL_PROXY_DIR / ".current"
+
 
 def _get_instance_dir(name: str) -> Path:
     """Get the instance directory path (~/.mail-proxy/<name>/)."""
-    return Path.home() / ".mail-proxy" / name
+    return _MAIL_PROXY_DIR / name
+
+
+def _list_instances() -> list[str]:
+    """List all configured instance names."""
+    if not _MAIL_PROXY_DIR.exists():
+        return []
+    return [
+        item.name
+        for item in _MAIL_PROXY_DIR.iterdir()
+        if item.is_dir() and (
+            (item / "config.ini").exists() or (item / "mail_service.db").exists()
+        )
+    ]
+
+
+def _parse_context(value: str) -> tuple[str | None, str | None]:
+    """Parse instance/tenant context string.
+
+    Formats:
+        "instance" -> (instance, None)
+        "instance/tenant" -> (instance, tenant)
+        "/tenant" -> (None, tenant)
+        "instance/" -> (instance, None) - explicit no tenant
+
+    Args:
+        value: Context string to parse.
+
+    Returns:
+        (instance, tenant) tuple. None means "keep current" or "not specified".
+    """
+    if "/" in value:
+        parts = value.split("/", 1)
+        instance = parts[0] or None
+        tenant = parts[1] or None
+        return instance, tenant
+    return value, None
+
+
+def _get_current_context() -> tuple[str | None, str | None]:
+    """Get current instance and tenant from .current file.
+
+    Returns:
+        (instance, tenant) tuple.
+    """
+    if not _CURRENT_INSTANCE_FILE.exists():
+        return None, None
+    content = _CURRENT_INSTANCE_FILE.read_text().strip()
+    if not content:
+        return None, None
+    return _parse_context(content)
+
+
+def _set_current_context(instance: str | None, tenant: str | None) -> None:
+    """Set current instance and tenant in .current file.
+
+    Args:
+        instance: Instance name (required).
+        tenant: Tenant name (optional).
+    """
+    if not instance:
+        return
+    _MAIL_PROXY_DIR.mkdir(parents=True, exist_ok=True)
+    if tenant:
+        _CURRENT_INSTANCE_FILE.write_text(f"{instance}/{tenant}")
+    else:
+        _CURRENT_INSTANCE_FILE.write_text(instance)
+
+
+def resolve_context(
+    explicit_instance: str | None = None,
+    explicit_tenant: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Resolve active instance and tenant using priority chain.
+
+    Resolution order for instance:
+        1. Explicit argument
+        2. GMP_INSTANCE environment variable
+        3. ~/.mail-proxy/.current file (instance part)
+        4. Auto-select if only one instance exists
+
+    Resolution order for tenant:
+        1. Explicit argument
+        2. GMP_TENANT environment variable
+        3. ~/.mail-proxy/.current file (tenant part)
+
+    Args:
+        explicit_instance: Explicitly specified instance name.
+        explicit_tenant: Explicitly specified tenant name.
+
+    Returns:
+        (instance, tenant) tuple. Either can be None.
+    """
+    import os
+
+    # Resolve instance
+    instance: str | None = None
+
+    if explicit_instance:
+        instance = explicit_instance
+    else:
+        env_instance = os.environ.get("GMP_INSTANCE")
+        if env_instance:
+            instance = env_instance
+        else:
+            current_instance, _ = _get_current_context()
+            if current_instance:
+                instance = current_instance
+            else:
+                instances = _list_instances()
+                if len(instances) == 1:
+                    instance = instances[0]
+
+    # Resolve tenant
+    tenant: str | None = None
+
+    if explicit_tenant:
+        tenant = explicit_tenant
+    else:
+        env_tenant = os.environ.get("GMP_TENANT")
+        if env_tenant:
+            tenant = env_tenant
+        else:
+            _, current_tenant = _get_current_context()
+            if current_tenant:
+                tenant = current_tenant
+
+    return instance, tenant
+
+
+def require_context(
+    explicit_instance: str | None = None,
+    explicit_tenant: str | None = None,
+    require_tenant: bool = False,
+) -> tuple[str, str | None]:
+    """Resolve context or exit with error if ambiguous.
+
+    Args:
+        explicit_instance: Explicitly specified instance name.
+        explicit_tenant: Explicitly specified tenant name.
+        require_tenant: If True, tenant must be resolved.
+
+    Returns:
+        (instance, tenant) tuple.
+
+    Raises:
+        SystemExit: If required context cannot be resolved.
+    """
+    instance, tenant = resolve_context(explicit_instance, explicit_tenant)
+
+    if not instance:
+        instances = _list_instances()
+        if not instances:
+            console.print("[red]Error:[/red] No instances configured.")
+            console.print("Use 'mail-proxy serve <name>' to create one.")
+            sys.exit(1)
+
+        console.print("[red]Error:[/red] Multiple instances found. Specify which one:")
+        console.print()
+        for name in sorted(instances):
+            console.print(f"  • {name}")
+        console.print()
+        console.print("Options:")
+        console.print("  • Use 'mail-proxy use <instance>' to set default")
+        console.print("  • Use 'mail-proxy use <instance>/<tenant>' for full context")
+        console.print("  • Set GMP_INSTANCE environment variable")
+        sys.exit(1)
+
+    if require_tenant and not tenant:
+        console.print("[red]Error:[/red] Tenant required for this command.")
+        console.print()
+        console.print("Options:")
+        console.print(f"  • Use 'mail-proxy use {instance}/<tenant>'")
+        console.print("  • Set GMP_TENANT environment variable")
+        sys.exit(1)
+
+    return instance, tenant
+
+
+# Keep backwards compatibility
+def resolve_instance(explicit: str | None = None) -> str | None:
+    """Resolve the active instance (backwards compatible wrapper)."""
+    instance, _ = resolve_context(explicit_instance=explicit)
+    return instance
+
+
+def require_instance(explicit: str | None = None) -> str:
+    """Resolve instance or exit (backwards compatible wrapper)."""
+    instance, _ = require_context(explicit_instance=explicit)
+    return instance
 
 
 def _get_pid_file(name: str) -> Path:
@@ -959,6 +1151,177 @@ def add_stop_command(group: click.Group) -> None:
                 console.print(f"[yellow]sent {signal_name}, may still be shutting down[/yellow]")
 
 
+def add_use_command(group: click.Group) -> None:
+    """Register 'use' command to select current context (instance/tenant).
+
+    Sets the default instance and optionally tenant for subsequent commands.
+
+    Args:
+        group: Click group to register command on.
+
+    Example:
+        ::
+
+            mail-proxy use production           # instance only
+            mail-proxy use production/acme      # instance + tenant
+            mail-proxy use /beta                # change tenant only
+    """
+
+    @group.command("use")
+    @click.argument("context")
+    def use_cmd(context: str) -> None:
+        """Set the current instance and tenant for subsequent commands.
+
+        CONTEXT can be:
+            instance         - set instance (clear tenant)
+            instance/tenant  - set both instance and tenant
+            /tenant          - change tenant only (keep current instance)
+
+        Example:
+            mail-proxy use production
+            mail-proxy use production/acme
+            mail-proxy use /beta
+        """
+        new_instance, new_tenant = _parse_context(context)
+
+        # If only tenant specified, keep current instance
+        if new_instance is None:
+            current_instance, _ = _get_current_context()
+            if not current_instance:
+                console.print("[red]Error:[/red] No current instance. Use 'mail-proxy use <instance>' first.")
+                sys.exit(1)
+            new_instance = current_instance
+
+        # Validate instance exists
+        instances = _list_instances()
+        if not instances:
+            console.print("[red]Error:[/red] No instances configured.")
+            console.print("Use 'mail-proxy serve <name>' to create one.")
+            sys.exit(1)
+
+        if new_instance not in instances:
+            console.print(f"[red]Error:[/red] Instance '{new_instance}' not found.")
+            console.print()
+            console.print("Available instances:")
+            for inst in sorted(instances):
+                console.print(f"  • {inst}")
+            sys.exit(1)
+
+        _set_current_context(new_instance, new_tenant)
+
+        is_running, _, port = _is_instance_running(new_instance)
+        status = "[green]running[/green]" if is_running else "[dim]stopped[/dim]"
+
+        # Build display string
+        if new_tenant:
+            display = f"{new_instance}/{new_tenant}"
+        else:
+            display = new_instance
+
+        console.print(f"[green]✓[/green] Now using: [bold cyan]{display}[/bold cyan] ({status})")
+        if is_running:
+            console.print(f"  URL: http://localhost:{port}")
+
+        console.print()
+        console.print("[dim]Tip: Add to your shell prompt:[/dim]")
+        console.print(f"  export GMP_INSTANCE={new_instance}")
+        if new_tenant:
+            console.print(f"  export GMP_TENANT={new_tenant}")
+
+
+def add_current_command(group: click.Group) -> None:
+    """Register 'current' command to show current context.
+
+    Args:
+        group: Click group to register command on.
+
+    Example:
+        ::
+
+            mail-proxy current
+            mail-proxy current --export
+    """
+
+    @group.command("current")
+    @click.option("--export", "-e", "do_export", is_flag=True, help="Output as shell export statements.")
+    def current_cmd(do_export: bool) -> None:
+        """Show the current instance and tenant.
+
+        Use --export to get shell export statements for your prompt.
+
+        Example:
+            mail-proxy current
+            eval $(mail-proxy current --export)
+        """
+        import os
+
+        instance, tenant = resolve_context()
+
+        if do_export:
+            if instance:
+                click.echo(f"export GMP_INSTANCE={instance}")
+            else:
+                click.echo("unset GMP_INSTANCE")
+            if tenant:
+                click.echo(f"export GMP_TENANT={tenant}")
+            else:
+                click.echo("unset GMP_TENANT")
+            return
+
+        if not instance:
+            instances = _list_instances()
+            if not instances:
+                console.print("[dim]No instances configured.[/dim]")
+                console.print("Use 'mail-proxy serve <name>' to create one.")
+            else:
+                console.print("[yellow]No instance selected.[/yellow]")
+                console.print()
+                console.print("Available instances:")
+                for name in sorted(instances):
+                    is_running, _, _ = _is_instance_running(name)
+                    status = "[green]●[/green]" if is_running else "[dim]○[/dim]"
+                    console.print(f"  {status} {name}")
+                console.print()
+                console.print("Use 'mail-proxy use <instance>' or 'mail-proxy use <instance>/<tenant>'.")
+            return
+
+        is_running, pid, port = _is_instance_running(instance)
+
+        # Build display
+        if tenant:
+            display = f"{instance}/{tenant}"
+        else:
+            display = instance
+
+        console.print(f"[bold cyan]{display}[/bold cyan]")
+
+        # Show how it was resolved
+        current_instance, current_tenant = _get_current_context()
+        if os.environ.get("GMP_INSTANCE"):
+            inst_source = "GMP_INSTANCE env"
+        elif current_instance == instance:
+            inst_source = ".current file"
+        else:
+            inst_source = "auto-selected"
+
+        if tenant:
+            if os.environ.get("GMP_TENANT"):
+                tenant_source = "GMP_TENANT env"
+            elif current_tenant == tenant:
+                tenant_source = ".current file"
+            else:
+                tenant_source = "unknown"
+            console.print(f"  [dim]Instance: {inst_source}, Tenant: {tenant_source}[/dim]")
+        else:
+            console.print(f"  [dim]Source: {inst_source}[/dim]")
+
+        if is_running:
+            console.print(f"  Status: [green]running[/green] (PID {pid})")
+            console.print(f"  URL: http://localhost:{port}")
+        else:
+            console.print("  Status: [dim]stopped[/dim]")
+
+
 def add_restart_command(group: click.Group) -> None:
     """Register 'restart' command to restart running instances.
 
@@ -1064,4 +1427,10 @@ __all__ = [
     "add_list_command",
     "add_stop_command",
     "add_restart_command",
+    "add_use_command",
+    "add_current_command",
+    "resolve_context",
+    "require_context",
+    "resolve_instance",
+    "require_instance",
 ]

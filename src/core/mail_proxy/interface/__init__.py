@@ -50,6 +50,7 @@ from .api_base import register_endpoint as register_api_endpoint
 from .cli_base import register_endpoint as register_cli_endpoint
 from .cli_commands import (
     add_connect_command,
+    add_current_command,
     add_list_command,
     add_restart_command,
     add_run_now_command,
@@ -58,6 +59,9 @@ from .cli_commands import (
     add_stats_command,
     add_stop_command,
     add_token_command,
+    add_use_command,
+    require_context,
+    resolve_context,
 )
 from .endpoint_base import BaseEndpoint, EndpointDispatcher
 from .forms import (
@@ -76,6 +80,7 @@ __all__ = [
     "register_api_endpoint",
     "register_cli_endpoint",
     "add_connect_command",
+    "add_current_command",
     "add_list_command",
     "add_restart_command",
     "add_run_now_command",
@@ -84,6 +89,9 @@ __all__ = [
     "add_stats_command",
     "add_stop_command",
     "add_token_command",
+    "add_use_command",
+    "require_context",
+    "resolve_context",
     "DynamicForm",
     "create_form",
     "set_proxy",
