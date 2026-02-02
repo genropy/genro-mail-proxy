@@ -326,8 +326,11 @@ class MailProxyBase:
 
         from .interface import (
             add_connect_command,
+            add_list_command,
+            add_restart_command,
             add_run_now_command,
             add_stats_command,
+            add_stop_command,
             add_token_command,
             register_cli_endpoint,
         )
@@ -353,6 +356,11 @@ class MailProxyBase:
         add_stats_command(cli, self.db)
         add_token_command(cli, self.db)
         add_run_now_command(cli, get_url, get_token)
+
+        # Instance management commands
+        add_list_command(cli)
+        add_stop_command(cli)
+        add_restart_command(cli)
 
         # Add serve command
         @cli.command("serve")

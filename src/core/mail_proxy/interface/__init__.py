@@ -50,9 +50,12 @@ from .api_base import register_endpoint as register_api_endpoint
 from .cli_base import register_endpoint as register_cli_endpoint
 from .cli_commands import (
     add_connect_command,
+    add_list_command,
+    add_restart_command,
     add_run_now_command,
     add_send_command,
     add_stats_command,
+    add_stop_command,
     add_token_command,
 )
 from .endpoint_base import BaseEndpoint, EndpointDispatcher
@@ -72,9 +75,12 @@ __all__ = [
     "register_api_endpoint",
     "register_cli_endpoint",
     "add_connect_command",
+    "add_list_command",
+    "add_restart_command",
     "add_run_now_command",
     "add_send_command",
     "add_stats_command",
+    "add_stop_command",
     "add_token_command",
     "DynamicForm",
     "create_form",

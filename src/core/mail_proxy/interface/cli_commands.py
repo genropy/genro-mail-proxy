@@ -11,6 +11,14 @@ Components:
     add_send_command: Queue email from .eml file.
     add_token_command: API token management (show/regenerate).
     add_run_now_command: Trigger immediate dispatch cycle via HTTP.
+    add_list_command: List all configured instances with status.
+    add_stop_command: Stop running instances.
+    add_restart_command: Restart running instances.
+
+Instance Management:
+    Instances are stored in ~/.mail-proxy/<name>/ with config.ini files.
+    The list/stop/restart commands manage these instances by tracking
+    PID files for process management.
 
 Example:
     Add special commands to CLI group::
@@ -19,6 +27,8 @@ Example:
             add_connect_command,
             add_stats_command,
             add_send_command,
+            add_list_command,
+            add_stop_command,
         )
 
         @click.group()
@@ -28,12 +38,16 @@ Example:
         add_connect_command(cli, get_url, get_token, "myinstance")
         add_stats_command(cli, db)
         add_send_command(cli, db, "tenant1")
+        add_list_command(cli)
+        add_stop_command(cli)
 
     Run commands::
 
         mail-proxy myinstance connect
         mail-proxy myinstance stats --json
         mail-proxy myinstance tenant1 send email.eml
+        mail-proxy list
+        mail-proxy stop myserver
 
 Note:
     These commands are registered separately from endpoint-derived
@@ -439,10 +453,373 @@ def add_run_now_command(
             sys.exit(1)
 
 
+# ============================================================================
+# Instance management helpers
+# ============================================================================
+
+
+def _get_instance_dir(name: str) -> Path:
+    """Get the instance directory path (~/.mail-proxy/<name>/)."""
+    return Path.home() / ".mail-proxy" / name
+
+
+def _get_pid_file(name: str) -> Path:
+    """Get the PID file path for an instance."""
+    return _get_instance_dir(name) / "server.pid"
+
+
+def _is_instance_running(name: str) -> tuple[bool, int | None, int | None]:
+    """Check if an instance is running.
+
+    Returns:
+        (is_running, pid, port) tuple
+    """
+    import os
+
+    pid_file = _get_pid_file(name)
+    if not pid_file.exists():
+        return False, None, None
+
+    try:
+        data = json.loads(pid_file.read_text())
+        pid = data.get("pid")
+        port = data.get("port")
+
+        if pid is None:
+            return False, None, port
+
+        # Check if process is alive (signal 0 doesn't kill, just checks)
+        os.kill(pid, 0)
+        return True, pid, port
+    except (json.JSONDecodeError, ProcessLookupError, PermissionError, OSError):
+        return False, None, None
+
+
+def _remove_pid_file(name: str) -> None:
+    """Remove PID file for an instance."""
+    pid_file = _get_pid_file(name)
+    if pid_file.exists():
+        pid_file.unlink()
+
+
+def _stop_instance(name: str, signal_type: int = 15, timeout: float = 5.0, fallback_kill: bool = True) -> bool:
+    """Stop a running instance by sending a signal.
+
+    Args:
+        name: Instance name.
+        signal_type: Signal to send (15=SIGTERM, 9=SIGKILL).
+        timeout: Seconds to wait for process to terminate.
+        fallback_kill: If True, send SIGKILL if SIGTERM doesn't work.
+
+    Returns:
+        True if successfully stopped, False otherwise.
+    """
+    import os
+    import signal as sig
+    import time
+
+    is_running, pid, _ = _is_instance_running(name)
+    if not is_running or pid is None:
+        return False
+
+    try:
+        os.kill(pid, signal_type)
+        wait_iterations = int(timeout / 0.1)
+        for _ in range(wait_iterations):
+            time.sleep(0.1)
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                _remove_pid_file(name)
+                return True
+
+        if fallback_kill and signal_type != sig.SIGKILL:
+            os.kill(pid, sig.SIGKILL)
+            time.sleep(0.5)
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                _remove_pid_file(name)
+                return True
+
+        return False
+    except (ProcessLookupError, PermissionError, OSError):
+        _remove_pid_file(name)
+        return False
+
+
+def _get_instance_config(name: str) -> dict[str, Any] | None:
+    """Read instance configuration from config.ini."""
+    import configparser
+
+    config_file = _get_instance_dir(name) / "config.ini"
+    if not config_file.exists():
+        return None
+
+    config = configparser.ConfigParser()
+    config.read(config_file)
+
+    return {
+        "name": config.get("server", "name", fallback=name),
+        "db_path": config.get("server", "db_path", fallback=str(_get_instance_dir(name) / "mail_service.db")),
+        "host": config.get("server", "host", fallback="0.0.0.0"),
+        "port": config.getint("server", "port", fallback=8000),
+        "config_file": str(config_file),
+    }
+
+
+# ============================================================================
+# Instance management commands
+# ============================================================================
+
+
+def add_list_command(group: click.Group) -> None:
+    """Register 'list' command to show all configured instances.
+
+    Args:
+        group: Click group to register command on.
+
+    Example:
+        ::
+
+            mail-proxy list
+    """
+    from rich.table import Table
+
+    @group.command("list")
+    def list_cmd() -> None:
+        """List mail-proxy instances with their status.
+
+        Shows all instances in ~/.mail-proxy/ with running status.
+        """
+        import configparser
+
+        mail_proxy_dir = Path.home() / ".mail-proxy"
+
+        if not mail_proxy_dir.exists():
+            console.print("[dim]No instances configured.[/dim]")
+            console.print("Use 'mail-proxy serve <name>' to create one.")
+            return
+
+        instances = []
+        for item in mail_proxy_dir.iterdir():
+            if item.is_dir():
+                config_file = item / "config.ini"
+                if config_file.exists():
+                    config = configparser.ConfigParser()
+                    config.read(config_file)
+
+                    instance_name = item.name
+                    port = config.getint("server", "port", fallback=8000)
+                    host = config.get("server", "host", fallback="0.0.0.0")
+
+                    is_running, pid, running_port = _is_instance_running(instance_name)
+
+                    instances.append({
+                        "name": instance_name,
+                        "port": running_port or port,
+                        "host": host,
+                        "running": is_running,
+                        "pid": pid,
+                    })
+
+        if not instances:
+            console.print("[dim]No instances configured.[/dim]")
+            console.print("Use 'mail-proxy serve <name>' to create one.")
+            return
+
+        table = Table(title="Mail Proxy Instances")
+        table.add_column("Name", style="cyan")
+        table.add_column("Status")
+        table.add_column("Port", justify="right")
+        table.add_column("PID", justify="right")
+        table.add_column("URL")
+
+        for inst in sorted(instances, key=lambda x: x["name"]):
+            if inst["running"]:
+                status = "[green]running[/green]"
+                pid_str = str(inst["pid"])
+                url = f"http://localhost:{inst['port']}"
+            else:
+                status = "[dim]stopped[/dim]"
+                pid_str = "[dim]-[/dim]"
+                url = "[dim]-[/dim]"
+
+            table.add_row(
+                inst["name"],
+                status,
+                str(inst["port"]),
+                pid_str,
+                url,
+            )
+
+        console.print(table)
+
+
+def add_stop_command(group: click.Group) -> None:
+    """Register 'stop' command to stop running instances.
+
+    Args:
+        group: Click group to register command on.
+
+    Example:
+        ::
+
+            mail-proxy stop              # Stop all running instances
+            mail-proxy stop myserver     # Stop specific instance
+            mail-proxy stop myserver -f  # Force kill
+    """
+    import signal as sig
+
+    @group.command("stop")
+    @click.argument("name", default="*")
+    @click.option("--force", "-f", is_flag=True, help="Force kill (SIGKILL) instead of graceful shutdown.")
+    def stop_cmd(name: str, force: bool) -> None:
+        """Stop running mail-proxy instance(s).
+
+        NAME can be an instance name or '*' to stop all.
+        """
+        signal_type = sig.SIGKILL if force else sig.SIGTERM
+        signal_name = "SIGKILL" if force else "SIGTERM"
+
+        if name == "*":
+            mail_proxy_dir = Path.home() / ".mail-proxy"
+            if not mail_proxy_dir.exists():
+                console.print("[dim]No instances configured.[/dim]")
+                return
+
+            stopped = []
+            for item in mail_proxy_dir.iterdir():
+                if item.is_dir() and (item / "config.ini").exists():
+                    instance_name = item.name
+                    is_running, pid, _ = _is_instance_running(instance_name)
+                    if is_running:
+                        console.print(f"Stopping {instance_name} (PID {pid})... ", end="")
+                        if _stop_instance(instance_name, signal_type):
+                            console.print("[green]stopped[/green]")
+                            stopped.append(instance_name)
+                        else:
+                            console.print(f"[yellow]sent {signal_name}[/yellow]")
+
+            if not stopped:
+                console.print("[dim]No running instances found.[/dim]")
+            else:
+                console.print(f"\n[green]Stopped {len(stopped)} instance(s)[/green]")
+        else:
+            is_running, pid, _ = _is_instance_running(name)
+            if not is_running:
+                console.print(f"[dim]Instance '{name}' is not running.[/dim]")
+                return
+
+            console.print(f"Stopping {name} (PID {pid})... ", end="")
+            if _stop_instance(name, signal_type):
+                console.print("[green]stopped[/green]")
+            else:
+                console.print(f"[yellow]sent {signal_name}, may still be shutting down[/yellow]")
+
+
+def add_restart_command(group: click.Group) -> None:
+    """Register 'restart' command to restart running instances.
+
+    Args:
+        group: Click group to register command on.
+
+    Example:
+        ::
+
+            mail-proxy restart              # Restart all running instances
+            mail-proxy restart myserver     # Restart specific instance
+    """
+    import signal as sig
+    import subprocess
+    import time
+
+    @group.command("restart")
+    @click.argument("name", default="*")
+    @click.option("--force", "-f", is_flag=True, help="Force kill before restart.")
+    @click.option("--reload", is_flag=True, help="Enable auto-reload for development.")
+    def restart_cmd(name: str, force: bool, reload: bool) -> None:
+        """Restart mail-proxy instance(s).
+
+        NAME can be an instance name or '*' to restart all.
+        """
+        signal_type = sig.SIGKILL if force else sig.SIGTERM
+
+        instances_to_restart: list[tuple[str, dict[str, Any]]] = []
+
+        if name == "*":
+            mail_proxy_dir = Path.home() / ".mail-proxy"
+            if not mail_proxy_dir.exists():
+                console.print("[dim]No instances configured.[/dim]")
+                return
+
+            for item in mail_proxy_dir.iterdir():
+                if item.is_dir() and (item / "config.ini").exists():
+                    instance_name = item.name
+                    is_running, _, _ = _is_instance_running(instance_name)
+                    if is_running:
+                        config = _get_instance_config(instance_name)
+                        if config:
+                            instances_to_restart.append((instance_name, config))
+
+            if not instances_to_restart:
+                console.print("[dim]No running instances found.[/dim]")
+                return
+        else:
+            is_running, _, _ = _is_instance_running(name)
+            if not is_running:
+                console.print(f"[dim]Instance '{name}' is not running.[/dim]")
+                console.print(f"[dim]Use 'mail-proxy serve {name}' to start it.[/dim]")
+                return
+            config = _get_instance_config(name)
+            if config:
+                instances_to_restart.append((name, config))
+
+        # Stop all instances first
+        for instance_name, _ in instances_to_restart:
+            is_running, pid, _ = _is_instance_running(instance_name)
+            if is_running:
+                console.print(f"Stopping {instance_name} (PID {pid})... ", end="")
+                if _stop_instance(instance_name, signal_type, timeout=3.0):
+                    console.print("[green]stopped[/green]")
+                else:
+                    if not force:
+                        console.print("[yellow]forcing...[/yellow] ", end="")
+                        _stop_instance(instance_name, sig.SIGKILL, timeout=1.0)
+                    console.print("[green]stopped[/green]")
+
+        # Brief pause to ensure ports are released
+        time.sleep(0.5)
+
+        # Restart instances in background
+        for instance_name, _config in instances_to_restart:
+            console.print(f"Starting {instance_name}... ", end="")
+            cmd = ["mail-proxy", "serve", instance_name]
+            if reload:
+                cmd.append("--reload")
+            subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            time.sleep(1.0)
+            is_running, pid, port = _is_instance_running(instance_name)
+            if is_running:
+                console.print(f"[green]started[/green] (PID {pid}, port {port})")
+            else:
+                console.print("[yellow]starting in background...[/yellow]")
+
+        console.print(f"\n[green]Restarted {len(instances_to_restart)} instance(s)[/green]")
+
+
 __all__ = [
     "add_connect_command",
     "add_stats_command",
     "add_send_command",
     "add_token_command",
     "add_run_now_command",
+    "add_list_command",
+    "add_stop_command",
+    "add_restart_command",
 ]
