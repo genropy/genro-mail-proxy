@@ -252,14 +252,14 @@ class MessageEndpoint(BaseEndpoint):
 
     async def list(
         self,
-        tenant_id: str | None = None,
+        tenant_id: str,
         active_only: bool = False,
         include_history: bool = False,
     ) -> list[dict]:
-        """List messages with optional filters.
+        """List messages for a tenant.
 
         Args:
-            tenant_id: Filter by tenant.
+            tenant_id: Tenant to list messages for.
             active_only: Only return pending messages.
             include_history: Include event history for each message.
 
