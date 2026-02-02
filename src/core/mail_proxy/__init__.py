@@ -57,8 +57,26 @@ except ImportError:
 
 
 def main() -> None:
-    """CLI entry point. Creates a MailProxy and runs the CLI."""
-    from .proxy import MailProxy
+    """CLI entry point. Creates a MailProxy and runs the CLI.
 
-    mail_proxy = MailProxy()
+    Resolves the current instance from context (via `mail-proxy use`)
+    and configures the MailProxy with the correct database path.
+    """
+    from .interface.cli_commands import _get_instance_config, resolve_context
+    from .proxy import MailProxy
+    from .proxy_config import ProxyConfig
+
+    instance, _ = resolve_context()
+    config = ProxyConfig()
+
+    if instance:
+        instance_config = _get_instance_config(instance)
+        if instance_config:
+            config = ProxyConfig(
+                db_path=instance_config["db_path"],
+                api_token=instance_config.get("api_token") or None,
+                instance_name=instance,
+            )
+
+    mail_proxy = MailProxy(config=config)
     mail_proxy.cli()()
