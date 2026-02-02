@@ -251,7 +251,7 @@ class BounceParser:
                 bounce_type = "hard" if bounce_code.startswith("5") else "soft"
 
             # Extract first few lines as reason (limit length)
-            lines = [l.strip() for l in body.split("\n") if l.strip()][:5]
+            lines = [line.strip() for line in body.split("\n") if line.strip()][:5]
             bounce_reason = " ".join(lines)[:500]
 
             # Try to find recipient email

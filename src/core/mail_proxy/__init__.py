@@ -40,7 +40,9 @@ Note:
 
 # Import submodules to ensure they are accessible via core.mail_proxy.module
 # This is required for patch() in tests to work correctly
-from . import proxy, proxy_base, proxy_config
+from . import proxy as proxy  # noqa: PLC0414
+from . import proxy_base as proxy_base  # noqa: PLC0414
+from . import proxy_config as proxy_config  # noqa: PLC0414
 
 # Enterprise Edition detection
 # When EE modules are installed, MailProxy includes enterprise features
@@ -58,5 +60,5 @@ def main() -> None:
     """CLI entry point. Creates a MailProxy and runs the CLI."""
     from .proxy import MailProxy
 
-    proxy = MailProxy()
-    proxy.cli()()
+    mail_proxy = MailProxy()
+    mail_proxy.cli()()

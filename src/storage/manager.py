@@ -67,8 +67,8 @@ class StorageManager:
                 import yaml
 
                 return yaml.safe_load(content)
-            except ImportError:
-                raise ImportError("PyYAML required for YAML config: pip install pyyaml")
+            except ImportError as err:
+                raise ImportError("PyYAML required for YAML config: pip install pyyaml") from err
 
         return json.loads(content)
 

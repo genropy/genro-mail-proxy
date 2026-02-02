@@ -140,6 +140,10 @@ select = [
 ignore = [
     "E501",   # line too long
     "B008",   # no function calls in arg defaults
+    "SIM102", # nested if - sometimes more readable
+    "SIM105", # contextlib.suppress - try/except/pass is explicit
+    "SIM108", # ternary - often less readable
+    "SIM117", # nested with - can make lines too long
 ]
 
 [tool.ruff.lint.isort]

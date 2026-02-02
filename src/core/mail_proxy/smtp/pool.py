@@ -263,8 +263,8 @@ class SMTPPool:
 
                 try:
                     await asyncio.wait_for(condition.wait(), timeout=remaining)
-                except asyncio.TimeoutError:
-                    raise asyncio.TimeoutError("Timeout waiting for SMTP connection")
+                except asyncio.TimeoutError as err:
+                    raise asyncio.TimeoutError("Timeout waiting for SMTP connection") from err
 
     async def release(self, smtp: aiosmtplib.SMTP) -> None:
         """Release a connection back to the pool.
