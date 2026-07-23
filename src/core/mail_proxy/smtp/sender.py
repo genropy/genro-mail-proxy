@@ -30,6 +30,8 @@ from datetime import datetime, timezone
 from email.message import EmailMessage
 from typing import TYPE_CHECKING, Any
 
+import aiohttp
+
 from ..entities.tenant import LargeFileAction, get_tenant_attachment_url
 from .attachments import AttachmentManager
 from .pool import SMTPPool
@@ -78,6 +80,40 @@ class AttachmentTooLargeError(ValueError):
         super().__init__(
             f"Attachment '{filename}' ({size_mb:.1f} MB) exceeds limit ({max_size_mb} MB)"
         )
+
+
+# Statuses from the attachment endpoint that make a fetch failure permanent:
+# the file does not exist (404/410) or the request is structurally invalid (400).
+PERMANENT_FETCH_STATUSES = frozenset({400, 404, 410})
+
+
+class AttachmentFetchError(ValueError):
+    """Raised when an attachment could not be fetched.
+
+    Attributes:
+        filename: Name of the attachment that failed.
+        transient: True when the failure is likely temporary (endpoint in
+            maintenance, storage outage, timeout) and the message should be
+            retried instead of being marked as permanently failed.
+    """
+
+    def __init__(self, filename: str, reason: Exception | str, transient: bool):
+        self.filename = filename
+        self.transient = transient
+        super().__init__(f"Attachment fetch failed for {filename}: {reason}")
+
+
+def _is_transient_fetch_error(exc: Exception) -> bool:
+    """Classify an attachment fetch failure as transient or permanent.
+
+    A 400/404/410 response from the attachment endpoint is permanent:
+    retrying cannot make the file appear. Anything else (5xx while the
+    client server is in maintenance, timeouts, connection errors) is
+    treated as transient; retries are bounded by the retry strategy.
+    """
+    if isinstance(exc, aiohttp.ClientResponseError):
+        return exc.status not in PERMANENT_FETCH_STATUSES
+    return True
 
 
 class SmtpSender:
@@ -435,6 +471,11 @@ class SmtpSender:
                 }
             )
             return
+        except AttachmentFetchError as exc:
+            event = await self._handle_attachment_failure(exc, entry, pk, msg_id, now_ts)
+            if event:
+                await self._publish_result(event)
+            return
         except ValueError as exc:
             reason = str(exc)
             if pk:
@@ -456,6 +497,88 @@ class SmtpSender:
         event = await self._send_with_limits(email_msg, envelope_from, pk, msg_id, entry)
         if event:
             await self._publish_result(event)
+
+    async def _handle_attachment_failure(
+        self,
+        exc: AttachmentFetchError,
+        entry: dict[str, Any],
+        pk: str | None,
+        msg_id: str | None,
+        now_ts: int,
+    ) -> dict[str, Any]:
+        """Handle an attachment fetch failure, deferring transient ones.
+
+        Transient failures (attachment endpoint in maintenance, storage
+        outage, timeouts) reuse the retry strategy: the message is deferred
+        with incremental backoff up to max_retries, exactly like temporary
+        SMTP errors. Permanent failures (404 from the endpoint, no data)
+        are marked as errors immediately.
+
+        Args:
+            exc: The attachment fetch failure.
+            entry: Message entry dict with id, message payload, and metadata.
+            pk: Internal primary key for database updates (UUID string).
+            msg_id: Message ID for tracking and event recording.
+            now_ts: Current UTC timestamp for event recording.
+
+        Returns:
+            Event dict describing the outcome (deferred/error).
+        """
+        message = entry.get("message") or {}
+        reason = str(exc)
+        retry_count = message.get("retry_count", 0)
+        max_retries = self._retry_strategy.max_retries
+
+        if exc.transient and retry_count < max_retries:
+            delay = self._retry_strategy.calculate_delay(retry_count)
+            deferred_until = now_ts + delay
+            if pk:
+                updated_payload = dict(message)
+                updated_payload["retry_count"] = retry_count + 1
+                await self.db.table("messages").update_payload(pk, updated_payload)
+                await self.db.table("message_events").add_event(
+                    pk,
+                    "deferred",
+                    now_ts,
+                    description=reason,
+                    metadata={"deferred_ts": deferred_until, "retry_count": retry_count + 1},
+                )
+            self.metrics.inc_deferred(
+                tenant_id=entry.get("tenant_id"),
+                account_id=entry.get("account_id") or message.get("account_id"),
+            )
+            self.logger.warning(
+                "Transient attachment failure for message %s (attempt %d/%d): %s - retrying in %ds",
+                msg_id,
+                retry_count + 1,
+                max_retries,
+                reason,
+                delay,
+            )
+            return {
+                "id": msg_id,
+                "status": "deferred",
+                "deferred_until": deferred_until,
+                "error": reason,
+                "retry_count": retry_count + 1,
+                "timestamp": self._utc_now_iso(),
+                "account": entry.get("account_id") or message.get("account_id"),
+            }
+
+        if exc.transient:
+            reason = f"Max retries ({max_retries}) exceeded: {reason}"
+        if pk:
+            await self.db.table("message_events").add_event(
+                pk, "error", now_ts, description=reason
+            )
+        return {
+            "id": msg_id,
+            "status": "error",
+            "error": reason,
+            "retry_count": retry_count,
+            "timestamp": self._utc_now_iso(),
+            "account": entry.get("account_id") or message.get("account_id"),
+        }
 
     async def _send_with_limits(
         self,
@@ -568,9 +691,14 @@ class SmtpSender:
             # Release the rate limiter slot since send failed
             await self.rate_limiter.release_slot(resolved_account_id)
 
-            # Classify the error and get retry count
+            # Classify the error and get retry count.
+            # retry_count lives inside the message payload (the JSON stored in
+            # messages.payload): reading/writing it on the whole entry would
+            # persist the entry row itself as the new payload, corrupting the
+            # message on the next fetch.
             is_temporary, smtp_code = self._retry_strategy.classify_error(exc)
-            retry_count = payload.get("retry_count", 0)
+            message_payload = payload.get("message") or payload
+            retry_count = message_payload.get("retry_count", 0)
 
             # Determine if we should retry
             should_retry = self._retry_strategy.should_retry(retry_count, exc)
@@ -580,7 +708,7 @@ class SmtpSender:
                 now_ts = self._utc_now_epoch()
                 deferred_until = now_ts + delay
 
-                updated_payload = dict(payload)
+                updated_payload = dict(message_payload)
                 updated_payload["retry_count"] = retry_count + 1
 
                 error_info = f"{exc} (SMTP {smtp_code})" if smtp_code else str(exc)
@@ -799,11 +927,17 @@ class SmtpSender:
         for att, result in zip(attachments, results, strict=True):
             filename = att.get("filename", "file.bin")
             if isinstance(result, Exception):
-                self.logger.error("Failed to fetch attachment %s: %s", filename, result)
-                raise ValueError(f"Attachment fetch failed for {filename}: {result}")
+                transient = _is_transient_fetch_error(result)
+                self.logger.error(
+                    "Failed to fetch attachment %s (%s): %s",
+                    filename,
+                    "transient" if transient else "permanent",
+                    result,
+                )
+                raise AttachmentFetchError(filename, result, transient=transient)
             if result is None:
                 self.logger.error("Attachment without data (filename=%s)", filename)
-                raise ValueError(f"Attachment {filename} returned no data")
+                raise AttachmentFetchError(filename, "returned no data", transient=False)
             content, resolved_filename = result
             size_mb = len(content) / (1024 * 1024)
 
@@ -1080,4 +1214,9 @@ class SmtpSender:
         return preview or "-"
 
 
-__all__ = ["SmtpSender", "AccountConfigurationError", "AttachmentTooLargeError"]
+__all__ = [
+    "SmtpSender",
+    "AccountConfigurationError",
+    "AttachmentFetchError",
+    "AttachmentTooLargeError",
+]

@@ -36,7 +36,12 @@ from .cache import TieredCache
 from .pool import SMTPPool
 from .rate_limiter import RateLimiter
 from .retry import DEFAULT_MAX_RETRIES, DEFAULT_RETRY_DELAYS, RetryStrategy
-from .sender import AccountConfigurationError, AttachmentTooLargeError, SmtpSender
+from .sender import (
+    AccountConfigurationError,
+    AttachmentFetchError,
+    AttachmentTooLargeError,
+    SmtpSender,
+)
 
 __all__ = [
     "SmtpSender",
@@ -46,6 +51,7 @@ __all__ = [
     "DEFAULT_MAX_RETRIES",
     "DEFAULT_RETRY_DELAYS",
     "AccountConfigurationError",
+    "AttachmentFetchError",
     "AttachmentTooLargeError",
     "AttachmentManager",
     "TieredCache",
