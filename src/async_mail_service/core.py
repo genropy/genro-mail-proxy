@@ -84,6 +84,40 @@ class AccountConfigurationError(RuntimeError):
         self.code = "missing_account_configuration"
 
 
+# Statuses from the attachment endpoint that make a fetch failure permanent:
+# the file does not exist (404/410) or the request is structurally invalid (400).
+PERMANENT_FETCH_STATUSES = frozenset({400, 404, 410})
+
+
+class AttachmentFetchError(ValueError):
+    """Raised when an attachment could not be fetched.
+
+    Attributes:
+        filename: Name of the attachment that failed.
+        transient: True when the failure is likely temporary (endpoint in
+            maintenance, storage outage, timeout) and the message should be
+            retried instead of being marked as permanently failed.
+    """
+
+    def __init__(self, filename: str, reason, transient: bool):
+        self.filename = filename
+        self.transient = transient
+        super().__init__(f"Attachment fetch failed for {filename}: {reason}")
+
+
+def _is_transient_fetch_error(exc: Exception) -> bool:
+    """Classify an attachment fetch failure as transient or permanent.
+
+    A 400/404/410 response from the attachment endpoint is permanent:
+    retrying cannot make the file appear. Anything else (5xx while the
+    client server is in maintenance, timeouts, connection errors) is
+    treated as transient; retries are bounded by max_retries.
+    """
+    if isinstance(exc, aiohttp.ClientResponseError):
+        return exc.status not in PERMANENT_FETCH_STATUSES
+    return True
+
+
 def _classify_smtp_error(exc: Exception) -> tuple[bool, int | None]:
     """
     Classify an SMTP error as temporary or permanent.
@@ -882,6 +916,11 @@ class AsyncMailCore:
                 }
             )
             return
+        except AttachmentFetchError as exc:
+            event = await self._handle_attachment_failure(exc, message, msg_id, now_ts)
+            if event:
+                await self._publish_result(event)
+            return
         except ValueError as exc:
             # Attachment fetch failure or other validation error
             reason = str(exc)
@@ -900,6 +939,75 @@ class AsyncMailCore:
         event = await self._send_with_limits(email_msg, envelope_from, msg_id, message)
         if event:
             await self._publish_result(event)
+
+    async def _handle_attachment_failure(
+        self,
+        exc: AttachmentFetchError,
+        message: dict[str, Any],
+        msg_id: str | None,
+        now_ts: int,
+    ) -> dict[str, Any]:
+        """Handle an attachment fetch failure, deferring transient ones.
+
+        Transient failures (attachment endpoint in maintenance, storage
+        outage, timeouts) reuse the retry machinery: the message is deferred
+        with incremental backoff up to max_retries, exactly like temporary
+        SMTP errors. Permanent failures (404 from the endpoint, no data)
+        are marked as errors immediately.
+
+        Args:
+            exc: The attachment fetch failure.
+            message: Original message payload with retry state.
+            msg_id: Message ID for tracking and status updates.
+            now_ts: Current UTC timestamp for error timestamp recording.
+
+        Returns:
+            Event dict describing the outcome (deferred/error).
+        """
+        reason = str(exc)
+        retry_count = message.get("retry_count", 0)
+        account_id = message.get("account_id") or "default"
+
+        if exc.transient and retry_count < self._max_retries:
+            delay = _calculate_retry_delay(retry_count, self._retry_delays)
+            deferred_until = self._utc_now_epoch() + delay
+
+            updated_payload = dict(message)
+            updated_payload["retry_count"] = retry_count + 1
+            await self.persistence.update_message_payload(msg_id or "", updated_payload)
+            await self.persistence.set_deferred(msg_id or "", deferred_until)
+            self.metrics.inc_deferred(account_id)
+
+            self.logger.warning(
+                "Transient attachment failure for message %s (attempt %d/%d): %s - retrying in %ds",
+                msg_id,
+                retry_count + 1,
+                self._max_retries,
+                reason,
+                delay,
+            )
+            return {
+                "id": msg_id,
+                "status": "deferred",
+                "deferred_until": deferred_until,
+                "error": reason,
+                "retry_count": retry_count + 1,
+                "timestamp": self._utc_now_iso(),
+                "account": account_id,
+            }
+
+        if exc.transient:
+            reason = f"Max retries ({self._max_retries}) exceeded: {reason}"
+        await self.persistence.mark_error(msg_id or "", now_ts, reason)
+        self.metrics.inc_error(account_id)
+        return {
+            "id": msg_id,
+            "status": "error",
+            "error": reason,
+            "retry_count": retry_count,
+            "timestamp": self._utc_now_iso(),
+            "account": account_id,
+        }
 
     async def _send_with_limits(
         self,
@@ -1477,11 +1585,17 @@ class AsyncMailCore:
             for att, result in zip(attachments, results, strict=True):
                 filename = att.get("filename", "file.bin")
                 if isinstance(result, Exception):
-                    self.logger.error("Failed to fetch attachment %s: %s - message will not be sent", filename, result)
-                    raise ValueError(f"Attachment fetch failed for {filename}: {result}")
+                    transient = _is_transient_fetch_error(result)
+                    self.logger.error(
+                        "Failed to fetch attachment %s (%s): %s",
+                        filename,
+                        "transient" if transient else "permanent",
+                        result,
+                    )
+                    raise AttachmentFetchError(filename, result, transient=transient)
                 if result is None:
                     self.logger.error("Attachment without data (filename=%s) - message will not be sent", filename)
-                    raise ValueError(f"Attachment {filename} returned no data")
+                    raise AttachmentFetchError(filename, "returned no data", transient=False)
                 content, resolved_filename = result
                 # Use explicit mime_type if provided, otherwise guess from filename
                 mime_type_override = att.get("mime_type")
