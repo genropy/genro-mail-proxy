@@ -11,27 +11,18 @@ A microservice that decouples email delivery from your application.
 
 ## What it does
 
-genro-mail-proxy sits between your application and SMTP servers. Your application sends messages to the proxy via REST API; the proxy handles delivery.
+genro-mail-proxy sits between your application and SMTP servers. Your application sends messages to the proxy via REST API; the proxy handles delivery with:
 
-### Community Edition (Apache 2.0)
-
-- **Persistent queue**: Messages stored in SQLite or PostgreSQL, survive restarts
-- **Automatic retry**: Failed deliveries retried with exponential backoff
+- **Persistent queue**: Messages are stored in SQLite or PostgreSQL and survive restarts
+- **Automatic retry**: Failed deliveries are retried with exponential backoff
 - **Rate limiting**: Per-account limits (minute/hour/day) shared across instances
 - **Priority queuing**: Four levels (immediate, high, medium, low) with FIFO within each
-- **Delivery reports**: Results posted back to your application via HTTP callback
-- **Connection pooling**: SMTP connections pooled with acquire/release semantics
-- **Credential encryption**: SMTP passwords encrypted at rest with AES-256-GCM
-- **Attachments**: Multi-source fetching (base64, filesystem, HTTP, endpoint) with caching
-- **Prometheus metrics**: Built-in monitoring via `/metrics` endpoint
-- **CLI tool**: Full instance management without HTTP API
-
-### Enterprise Edition (BSL 1.1)
-
-- **Multi-tenancy**: Multiple organizations share one instance with data isolation
-- **Bounce detection**: IMAP polling for bounces with DSN parsing and hard/soft classification
-- **PEC support**: Italian certified email (Posta Elettronica Certificata) with receipt tracking
-- **Large file handling**: Auto-upload attachments to S3/GCS/Azure and replace with download links
+- **Delivery reports**: Results are posted back to your application via HTTP callback
+- **Bounce detection**: IMAP polling for bounces with DSN parsing and hard/soft classification *(BSL 1.1)*
+- **Multi-tenancy**: Multiple organizations can share one instance with separate accounts *(BSL 1.1)*
+- **PEC support**: Italian certified email (Posta Elettronica Certificata) with receipt tracking *(BSL 1.1)*
+- **Large file handling**: Auto-upload attachments to S3/GCS/Azure and replace with download links *(BSL 1.1)*
+- **Connection pooling**: SMTP connections are pooled with acquire/release semantics
 
 ```text
 ┌─────────────┐      REST       ┌──────────────────┐      SMTP      ┌─────────────┐
@@ -135,12 +126,12 @@ The proxy supports multiple attachment sources via explicit `fetch_mode`:
 
 A two-tiered cache (memory + disk) reduces redundant fetches. Filenames can include an MD5 hash marker (`report_{MD5:abc123}.pdf`) for cache lookup.
 
-### Large file offloading *(Enterprise Edition)*
+### Large file offloading
 
 For attachments exceeding a size threshold, the proxy can upload them to external storage (S3, GCS, Azure, or local filesystem) and replace them with download links in the email body.
 
 ```bash
-pip install genro-mail-proxy[enterprise-s3]  # or [enterprise-gcs], [enterprise-azure]
+pip install genro-mail-proxy[large-files]
 ```
 
 Configure per-tenant via `large_file_config`:
@@ -185,29 +176,6 @@ docker run -p 8000:8000 \
 
 See [Usage](https://genro-mail-proxy.readthedocs.io/en/latest/usage.html) for all options.
 
-## Security
-
-SMTP credentials are encrypted at rest using **AES-256-GCM**. Configure the encryption key:
-
-```bash
-# Generate a key
-python -c "from tools.encryption import generate_key; print(generate_key())"
-
-# Set via environment variable
-export MAIL_PROXY_ENCRYPTION_KEY="<base64-encoded-32-byte-key>"
-```
-
-For Docker/Kubernetes, mount the key as a secret or pass via environment variable:
-
-```bash
-docker run -p 8000:8000 \
-  -e GMP_API_TOKEN=your-api-token \
-  -e MAIL_PROXY_ENCRYPTION_KEY=K7gNU3sdo+OL0wNhqoVWhr3g6s1xYv72ol/pe/Unols= \
-  genro-mail-proxy
-```
-
-See [Security Documentation](https://genro-mail-proxy.readthedocs.io/en/latest/security.html) for key rotation, Kubernetes secrets, and best practices.
-
 ## Performance notes
 
 - **Request latency**: ~30ms to queue a message (vs ~600ms for direct SMTP)
@@ -240,7 +208,7 @@ This project uses a **dual-license** model:
 
 **Apache 2.0** ([LICENSE](LICENSE)): Free for any use.
 
-**BSL 1.1** ([LICENSE-BSL-1.1](LICENSE-BSL-1.1)): Free for testing, development, and non-production. Production use requires a commercial license from Softwell S.r.l. Each version converts to Apache 2.0 four years after its release (e.g., v0.7.0 released Jan 2026 → Apache 2.0 on Jan 2030).
+**BSL 1.1** ([LICENSE-BSL-1.1](LICENSE-BSL-1.1)): Free for testing, development, and non-production. Production use requires a commercial license from Softwell S.r.l. After 2030-01-25, these features convert to Apache 2.0.
 
 See [NOTICE](NOTICE) for full details.
 

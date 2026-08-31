@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "genro-mail-proxy"
-version = "0.7.0"
+version = "0.6.10"
 description = "Asynchronous email dispatcher microservice with scheduling, rate limiting, attachments, and a FastAPI REST API."
 readme = "README.md"
 license = "Apache-2.0"
@@ -50,11 +50,10 @@ dependencies = [
     "click>=8.1.0",
     "rich>=13.0.0",
     "requests>=2.31.0",
-    "genro-toolbox>=0.1.0",
 ]
 
 [project.scripts]
-mail-proxy = "core.mail_proxy:main"
+mail-proxy = "mail_proxy.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -69,7 +68,6 @@ dev = [
     "pytest-docker>=3.0.0",
     "bandit>=1.7.0",
     "testcontainers[postgres]>=4.0.0",
-    "cryptography>=41.0.0",
 ]
 docs = [
     "sphinx>=8.0.0",
@@ -82,15 +80,15 @@ postgresql = [
     "psycopg[binary]>=3.1.0",
     "psycopg-pool>=3.1.0",
 ]
-enterprise-s3 = ["s3fs>=2024.1.0"]
-enterprise-gcs = ["gcsfs>=2024.1.0"]
-enterprise-azure = ["adlfs>=2024.1.0"]
-enterprise = [
-    "genro-mail-proxy[postgresql,enterprise-s3,enterprise-gcs,enterprise-azure]",
+large-files = [
+    "fsspec>=2024.1.0",
+    "s3fs>=2024.1.0",
+]
+bounce = [
     "aioimaplib>=1.0.0",
 ]
 all = [
-    "genro-mail-proxy[dev,docs,postgresql,enterprise]",
+    "genro-mail-proxy[dev,docs,postgresql,large-files,bounce]",
 ]
 
 [project.urls]
@@ -100,13 +98,12 @@ Repository = "https://github.com/genropy/genro-mail-proxy"
 Issues = "https://github.com/genropy/genro-mail-proxy/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/core", "src/enterprise", "src/sql", "src/storage", "src/tools"]
+packages = ["src/mail_proxy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = ["_build", "docs/_build", "docs", ".git"]
-addopts = "-v --cov=core.mail_proxy --cov-report=term-missing"
-asyncio_mode = "auto"
+addopts = "-v --cov=mail_proxy --cov-report=term-missing"
 markers = [
     "network: marks tests as requiring network access (deselect with '-m \"not network\"')",
     "fullstack: marks tests as requiring full Docker infrastructure (PostgreSQL, MailHog, MinIO)",
@@ -140,28 +137,26 @@ select = [
 ignore = [
     "E501",   # line too long
     "B008",   # no function calls in arg defaults
-    "SIM102", # nested if - sometimes more readable
-    "SIM105", # contextlib.suppress - try/except/pass is explicit
-    "SIM108", # ternary - often less readable
-    "SIM117", # nested with - can make lines too long
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["core", "enterprise"]
+known-first-party = ["mail_proxy"]
 
 [tool.mypy]
 python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
-files = ["src/core", "src/enterprise"]
+files = ["src/mail_proxy"]
 
 [tool.coverage.run]
-source = ["src/core", "src/enterprise"]
+source = ["src/mail_proxy"]
 branch = true
 omit = [
-    "src/core/mail_proxy/interface/forms.py",   # Interactive REPL forms
-    "src/core/mail_proxy/server.py",            # Uvicorn entry point
+    "src/mail_proxy/forms.py",   # Interactive REPL forms
+    "src/mail_proxy/server.py",  # Uvicorn entry point
+    "src/mail_proxy/cli.py",     # Interactive CLI commands
+    "src/mail_proxy/core/event_reporting.py",  # Mixin tested via MailProxy (coverage can't track)
 ]
 
 [tool.coverage.report]

@@ -146,10 +146,8 @@ with separate databases.
    integrations
    multi_tenancy
    pec
-   security
    api_reference
    faq
-   appendix_endpoints
    modules
    contributing
    fullstack_testing

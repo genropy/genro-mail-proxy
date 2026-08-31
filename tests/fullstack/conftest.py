@@ -1,154 +1,345 @@
-# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
-"""Pytest configuration for fullstack tests.
+# Copyright 2025 Softwell S.r.l.
+# Licensed under the Apache License, Version 2.0
 
-These tests require Docker with Mailpit, Minio, and Proxy running:
-    cd tests/fullstack && docker compose up -d
-
-Tests are skipped if Docker services are not available.
-"""
+"""Pytest fixtures for fullstack integration tests."""
 
 from __future__ import annotations
 
-import socket
-from pathlib import Path
+import imaplib
+import subprocess
 
-import httpx
 import pytest
+import pytest_asyncio
 
-from .imap_injector import IMAPBounceInjector
+httpx = pytest.importorskip("httpx")
 
-# Mailpit default ports
-MAILPIT_SMTP_PORT = 1025
-MAILPIT_IMAP_PORT = 1143
-MAILPIT_API_PORT = 8025
-MAILPIT_HOST = "localhost"
+from .helpers import (
+    MAILPROXY_URL,
+    MAILPROXY_TOKEN,
+    CLIENT_TENANT1_URL,
+    CLIENT_TENANT2_URL,
+    DOVECOT_IMAP_HOST,
+    DOVECOT_IMAP_PORT,
+    DOVECOT_BOUNCE_USER,
+    DOVECOT_BOUNCE_PASS,
+    DOVECOT_POLL_INTERVAL,
+    DOVECOT_PEC_USER,
+    DOVECOT_PEC_PASS,
+    is_dovecot_available,
+    is_pec_imap_available,
+)
 
-# Minio (S3-compatible storage)
-MINIO_HOST = "localhost"
-MINIO_API_PORT = 9000
-MINIO_CONSOLE_PORT = 9001
-MINIO_ACCESS_KEY = "minioadmin"
-MINIO_SECRET_KEY = "minioadmin"
-MINIO_TEST_BUCKET = "test-attachments"
-
-# Proxy API
-PROXY_HOST = "localhost"
-PROXY_PORT = 8000
-
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
-
-
-def _check_service(host: str, port: int) -> bool:
-    """Check if a TCP service is available."""
-    try:
-        with socket.create_connection((host, port), timeout=1):
-            return True
-    except (OSError, socket.timeout):
-        return False
+# Mark all tests in this package as fullstack
+pytestmark = [pytest.mark.fullstack, pytest.mark.asyncio]
 
 
-# Check availability at module load time (once)
-_MAILPIT_AVAILABLE = _check_service(MAILPIT_HOST, MAILPIT_SMTP_PORT)
-_MINIO_AVAILABLE = _check_service(MINIO_HOST, MINIO_API_PORT)
-_PROXY_AVAILABLE = _check_service(PROXY_HOST, PROXY_PORT)
-
-
-def is_infrastructure_ready() -> bool:
-    """Check if Mailpit and Proxy are running (minimum for SMTP tests)."""
-    return _MAILPIT_AVAILABLE and _PROXY_AVAILABLE
-
-
-def is_minio_ready() -> bool:
-    """Check if Minio is available for storage tests."""
-    return _MINIO_AVAILABLE
-
-
-def pytest_collection_modifyitems(config, items):  # noqa: ARG001
-    """Skip fullstack tests if Docker services are not available."""
-    if not is_infrastructure_ready():
-        missing = []
-        if not _MAILPIT_AVAILABLE:
-            missing.append("Mailpit")
-        if not _PROXY_AVAILABLE:
-            missing.append("Proxy")
-
-        skip_marker = pytest.mark.skip(
-            reason=f"Docker services not available ({', '.join(missing)}). "
-            "Run: cd tests/fullstack && docker compose up -d"
-        )
-        for item in items:
-            if "fullstack" in str(item.fspath):
-                item.add_marker(skip_marker)
-
+# ============================================
+# API CLIENT FIXTURES
+# ============================================
 
 @pytest.fixture
-def imap_injector() -> IMAPBounceInjector:
-    """Create IMAP injector for bounce simulation."""
-    return IMAPBounceInjector(
-        host=MAILPIT_HOST,
-        port=MAILPIT_IMAP_PORT,
-    )
-
-
-@pytest.fixture
-def mailpit_api() -> "MailpitAPI":
-    """Create Mailpit API client for verification."""
-    return MailpitAPI(f"http://{MAILPIT_HOST}:{MAILPIT_API_PORT}")
-
-
-class MailpitAPI:
-    """Simple client for Mailpit REST API."""
-
-    def __init__(self, base_url: str):
-        self.base_url = base_url
-
-    async def get_messages(self, limit: int = 50) -> list[dict]:
-        """Get all messages from Mailpit."""
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{self.base_url}/api/v1/messages", params={"limit": limit})
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("messages", [])
-
-    async def get_message(self, message_id: str) -> dict:
-        """Get a specific message by ID."""
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{self.base_url}/api/v1/message/{message_id}")
-            resp.raise_for_status()
-            return resp.json()
-
-    async def delete_all(self) -> None:
-        """Delete all messages from Mailpit."""
-        async with httpx.AsyncClient() as client:
-            await client.delete(f"{self.base_url}/api/v1/messages")
-
-    async def find_by_subject(self, subject: str) -> dict | None:
-        """Find a message by subject."""
-        messages = await self.get_messages()
-        for msg in messages:
-            if msg.get("Subject") == subject:
-                return msg
-        return None
-
-    async def count_messages(self) -> int:
-        """Count total messages."""
-        messages = await self.get_messages()
-        return len(messages)
-
-
-@pytest.fixture
-def minio_config() -> dict:
-    """Minio S3 configuration for storage tests."""
+def api_headers():
+    """Standard API headers with auth token."""
     return {
-        "protocol": "s3",
-        "bucket": MINIO_TEST_BUCKET,
-        "endpoint_url": f"http://{MINIO_HOST}:{MINIO_API_PORT}",
-        "aws_access_key_id": MINIO_ACCESS_KEY,
-        "aws_secret_access_key": MINIO_SECRET_KEY,
+        "X-API-Token": MAILPROXY_TOKEN,
+        "Content-Type": "application/json",
     }
 
 
+@pytest_asyncio.fixture
+async def api_client(api_headers):
+    """HTTP client for API calls."""
+    async with httpx.AsyncClient(
+        base_url=MAILPROXY_URL,
+        headers=api_headers,
+        timeout=30.0,
+    ) as client:
+        yield client
+
+
+# ============================================
+# TENANT SETUP FIXTURES
+# ============================================
+
+@pytest_asyncio.fixture
+async def setup_test_tenants(api_client):
+    """Setup two test tenants with their SMTP accounts."""
+    # Create tenant1
+    tenant1_data = {
+        "id": "test-tenant-1",
+        "name": "Test Tenant 1",
+        "client_base_url": CLIENT_TENANT1_URL,
+        "client_sync_path": "/proxy_sync",
+        "client_auth": {"method": "none"},
+        "active": True,
+    }
+    resp = await api_client.post("/tenant", json=tenant1_data)
+    assert resp.status_code in (200, 201, 409), resp.text
+
+    # Create account for tenant1
+    # Use localhost since mailproxy runs locally (not in Docker)
+    account1_data = {
+        "id": "test-account-1",
+        "tenant_id": "test-tenant-1",
+        "host": "localhost",
+        "port": 1025,
+        "use_tls": False,
+    }
+    resp = await api_client.post("/account", json=account1_data)
+    assert resp.status_code in (200, 201, 409), resp.text
+
+    # Create tenant2
+    tenant2_data = {
+        "id": "test-tenant-2",
+        "name": "Test Tenant 2",
+        "client_base_url": CLIENT_TENANT2_URL,
+        "client_sync_path": "/proxy_sync",
+        "client_auth": {"method": "bearer", "token": "tenant2-secret-token"},
+        "active": True,
+    }
+    resp = await api_client.post("/tenant", json=tenant2_data)
+    assert resp.status_code in (200, 201, 409), resp.text
+
+    # Create account for tenant2
+    # Use localhost:1026 since mailproxy runs locally (not in Docker)
+    account2_data = {
+        "id": "test-account-2",
+        "tenant_id": "test-tenant-2",
+        "host": "localhost",
+        "port": 1026,
+        "use_tls": False,
+    }
+    resp = await api_client.post("/account", json=account2_data)
+    assert resp.status_code in (200, 201, 409), resp.text
+
+    return {"tenant1": tenant1_data, "tenant2": tenant2_data}
+
+
+# ============================================
+# IMAP FIXTURES
+# ============================================
+
 @pytest.fixture
-def minio_available() -> bool:
-    """Check if Minio is available."""
-    return is_minio_ready()
+def imap_bounce():
+    """IMAP client connected to bounce mailbox for testing.
+
+    Yields an imaplib.IMAP4 connection to Dovecot configured for
+    bounce email injection and verification.
+    """
+    try:
+        M = imaplib.IMAP4(DOVECOT_IMAP_HOST, DOVECOT_IMAP_PORT)
+        M.login(DOVECOT_BOUNCE_USER, DOVECOT_BOUNCE_PASS)
+        M.select("INBOX")
+        yield M
+        M.logout()
+    except Exception:
+        pytest.skip("Dovecot IMAP server not available")
+
+
+@pytest.fixture
+def clean_imap(imap_bounce):
+    """Clear IMAP mailbox before and after test."""
+    def _clear():
+        _, message_ids = imap_bounce.search(None, "ALL")
+        if message_ids[0]:
+            for msg_id in message_ids[0].split():
+                imap_bounce.store(msg_id, "+FLAGS", "\\Deleted")
+            imap_bounce.expunge()
+
+    _clear()
+    yield imap_bounce
+    _clear()
+
+
+# ============================================
+# BOUNCE TENANT FIXTURE
+# ============================================
+
+@pytest_asyncio.fixture
+async def setup_bounce_tenant(api_client):
+    """Setup a tenant configured for bounce detection testing."""
+    tenant_data = {
+        "id": "bounce-tenant",
+        "name": "Bounce Test Tenant",
+        "client_base_url": CLIENT_TENANT1_URL,
+        "client_sync_path": "/proxy_sync",
+        "client_auth": {"method": "none"},
+        "active": True,
+    }
+    resp = await api_client.post("/tenant", json=tenant_data)
+    assert resp.status_code in (200, 201, 409), resp.text
+
+    # Use localhost since mailproxy runs locally (not in Docker)
+    account_data = {
+        "id": "bounce-account",
+        "tenant_id": "bounce-tenant",
+        "host": "localhost",
+        "port": 1025,
+        "use_tls": False,
+    }
+    resp = await api_client.post("/account", json=account_data)
+    assert resp.status_code in (200, 201, 409), resp.text
+
+    return {"tenant": tenant_data, "account": account_data}
+
+
+@pytest_asyncio.fixture
+async def configure_bounce_receiver(api_client):
+    """Configure BounceReceiver via API for live testing.
+
+    This fixture:
+    1. Updates instance table with bounce config
+    2. Calls /instance/reload-bounce to apply the config
+    3. Yields the configuration
+    4. Disables bounce on teardown
+    """
+    if not is_dovecot_available():
+        pytest.skip("Dovecot IMAP server not available")
+
+    # Configure bounce via API
+    config = {
+        "bounce_enabled": True,
+        "bounce_imap_host": DOVECOT_IMAP_HOST,
+        "bounce_imap_port": DOVECOT_IMAP_PORT,
+        "bounce_imap_user": DOVECOT_BOUNCE_USER,
+        "bounce_imap_password": DOVECOT_BOUNCE_PASS,
+        "bounce_imap_ssl": False,
+        "bounce_poll_interval": DOVECOT_POLL_INTERVAL,
+    }
+
+    resp = await api_client.put("/instance", json=config)
+    assert resp.status_code == 200, f"Failed to update instance: {resp.text}"
+
+    resp = await api_client.post("/instance/reload-bounce")
+    assert resp.status_code == 200, f"Failed to reload bounce: {resp.text}"
+
+    yield config
+
+    # Teardown: disable bounce
+    await api_client.put("/instance", json={"bounce_enabled": False})
+    await api_client.post("/instance/reload-bounce")
+
+
+# ============================================
+# PEC TENANT FIXTURE
+# ============================================
+
+@pytest_asyncio.fixture
+async def setup_pec_tenant(api_client):
+    """Setup a tenant with a PEC account for testing PEC receipt handling."""
+    tenant_data = {
+        "id": "pec-tenant",
+        "name": "PEC Test Tenant",
+        "client_base_url": CLIENT_TENANT1_URL,
+        "client_sync_path": "/proxy_sync",
+        "client_auth": {"method": "none"},
+        "active": True,
+    }
+    resp = await api_client.post("/tenant", json=tenant_data)
+    assert resp.status_code in (200, 201, 409), resp.text
+
+    # Create a PEC account with IMAP configuration for receipt polling
+    pec_account_data = {
+        "id": "pec-account",
+        "tenant_id": "pec-tenant",
+        "host": "localhost",
+        "port": 1025,
+        "use_tls": False,
+        "is_pec_account": True,
+        "imap_host": DOVECOT_IMAP_HOST,
+        "imap_port": DOVECOT_IMAP_PORT,
+        "imap_user": DOVECOT_PEC_USER,
+        "imap_password": DOVECOT_PEC_PASS,
+        "imap_ssl": False,
+    }
+    resp = await api_client.post("/account", json=pec_account_data)
+    assert resp.status_code in (200, 201, 409), resp.text
+
+    return {"tenant": tenant_data, "account": pec_account_data}
+
+
+@pytest.fixture
+def imap_pec():
+    """IMAP client connected to PEC mailbox for testing.
+
+    Yields an imaplib.IMAP4 connection to Dovecot configured for
+    PEC receipt injection and verification.
+    """
+    try:
+        M = imaplib.IMAP4(DOVECOT_IMAP_HOST, DOVECOT_IMAP_PORT)
+        M.login(DOVECOT_PEC_USER, DOVECOT_PEC_PASS)
+        M.select("INBOX")
+        yield M
+        M.logout()
+    except Exception:
+        pytest.skip("Dovecot PEC IMAP mailbox not available")
+
+
+@pytest.fixture
+def clean_pec_imap(imap_pec):
+    """Clear PEC IMAP mailbox before and after test."""
+    def _clear():
+        _, message_ids = imap_pec.search(None, "ALL")
+        if message_ids[0]:
+            for msg_id in message_ids[0].split():
+                imap_pec.store(msg_id, "+FLAGS", "\\Deleted")
+            imap_pec.expunge()
+
+    _clear()
+    yield imap_pec
+    _clear()
+
+
+# ============================================
+# DX: ON-FAILURE DIAGNOSTICS
+# ============================================
+
+@pytest.hookimpl(tryfirst=True, hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Collect diagnostics on test failure."""
+    outcome = yield
+    report = outcome.get_result()
+
+    if report.when == "call" and report.failed:
+        # Only for fullstack tests
+        markers = [m.name for m in item.iter_markers()]
+        if "fullstack" not in markers:
+            return
+
+        print("\n" + "=" * 60)
+        print("FAILURE DIAGNOSTICS")
+        print("=" * 60)
+
+        # Docker service status
+        try:
+            result = subprocess.run(
+                ["docker", "compose", "-f",
+                 "tests/docker/docker-compose.fulltest.yml", "ps"],
+                capture_output=True, text=True, timeout=10, cwd="."
+            )
+            print(f"\n--- Docker Status ---\n{result.stdout}")
+        except Exception as e:
+            print(f"Could not get Docker status: {e}")
+
+        # Mail proxy logs (last 20 lines)
+        try:
+            result = subprocess.run(
+                ["docker", "compose", "-f",
+                 "tests/docker/docker-compose.fulltest.yml",
+                 "logs", "mailproxy", "--tail", "20"],
+                capture_output=True, text=True, timeout=10, cwd="."
+            )
+            print(f"\n--- Mail Proxy Logs ---\n{result.stdout}")
+        except Exception as e:
+            print(f"Could not get mailproxy logs: {e}")
+
+        # MailHog message count
+        try:
+            import httpx as hx
+            resp = hx.get("http://localhost:8025/api/v2/messages", timeout=5)
+            count = len(resp.json().get("items", []))
+            print(f"\n--- MailHog T1 Messages: {count} ---")
+        except Exception as e:
+            print(f"Could not check MailHog: {e}")
+
+        print("=" * 60)

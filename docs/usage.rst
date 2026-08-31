@@ -304,7 +304,7 @@ Test mode
 ---------
 
 Unit tests and maintenance scripts can instantiate
-``core.mail_proxy.proxy.MailProxy`` with ``test_mode=True`` (or set
+``mail_proxy.core.MailProxy`` with ``test_mode=True`` (or set
 ``GMP_TEST_MODE=true``). In this mode the dispatcher and reporting tasks are
 still created, but their send interval is stretched to infinity so they wait
 for an explicit wake-up. Calling ``/commands/run-now`` (or

@@ -146,9 +146,6 @@ Import or create a dashboard with these panels:
    sum by(account_id) (rate(gmp_sent_total[5m]))
 
 
-You can find an example dashboard inside examples/grafana_dashboard.
-
-   
 Alerting Rules
 --------------
 
@@ -304,7 +301,7 @@ Configure log level via environment:
 .. code-block:: bash
 
    export LOG_LEVEL=DEBUG
-   uvicorn core.mail_proxy.server:app --host 0.0.0.0
+   uvicorn mail_proxy.server:app --host 0.0.0.0
 
 Or in Docker:
 

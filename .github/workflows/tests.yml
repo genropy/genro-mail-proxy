@@ -27,23 +27,11 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Security check with bandit
-        run: bandit -r src -c pyproject.toml
+        run: bandit -r src/mail_proxy -c pyproject.toml
 
       - name: Run tests with coverage
         run: |
-          pytest -m "not fullstack and not db" --cov=src --cov-report=xml:coverage.xml --cov-report=term-missing
-
-      - name: Upload coverage to Codecov
-        if: matrix.python-version == '3.11'
-        uses: codecov/codecov-action@v4
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: ./coverage.xml
-          fail_ci_if_error: false
-          verbose: true
-          flags: unittests
-          name: codecov-py311
-          disable_search: true
+          pytest -m "not fullstack and not db" --cov=mail_proxy --cov-report=xml --cov-report=term
 
   db-integration:
     runs-on: ubuntu-latest
@@ -79,6 +67,15 @@ jobs:
 
       - name: Run database integration tests
         env:
-          GMP_TEST_PG_URL: postgresql://test:test@localhost:5432/test
+          GMP_DB_PATH: postgresql://test:test@localhost:5432/test
         run: |
-          pytest tests/sql/ -v
+          pytest tests/postgres_tests/ -v
+
+      - name: Upload coverage to Codecov
+        if: matrix.python-version == '3.11'
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.xml
+          fail_ci_if_error: false
+          verbose: true
