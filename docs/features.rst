@@ -2,70 +2,46 @@ Features
 ========
 
 This document provides a comprehensive list of all features implemented in
-genro-mail-proxy, with licensing information for each feature.
-
-.. note::
-
-   **Licensing Policy**: Until the first stable release (v1.0), all features
-   are released under the **Apache License 2.0**. After v1.0, some advanced
-   features may require a commercial license.
-
-   Current status: **All features are Apache 2.0 licensed.**
+genro-mail-proxy.
 
 Feature Matrix
 --------------
 
 .. list-table::
    :header-rows: 1
-   :widths: 40 15 45
+   :widths: 40 60
 
    * - Feature
-     - License
      - Description
    * - :ref:`message-management`
-     - Apache 2.0
      - Message queuing, listing, deletion, cleanup
    * - :ref:`multi-tenancy`
-     - BSL 1.1
      - Tenant isolation, per-tenant API tokens, batch suspension
    * - :ref:`attachments`
-     - Apache 2.0
      - Multi-source fetching, caching, large file offloading
    * - :ref:`priority-scheduling`
-     - Apache 2.0
      - Priority queuing, deferred delivery, batch grouping
    * - :ref:`rate-limiting`
-     - Apache 2.0
      - Per-account sliding window rate limiting
    * - :ref:`retry-resilience`
-     - Apache 2.0
      - Exponential backoff, error classification
    * - :ref:`smtp-connections`
-     - Apache 2.0
      - Connection pooling, multiple accounts per tenant
    * - :ref:`delivery-reporting`
-     - Apache 2.0
      - Delivery reports, client sync callbacks
    * - :ref:`bounce-detection`
-     - BSL 1.1
      - IMAP bounce polling, DSN parsing, hard/soft classification
    * - :ref:`database-persistence`
-     - Apache 2.0
      - SQLite and PostgreSQL support
    * - :ref:`monitoring-metrics`
-     - Apache 2.0
      - Prometheus metrics, health endpoints
    * - :ref:`concurrency-performance`
-     - Apache 2.0
      - Parallel dispatch, concurrent attachment fetching
    * - :ref:`rest-api`
-     - Apache 2.0
      - Complete REST API with authentication
    * - :ref:`cli-tool`
-     - Apache 2.0
      - Command-line interface for management
    * - :ref:`configuration`
-     - Apache 2.0
      - Environment variables, INI config files
 
 ----
@@ -102,8 +78,6 @@ Message Management
 
 Multi-Tenancy
 -------------
-
-**License**: BSL 1.1
 
 .. list-table::
    :header-rows: 1
@@ -299,8 +273,6 @@ Delivery & Reporting
 
 Bounce Detection
 ----------------
-
-**License**: BSL 1.1
 
 .. list-table::
    :header-rows: 1

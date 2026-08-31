@@ -114,7 +114,7 @@ flowchart TD
 | **SENT** | `sent_ts` set | Successfully delivered to SMTP server |
 | **ERROR** | `error_ts` set | Permanent delivery failure |
 | **REPORTED** | `reported_ts` set | Client notified of delivery status |
-| **BOUNCED** | `bounce_ts` set | Remote server returned the message (EE) |
+| **BOUNCED** | `bounce_ts` set | Remote server returned the message |
 
 ### Important Notes
 
@@ -148,7 +148,7 @@ flowchart TD
 | `error` | string | Error message if delivery failed |
 | `reported_ts` | integer | Unix timestamp when client was notified |
 
-### Bounce Detection Fields (Enterprise)
+### Bounce Detection Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -158,7 +158,7 @@ flowchart TD
 | `bounce_ts` | timestamp | When bounce was detected |
 | `bounce_reported_ts` | integer | When client was notified of bounce |
 
-### PEC Fields (Enterprise, Italy)
+### PEC Fields (Italy)
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -279,13 +279,13 @@ CREATE TABLE messages (
     error_ts INTEGER,
     error TEXT,
     reported_ts INTEGER,
-    -- Enterprise: Bounce Detection
+    -- Bounce Detection
     bounce_type TEXT,
     bounce_code TEXT,
     bounce_reason TEXT,
     bounce_ts TIMESTAMP,
     bounce_reported_ts INTEGER,
-    -- Enterprise: PEC Support
+    -- PEC Support
     pec_rda_ts TIMESTAMP,
     pec_rdc_ts TIMESTAMP,
     pec_error TEXT,

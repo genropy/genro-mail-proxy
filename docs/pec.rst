@@ -1,11 +1,6 @@
 PEC Support (Posta Elettronica Certificata)
 ===========================================
 
-.. note::
-
-   PEC support is an Enterprise feature available under the Business Source License 1.1.
-   See ``LICENSE-BSL-1.1`` for details.
-
 This document describes PEC (Posta Elettronica Certificata) support in genro-mail-proxy,
 the Italian certified email system that provides legal proof of delivery.
 

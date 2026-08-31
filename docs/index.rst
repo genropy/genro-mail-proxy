@@ -20,8 +20,8 @@ sends messages to the proxy via REST API; the proxy handles delivery with:
 - **Rate limiting**: Per-account limits (minute/hour/day) shared across instances
 - **Priority queuing**: Four levels (immediate, high, medium, low) with FIFO within each
 - **Delivery reports**: Results are posted back to your application via HTTP callback
-- **Bounce detection**: IMAP polling for bounces with DSN parsing and hard/soft classification (BSL 1.1)
-- **Multi-tenancy**: Multiple organizations can share one instance with separate accounts (BSL 1.1)
+- **Bounce detection**: IMAP polling for bounces with DSN parsing and hard/soft classification
+- **Multi-tenancy**: Multiple organizations can share one instance with separate accounts
 
 Architecture
 ~~~~~~~~~~~~

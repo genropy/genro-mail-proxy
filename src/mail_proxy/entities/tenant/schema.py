@@ -1,4 +1,4 @@
-# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: BSL-1.1
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Pydantic schemas for tenant entity."""
 
 from __future__ import annotations

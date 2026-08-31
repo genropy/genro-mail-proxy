@@ -1,4 +1,4 @@
-# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: BSL-1.1
+# Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """Tests for issue #77: JOIN accounts without tenant_id causes row duplication.
 
 When accounts exist with the same `id` but different `tenant_id`, JOINs between
