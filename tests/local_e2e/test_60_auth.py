@@ -13,16 +13,29 @@ Three tables, one per class the app draws:
 Every route of the API appears in exactly one table, so the count is checked
 here too: the tables must add up to 26. Each entry carries a request that
 would succeed with the right token, so the only failing dimension is auth.
+
+The coverage check reads the ROUTER, not a source file. Two halves:
+
+* every URL the tables name resolves to a live route — no table entry points
+  at an address that does not exist;
+* the set of route entries the router publishes is the one written in
+  ``V1_ENTRIES`` — adding a route breaks this and forces a table entry.
+
+What this can no longer see, and the FastAPI decorators could: the verb.
+genro-asgi resolves on the path alone, so the six routes sharing ``/tenant``
+are one router entry, and a seventh verb added inside that handler would not
+show up here. The verb dimension of the contract is asserted by the suites
+that call the routes (test_10 through test_50), not by this count.
 """
 
 from __future__ import annotations
 
-import re
-from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
-import mail_proxy.api
+from mail_proxy.core import MailProxy
+from mail_proxy.mail_proxy_application import MailProxyApplication
 from tests import api_routes
 
 pytestmark = pytest.mark.asyncio
@@ -83,45 +96,99 @@ async def _call(client, method, url, body, headers=None):
     return await client.request(method, url, json=body, headers=headers)
 
 
-ROUTE_DECORATOR = re.compile(
-    r"^\s*@(api|router)\.(get|post|put|delete|patch)\(\s*[\"\'](?P<path>[^\"\']+)[\"\']",
-    re.MULTILINE,
-)
+# Every route entry the v1 branch publishes, as router paths. The three shims
+# appear once each: /tenant serves six routes, /account and /instance two each.
+V1_ENTRIES = {
+    "account/index",
+    "accounts/index",
+    "command-log/export",
+    "command-log/index",
+    "commands/activate",
+    "commands/add-messages",
+    "commands/cleanup-messages",
+    "commands/delete-messages",
+    "commands/run-now",
+    "commands/suspend",
+    "health",
+    "instance/index",
+    "instance/reload-bounce",
+    "messages/index",
+    "metrics",
+    "status",
+    "tenant/index",
+    "tenants/index",
+    "tenants/sync-status",
+}
 
-# The commands router is mounted under this prefix (src/mail_proxy/api.py).
-ROUTER_PREFIX = "/commands"
+# Both tags, so the walk sees the ruled entries too: an unfiltered walk shows
+# only what carries no auth_rule.
+ALL_TAGS = "ADMIN,TENANT"
 
 
-def _published_routes():
-    """Every route api.py declares, as the labels the tables use.
+@pytest.fixture(scope="module")
+def v1_router(tmp_path_factory):
+    """The router of a throwaway application, for introspection only.
 
-    Read from the decorators of the source, not from the tables: a 27th route
-    added without a table entry must fail here, or its auth contract goes
-    unexercised while the suite stays green. The paths are not written down
-    again — they are derived — so they still live only in tests/api_routes.py
-    as far as the requests are concerned.
+    Never served and never started: the tree is built at construction, which
+    is all the coverage check reads.
     """
-    source = Path(mail_proxy.api.__file__).read_text(encoding="utf-8")
-    labels = set()
-    for match in ROUTE_DECORATOR.finditer(source):
-        prefix = ROUTER_PREFIX if match.group(1) == "router" else ""
-        labels.add(f"{match.group(2).upper()} {prefix}{match.group('path')}")
-    return labels
+    db_path = tmp_path_factory.mktemp("auth_coverage") / "mail_proxy.db"
+    core = MailProxy(db_path=str(db_path), test_mode=True)
+    return MailProxyApplication(core=core, api_token="unused").route
 
 
-async def test_the_tables_cover_every_route_once():
-    """The three tables cover exactly the routes api.py publishes, once each."""
+def _entry_paths(node, prefix=""):
+    """Every callable entry under a ``nodes()`` subtree, as router paths."""
+    for name in node.get("entries") or {}:
+        yield f"{prefix}{name}"
+    for child, subtree in (node.get("routers") or {}).items():
+        yield from _entry_paths(subtree, f"{prefix}{child}/")
+
+
+def _published_entries(router):
+    """The route entries of the v1 branch, derived from the router."""
+    tree = router.nodes(_eager=True, auth_tags=ALL_TAGS)
+    v1 = tree["routers"]["v1"]
+    return set(_entry_paths(v1))
+
+
+def _router_path(url):
+    """The router path a table URL resolves against: no prefix, no query."""
+    return f"v1{urlsplit(url).path}"
+
+
+async def test_the_tables_cover_every_route_once(v1_router):
+    """The tables name live routes, and no route escapes them."""
     labels = _ids(OPEN_ROUTES) + _ids(TOKEN_PROTECTED_ROUTES)
     assert len(labels) == len(set(labels)), "a route appears in two tables"
-
-    published = _published_routes()
-    assert published, "no route decorator found in api.py — the regex is stale"
-    assert set(labels) == published, (
-        f"tables and api.py disagree: "
-        f"missing from the tables {sorted(published - set(labels))}, "
-        f"not published {sorted(set(labels) - published)}"
-    )
     assert len(labels) == 26
+
+    published = _published_entries(v1_router)
+    assert published == V1_ENTRIES, (
+        f"the router and V1_ENTRIES disagree: "
+        f"published but not listed {sorted(published - V1_ENTRIES)}, "
+        f"listed but not published {sorted(V1_ENTRIES - published)}"
+    )
+
+    for label, _method, url, _body in OPEN_ROUTES + TOKEN_PROTECTED_ROUTES:
+        node = v1_router.node(_router_path(url), auth_tags=ALL_TAGS)
+        assert node.error is None, f"{label} names no live route: {node.error}"
+
+
+async def test_every_route_is_reached_by_a_table(v1_router):
+    """No route entry is left without a table entry exercising its auth."""
+    reached = {
+        _router_path(url).removeprefix("v1/")
+        for _label, _method, url, _body in OPEN_ROUTES + TOKEN_PROTECTED_ROUTES
+    }
+    resolved = set()
+    for entry in _published_entries(v1_router):
+        segment = entry.removesuffix("/index")
+        assert any(
+            path == segment or path.startswith(f"{segment}/") for path in reached
+        ), f"no table entry reaches the route {entry}"
+        resolved.add(entry)
+    assert resolved == V1_ENTRIES
 
 
 class TestOpenRoutes:

@@ -9,6 +9,9 @@ Builds ``MailProxyApplication`` on a temporary SQLite file, hands it to an
 behind the tests: this suite asserts the HTTP contract, never delivery. The
 Docker fullstack suite remains the stress suite.
 
+Every client is based at ``/mailproxy/v1``: the version is a path segment, so
+the suite reaches the contract the way a configured caller does.
+
 The engine is started and stopped by the application's own ``on_startup`` and
 ``on_shutdown``, which the server's lifespan runs — the harness declares no
 lifespan of its own. The auth middleware is off because the application
@@ -35,6 +38,12 @@ from tests import api_routes
 httpx = pytest.importorskip("httpx")
 
 LOCAL_API_TOKEN = "local-e2e-token"
+
+# The version is a path segment (ADR-011), so the whole v1 contract answers
+# under this prefix. It lives in the client's base_url, exactly as it lives in
+# the Genropy client's proxy_url: the paths in tests/api_routes.py stay
+# relative and untouched.
+V1_PREFIX = "/mailproxy/v1"
 
 # The discard port: every connection to it is refused at once. Accounts and
 # client callbacks point here so that a dispatch cycle woken by run-now fails
@@ -68,7 +77,11 @@ def local_server(tmp_path_factory):
         time.sleep(0.05)
     port = server.servers[0].sockets[0].getsockname()[1]
 
-    yield SimpleNamespace(base_url=f"http://127.0.0.1:{port}", db_path=db_path)
+    yield SimpleNamespace(
+        base_url=f"http://127.0.0.1:{port}{V1_PREFIX}",
+        origin=f"http://127.0.0.1:{port}",
+        db_path=db_path,
+    )
 
     server.should_exit = True
     thread.join(timeout=30)

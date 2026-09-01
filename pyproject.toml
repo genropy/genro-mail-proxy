@@ -11,7 +11,7 @@ version = "0.7.6"
 description = "Asynchronous email dispatcher microservice with scheduling, rate limiting, attachments, and a FastAPI REST API."
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     {name = "Genropy Team", email = "info@genropy.org"}
 ]
@@ -19,7 +19,7 @@ keywords = [
     "email",
     "smtp",
     "mail-proxy",
-    "fastapi",
+    "genro-asgi",
     "async",
     "genro",
     "genropy"
@@ -29,11 +29,9 @@ classifiers = [
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "Framework :: FastAPI",
     "Topic :: Communications :: Email",
     "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
     "Topic :: Software Development :: Libraries :: Application Frameworks",
@@ -43,7 +41,7 @@ dependencies = [
     "aiosmtplib>=2.0.0",
     "aiohttp>=3.9.0",
     "aiosqlite>=0.20.0",
-    "fastapi>=0.115.0",
+    "genro-asgi>=0.37.0",
     "uvicorn>=0.30.0",
     "prometheus-client>=0.20.0",
     "pydantic>=2.8.0",

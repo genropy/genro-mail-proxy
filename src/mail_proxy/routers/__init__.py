@@ -3,9 +3,10 @@
 
 """The v1 route groups mounted on ``MailProxyApplication``.
 
-One ``RoutingClass`` per root path segment of the contract, each built with the
-application it serves and attached as a branch of the app router. The segment a
-group answers is decided where it is mounted, not here.
+``V1Routes`` is the branch the application mounts for the v1 contract; the
+entity groups under it are one ``RoutingClass`` per path segment, each built
+with the application it serves. The segment a group answers is decided where it
+is mounted, not here.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from .command_log import CommandLogRoutes
 from .instance import InstanceRoutes
 from .message import MessagesRoutes
 from .tenant import TenantRoutes, TenantsRoutes
+from .v1 import V1Routes
 
 __all__ = [
     "AccountRoutes",
@@ -28,4 +30,5 @@ __all__ = [
     "ProxyRoutes",
     "TenantRoutes",
     "TenantsRoutes",
+    "V1Routes",
 ]

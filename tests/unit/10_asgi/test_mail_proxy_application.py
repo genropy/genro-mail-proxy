@@ -7,7 +7,9 @@ Implementation tests (they photograph the new transport layer, not the v1
 contract — that one is asserted by ``tests/local_e2e``). A probe subclass adds
 gated routes so the auth matrix, the request injection and the 422 mapping are
 asserted against a real server on a free port, with real tokens in a real
-SQLite tenants table.
+SQLite tenants table. The probes sit on the application itself, beside the
+liveness ``health``, so they answer under the mount and outside every version
+branch.
 """
 
 from __future__ import annotations
@@ -29,6 +31,11 @@ httpx = pytest.importorskip("httpx")
 
 ADMIN_TOKEN = "asgi-admin-token"
 TENANT_ID = "asgi-probe-tenant"
+
+# The application mounts here, so its own routes — the probes below and the
+# liveness health — answer under this prefix. The contract routes live one
+# level deeper, under a version branch (ADR-011).
+APP_MOUNT = "/mailproxy"
 
 
 class ProbeApplication(MailProxyApplication):
@@ -67,7 +74,7 @@ def asgi_server(tmp_path_factory):
         time.sleep(0.05)
     port = uv_server.servers[0].sockets[0].getsockname()[1]
 
-    yield SimpleNamespace(base_url=f"http://127.0.0.1:{port}", core=core)
+    yield SimpleNamespace(base_url=f"http://127.0.0.1:{port}{APP_MOUNT}", core=core)
 
     uv_server.should_exit = True
     thread.join(timeout=30)

@@ -5,13 +5,20 @@
 
 The application is the transport layer of the 0.7.7 swap: it owns no mail
 logic — every handler delegates to the ``MailProxy`` core received at
-construction. It mounts at the site root (``mount = ""``), so the v1 paths
-(``/health``, ``/tenant/...``) keep their production addresses.
+construction. It owns no addresses of its own beyond the
+liveness probe: every contract route belongs to a version branch.
 
-Three routes sit on the application itself, the ones that answer about the
-service rather than about its data: ``/health``, ``/status`` and ``/metrics``.
-Everything else is a route group under its root path segment, attached as a
-branch of the app router (``routers/``).
+The application mounts on ``mailproxy`` and carries ONE BRANCH PER CONTRACT
+VERSION: the version is a path segment, so a caller moves between versions by
+changing its base URL and nothing else (ADR-011). ``v1`` is the branch serving
+the contract the production sites call — ``/mailproxy/v1/tenant/{id}`` and the
+other 25 routes (``routers/v1.py``).
+
+One route sits on the application itself, outside every version: ``health``, at
+``/mailproxy/health``. It is the container's liveness probe, and it must not
+depend on which contract versions are mounted. ``v1`` publishes a ``health`` of
+its own too, because the Genropy client polls ``proxy_url + /health`` and
+``proxy_url`` carries the version.
 
 Authentication reproduces the v1 ``X-API-Token`` semantics, resolved per
 request BEFORE dispatch (async, against the tenants table — the reason the
@@ -55,17 +62,7 @@ from genro_asgi.middleware.base import headers_dict
 from genro_routes import route
 
 from .auth_tags import ADMIN_IDENTITY, ADMIN_TAG, API_TOKEN_HEADER, TENANT_TAG
-from .http_schema import StatusResponse
-from .routers import (
-    AccountRoutes,
-    AccountsRoutes,
-    CommandLogRoutes,
-    CommandsRoutes,
-    InstanceRoutes,
-    MessagesRoutes,
-    TenantRoutes,
-    TenantsRoutes,
-)
+from .routers import V1Routes
 
 if TYPE_CHECKING:
     from genro_asgi.request import Request
@@ -76,31 +73,18 @@ if TYPE_CHECKING:
 
 __all__ = ["ADMIN_TAG", "API_TOKEN_HEADER", "TENANT_TAG", "MailProxyApplication"]
 
-METRICS_MEDIA_TYPE = "text/plain; version=0.0.4"
-
 
 class MailProxyApplication(OpenApiApplication):
     """genro-asgi application exposing the mail-proxy v1 REST contract."""
 
-    mount = ""
+    mount = "mailproxy"
     openapi_info = {"title": "Async Mail Service"}
 
     def __init__(self, **kwargs: Any) -> None:
         self._core: MailProxy = kwargs.pop("core")
         self._api_token: str | None = kwargs.pop("api_token", None)
         super().__init__(**kwargs)
-        self.route.add_branches(
-            [
-                {"name": "tenant", "instance": TenantRoutes(self)},
-                {"name": "tenants", "instance": TenantsRoutes(self)},
-                {"name": "account", "instance": AccountRoutes(self)},
-                {"name": "accounts", "instance": AccountsRoutes(self)},
-                {"name": "messages", "instance": MessagesRoutes(self)},
-                {"name": "commands", "instance": CommandsRoutes(self)},
-                {"name": "instance", "instance": InstanceRoutes(self)},
-                {"name": "command-log", "instance": CommandLogRoutes(self)},
-            ]
-        )
+        self.route.add_branches({"name": "v1", "instance": V1Routes(self)})
 
     @property
     def core(self) -> MailProxy:
@@ -185,17 +169,9 @@ class MailProxyApplication(OpenApiApplication):
 
     @route()
     async def health(self) -> dict[str, str]:
-        """Liveness probe, no auth: the v1 body at the v1 address."""
+        """Liveness probe of the process, no auth and no version.
+
+        The container's healthcheck reads this one, so it survives a version
+        branch being added or retired. Each version publishes its own.
+        """
         return {"status": "ok"}
-
-    @route(auth_rule=TENANT_TAG)
-    async def status(self, **kwargs: Any) -> dict[str, Any]:
-        """Authenticated probe: the token is valid, and dispatch is running or not."""
-        return StatusResponse(ok=True, active=self.core._active).model_dump(
-            exclude_none=True
-        )
-
-    @route(media_type=METRICS_MEDIA_TYPE)
-    async def metrics(self, **kwargs: Any) -> bytes:
-        """Prometheus exposition of the engine's metrics, no auth as in v1."""
-        return self.core.metrics.generate_latest()
