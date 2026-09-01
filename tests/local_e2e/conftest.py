@@ -3,11 +3,16 @@
 
 """Local e2e harness: the real app over real HTTP, no Docker.
 
-Builds the same application src/mail_proxy/server.py builds — MailProxy plus
-create_app — on a temporary SQLite file, and serves it with uvicorn on a free
-port in a background thread. test_mode=True parks the dispatch and reporting
-loops, so no traffic runs behind the tests: this suite asserts the HTTP
-contract, never delivery. The Docker fullstack suite remains the stress suite.
+Builds ``MailProxyApplication`` on a temporary SQLite file, hands it to an
+``AsgiServer``, and serves that on a free port in a background thread.
+``test_mode=True`` parks the dispatch and reporting loops, so no traffic runs
+behind the tests: this suite asserts the HTTP contract, never delivery. The
+Docker fullstack suite remains the stress suite.
+
+The engine is started and stopped by the application's own ``on_startup`` and
+``on_shutdown``, which the server's lifespan runs — the harness declares no
+lifespan of its own. The auth middleware is off because the application
+resolves ``X-API-Token`` itself, before dispatch.
 """
 
 from __future__ import annotations
@@ -15,16 +20,16 @@ from __future__ import annotations
 import threading
 import time
 import uuid
-from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
 import uvicorn
+from genro_asgi import AsgiServer
 
-from mail_proxy.api import create_app
 from mail_proxy.core import MailProxy
+from mail_proxy.mail_proxy_application import MailProxyApplication
 from tests import api_routes
 
 httpx = pytest.importorskip("httpx")
@@ -49,16 +54,9 @@ def local_server(tmp_path_factory):
     db_path = tmp_path_factory.mktemp("local_e2e") / "mail_proxy.db"
     core = MailProxy(db_path=str(db_path), start_active=True, test_mode=True)
 
-    @asynccontextmanager
-    async def lifespan(app):
-        await core.start()
-        try:
-            yield
-        finally:
-            await core.stop()
-
-    app = create_app(core, api_token=LOCAL_API_TOKEN, lifespan=lifespan)
-    config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning")
+    app = MailProxyApplication(core=core, api_token=LOCAL_API_TOKEN)
+    asgi_server = AsgiServer(applications=[app], middleware={"auth": False})
+    config = uvicorn.Config(asgi_server, host="127.0.0.1", port=0, log_level="warning")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, name="local-e2e-uvicorn", daemon=True)
     thread.start()

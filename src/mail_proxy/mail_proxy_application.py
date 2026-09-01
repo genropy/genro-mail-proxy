@@ -8,6 +8,11 @@ logic — every handler delegates to the ``MailProxy`` core received at
 construction. It mounts at the site root (``mount = ""``), so the v1 paths
 (``/health``, ``/tenant/...``) keep their production addresses.
 
+Three routes sit on the application itself, the ones that answer about the
+service rather than about its data: ``/health``, ``/status`` and ``/metrics``.
+Everything else is a route group under its root path segment, attached as a
+branch of the app router (``routers/``).
+
 Authentication reproduces the v1 ``X-API-Token`` semantics, resolved per
 request BEFORE dispatch (async, against the tenants table — the reason the
 sync server-side ``AuthCore`` is not used):
@@ -20,17 +25,22 @@ sync server-side ``AuthCore`` is not used):
 
 Routes declare their gate with ``auth_rule=ADMIN_TAG`` (admin only) or
 ``auth_rule=TENANT_TAG`` (tenant or admin — the admin avatar carries both
-tags), so 401/403 come from the router, never from handler code. Tenant
-scoping (a tenant token addressing another tenant's resources) stays in the
-handlers, as in v1.
+tags), so 401/403 come from the router, never from handler code. Two things the
+router cannot express stay with the handlers, as in v1: tenant scoping (a
+tenant token addressing another tenant's resources answers 401) and the
+admin-only branches of a shared-path shim whose other branches are not
+(``require_admin_tag``).
 
 Two v1-fidelity overrides:
 
 - ``bind_kwargs`` injects the live ``Request`` into a handler that declares a
-  ``request`` parameter — the three shared-path shims read ``request.method``;
+  ``request`` parameter — the shared-path shims read ``request.method``;
 - invalid handler arguments answer **422** as the v1 contract does, not the
-  400 genro-asgi maps them to. This override is a bridge: it drops when
-  genro-asgi answers 422 at the dispatcher (genropy/genro-asgi#45).
+  400 genro-asgi maps them to. The same override carries a handler's own
+  ``HTTPBadRequest``, which is how a route reports a body pydantic refused.
+  A DELIBERATE 400 is therefore raised as ``HTTPException(400, ...)``, never
+  as ``HTTPBadRequest``. This override is a bridge: it drops when genro-asgi
+  answers 422 at the dispatcher (genropy/genro-asgi#45).
 """
 
 from __future__ import annotations
@@ -40,9 +50,22 @@ from typing import TYPE_CHECKING, Any
 
 from genro_asgi import Avatar
 from genro_asgi.applications.openapi import OpenApiApplication
-from genro_asgi.exceptions import HTTPBadRequest, HTTPException
+from genro_asgi.exceptions import HTTPBadRequest, HTTPException, HTTPForbidden, HTTPUnauthorized
 from genro_asgi.middleware.base import headers_dict
 from genro_routes import route
+
+from .auth_tags import ADMIN_IDENTITY, ADMIN_TAG, API_TOKEN_HEADER, TENANT_TAG
+from .http_schema import StatusResponse
+from .routers import (
+    AccountRoutes,
+    AccountsRoutes,
+    CommandLogRoutes,
+    CommandsRoutes,
+    InstanceRoutes,
+    MessagesRoutes,
+    TenantRoutes,
+    TenantsRoutes,
+)
 
 if TYPE_CHECKING:
     from genro_asgi.request import Request
@@ -51,12 +74,9 @@ if TYPE_CHECKING:
 
     from .core import MailProxy
 
-__all__ = ["ADMIN_TAG", "TENANT_TAG", "MailProxyApplication"]
+__all__ = ["ADMIN_TAG", "API_TOKEN_HEADER", "TENANT_TAG", "MailProxyApplication"]
 
-API_TOKEN_HEADER = "x-api-token"
-ADMIN_IDENTITY = "admin"
-ADMIN_TAG = "ADMIN"
-TENANT_TAG = "TENANT"
+METRICS_MEDIA_TYPE = "text/plain; version=0.0.4"
 
 
 class MailProxyApplication(OpenApiApplication):
@@ -69,6 +89,18 @@ class MailProxyApplication(OpenApiApplication):
         self._core: MailProxy = kwargs.pop("core")
         self._api_token: str | None = kwargs.pop("api_token", None)
         super().__init__(**kwargs)
+        self.route.add_branches(
+            [
+                {"name": "tenant", "instance": TenantRoutes(self)},
+                {"name": "tenants", "instance": TenantsRoutes(self)},
+                {"name": "account", "instance": AccountRoutes(self)},
+                {"name": "accounts", "instance": AccountsRoutes(self)},
+                {"name": "messages", "instance": MessagesRoutes(self)},
+                {"name": "commands", "instance": CommandsRoutes(self)},
+                {"name": "instance", "instance": InstanceRoutes(self)},
+                {"name": "command-log", "instance": CommandLogRoutes(self)},
+            ]
+        )
 
     @property
     def core(self) -> MailProxy:
@@ -114,7 +146,56 @@ class MailProxyApplication(OpenApiApplication):
             kwargs["request"] = request
         return kwargs
 
+    def require_admin_tag(self, request: Request) -> None:
+        """Refuse a request whose identity is not the admin one (403).
+
+        The gate of the admin-only branches of a shim the router had to open to
+        tenant tokens. The status is v1's: the token is real, its scope is not.
+        """
+        if ADMIN_TAG not in request.auth_tags:
+            raise HTTPForbidden(
+                "Admin token required, tenant tokens not allowed for this operation"
+            )
+
+    def require_tenant_scope(self, request: Request, tenant_id: str | None) -> None:
+        """Refuse a tenant token that addresses another tenant's resources (401).
+
+        The admin identity passes for every tenant, and a request naming no
+        tenant is not scoped at all — both are v1's rules, and the second is
+        what lets ``POST /account`` register a tenantless account.
+        """
+        if tenant_id is None or not tenant_id:
+            return
+        avatar = request.avatar()
+        if ADMIN_TAG in avatar.tags:
+            return
+        if avatar.identity != tenant_id:
+            raise HTTPUnauthorized("Token not authorized for this tenant")
+
+    def get_token_tenant_id(self, request: Request) -> str | None:
+        """The tenant a tenant key names, or ``None`` for the admin identity.
+
+        ``POST /commands/run-now`` deduces its tenant this way and from nowhere
+        else, so an admin token wakes every tenant and a tenant key only its own.
+        """
+        avatar = request.avatar()
+        if ADMIN_TAG in avatar.tags:
+            return None
+        return avatar.identity
+
     @route()
     async def health(self) -> dict[str, str]:
         """Liveness probe, no auth: the v1 body at the v1 address."""
         return {"status": "ok"}
+
+    @route(auth_rule=TENANT_TAG)
+    async def status(self, **kwargs: Any) -> dict[str, Any]:
+        """Authenticated probe: the token is valid, and dispatch is running or not."""
+        return StatusResponse(ok=True, active=self.core._active).model_dump(
+            exclude_none=True
+        )
+
+    @route(media_type=METRICS_MEDIA_TYPE)
+    async def metrics(self, **kwargs: Any) -> bytes:
+        """Prometheus exposition of the engine's metrics, no auth as in v1."""
+        return self.core.metrics.generate_latest()
