@@ -54,7 +54,7 @@ Core endpoints
 
 ``POST /commands/add-messages``
    Validate and enqueue a batch of messages.  Each payload entry matches
-   :class:`mail_proxy.api.MessagePayload`; the response contains the
+   :class:`mail_proxy.http_schema.MessagePayload`; the response contains the
    number of queued items plus a ``rejected`` list with ``{"id","reason"}``
    entries describing invalid payloads (missing ``id``, bad addresses, unknown
    account, duplicates, ...).
