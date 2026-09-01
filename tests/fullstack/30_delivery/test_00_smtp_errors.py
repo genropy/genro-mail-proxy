@@ -5,24 +5,20 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 
 import pytest
 import pytest_asyncio
 
+from tests import api_routes
 from tests.fullstack.helpers import (
     SMTP_RANDOM_HOST,
-    SMTP_RANDOM_PORT,
     SMTP_RATELIMIT_HOST,
-    SMTP_RATELIMIT_PORT,
     SMTP_REJECT_HOST,
-    SMTP_REJECT_PORT,
     SMTP_TEMPFAIL_HOST,
-    SMTP_TEMPFAIL_PORT,
     SMTP_TIMEOUT_HOST,
-    SMTP_TIMEOUT_PORT,
-    get_msg_status,
+    trigger_dispatch,
+    wait_for_message_status,
 )
 
 pytestmark = [pytest.mark.fullstack, pytest.mark.asyncio]
@@ -73,7 +69,7 @@ class TestSmtpErrorHandling:
         ]
 
         for account in accounts:
-            resp = await api_client.post("/account", json=account)
+            resp = await api_client.post(api_routes.ACCOUNT, json=account)
             # Ignore if already exists
             assert resp.status_code in (200, 201, 409), resp.text
 
@@ -88,6 +84,7 @@ class TestSmtpErrorHandling:
 
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-1",
             "account_id": "account-smtp-reject",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -95,22 +92,15 @@ class TestSmtpErrorHandling:
             "body": "This should fail with 550 error.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(3)
+        await trigger_dispatch(api_client)
 
         # Check message status - should be error
-        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
-        messages = resp.json().get("messages", [])
-
-        found = [m for m in messages if m.get("id") == msg_id]
-        if found:
-            msg = found[0]
-            # Message should be in error state (not sent)
-            assert get_msg_status(msg) in ("error", "deferred"), f"Expected error/deferred, got {get_msg_status(msg)}"
+        msg = await wait_for_message_status(api_client, msg_id, ("error", "deferred"))
+        assert msg, f"message {msg_id} never reached error or deferred"
 
     async def test_temporary_error_defers_message(
         self, api_client, setup_error_accounts
@@ -121,6 +111,7 @@ class TestSmtpErrorHandling:
 
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-1",
             "account_id": "account-smtp-tempfail",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -128,24 +119,16 @@ class TestSmtpErrorHandling:
             "body": "This should fail with 451 and be retried.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(3)
+        await trigger_dispatch(api_client)
 
         # Check message status - should be deferred (waiting for retry)
-        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
-        messages = resp.json().get("messages", [])
-
-        found = [m for m in messages if m.get("id") == msg_id]
-        if found:
-            msg = found[0]
-            # Message should be deferred for retry
-            assert get_msg_status(msg) in ("deferred", "pending", "error"), f"Got status: {get_msg_status(msg)}"
-            # Should have retry count incremented
-            assert msg.get("retry_count", 0) >= 0
+        msg = await wait_for_message_status(api_client, msg_id, ("deferred", "error"))
+        assert msg, f"message {msg_id} never reached deferred or error"
+        assert msg.get("retry_count", 0) >= 0
 
     async def test_rate_limited_smtp_defers_excess_messages(
         self, api_client, setup_error_accounts
@@ -158,6 +141,7 @@ class TestSmtpErrorHandling:
         for i in range(5):
             messages.append({
                 "id": f"ratelimit-test-{ts}-{i}",
+                "tenant_id": "test-tenant-1",
                 "account_id": "account-smtp-ratelimit",
                 "from": "sender@test.com",
                 "to": ["recipient@example.com"],
@@ -165,26 +149,21 @@ class TestSmtpErrorHandling:
                 "body": f"Message {i} for rate limit testing.",
             })
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": messages})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": messages})
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(5)
+        await trigger_dispatch(api_client)
 
-        # Check results - some should be sent, some deferred/error
-        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
-        all_msgs = resp.json().get("messages", [])
-
-        test_msgs = [m for m in all_msgs if m.get("id", "").startswith(f"ratelimit-test-{ts}")]
-
-        # At least some should have been processed
-        assert len(test_msgs) > 0, "Test messages should exist"
-
-        # Count statuses
-        statuses = [get_msg_status(m) for m in test_msgs]
-        # We expect a mix of sent and deferred/error due to rate limiting
-        # The exact behavior depends on the error classification
+        # Every message must leave pending: sent under the limit, deferred or
+        # error above it. The split itself depends on the error classification.
+        settled = [
+            await wait_for_message_status(
+                api_client, m["id"], ("sent", "deferred", "error")
+            )
+            for m in messages
+        ]
+        assert all(settled), "every rate-limited message should leave pending"
 
     async def test_random_errors_mixed_results(
         self, api_client, setup_error_accounts
@@ -197,6 +176,7 @@ class TestSmtpErrorHandling:
         for i in range(10):
             messages.append({
                 "id": f"random-test-{ts}-{i}",
+                "tenant_id": "test-tenant-1",
                 "account_id": "account-smtp-random",
                 "from": "sender@test.com",
                 "to": ["recipient@example.com"],
@@ -204,28 +184,22 @@ class TestSmtpErrorHandling:
                 "body": f"Message {i} with random outcome.",
             })
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": messages})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": messages})
         assert resp.status_code == 200
 
-        # Trigger multiple dispatch cycles
+        # Trigger multiple dispatch cycles: the random server fails some sends,
+        # so a deferred message needs another cycle to settle.
+        settled: list[dict | None] = []
         for _ in range(3):
-            await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-            await asyncio.sleep(2)
+            await trigger_dispatch(api_client)
+            settled = [
+                await wait_for_message_status(
+                    api_client, m["id"], ("sent", "deferred", "error"), timeout=5.0
+                )
+                for m in messages
+            ]
 
-        # Check results
-        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
-        all_msgs = resp.json().get("messages", [])
-
-        test_msgs = [m for m in all_msgs if m.get("id", "").startswith(f"random-test-{ts}")]
-
-        # Count statuses
-        sent = sum(1 for m in test_msgs if get_msg_status(m) == "sent")
-        deferred = sum(1 for m in test_msgs if get_msg_status(m) == "deferred")
-        error = sum(1 for m in test_msgs if get_msg_status(m) == "error")
-
-        # With random errors, we expect a mix (not all same status)
-        # At minimum, messages should have been processed
-        assert len(test_msgs) > 0, "Test messages should exist"
+        assert all(settled), "every message should leave pending after three cycles"
 
 
 # ============================================
@@ -248,13 +222,14 @@ class TestRetryLogic:
             "port": 1025,
             "use_tls": False,
         }
-        await api_client.post("/account", json=account_data)
+        await api_client.post(api_routes.ACCOUNT, json=account_data)
 
         ts = int(time.time())
         msg_id = f"retry-count-test-{ts}"
 
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-1",
             "account_id": "retry-test-account",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -262,25 +237,21 @@ class TestRetryLogic:
             "body": "This should increment retry count.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger multiple dispatch cycles
         initial_retry = 0
         for cycle in range(3):
-            await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-            await asyncio.sleep(2)
+            await trigger_dispatch(api_client)
 
             # Check retry count
-            resp = await api_client.get("/messages?tenant_id=test-tenant-1")
-            all_msgs = resp.json().get("messages", [])
-            found = [m for m in all_msgs if m.get("id") == msg_id]
-
-            if found:
-                current_retry = found[0].get("retry_count", 0)
-                # Retry count should increase or stay same (if max reached)
-                assert current_retry >= initial_retry, f"Cycle {cycle}: retry count decreased"
-                initial_retry = current_retry
+            msg = await wait_for_message_status(api_client, msg_id, ("deferred", "error"))
+            assert msg, f"Cycle {cycle}: message {msg_id} never left pending"
+            current_retry = msg.get("retry_count", 0)
+            # Retry count should increase or stay same (if max reached)
+            assert current_retry >= initial_retry, f"Cycle {cycle}: retry count decreased"
+            initial_retry = current_retry
 
     async def test_message_error_contains_details(self, api_client, setup_test_tenants):
         """Error messages should contain SMTP error details."""
@@ -292,13 +263,14 @@ class TestRetryLogic:
             "port": 1025,
             "use_tls": False,
         }
-        await api_client.post("/account", json=account_data)
+        await api_client.post(api_routes.ACCOUNT, json=account_data)
 
         ts = int(time.time())
         msg_id = f"error-details-test-{ts}"
 
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-1",
             "account_id": "error-details-account",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -306,25 +278,15 @@ class TestRetryLogic:
             "body": "Check error details.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(3)
+        await trigger_dispatch(api_client)
 
         # Check message has error details
-        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
-        all_msgs = resp.json().get("messages", [])
-        found = [m for m in all_msgs if m.get("id") == msg_id]
-
-        if found:
-            msg = found[0]
-            # Should have last_error field with SMTP error details
-            last_error = msg.get("last_error", "")
-            # The error should contain some SMTP-related info
-            # (actual content depends on implementation)
-            assert get_msg_status(msg) in ("error", "deferred")
+        msg = await wait_for_message_status(api_client, msg_id, ("error", "deferred"))
+        assert msg, f"message {msg_id} never reached error or deferred"
 
 
 # ============================================

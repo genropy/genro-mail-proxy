@@ -5,11 +5,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 
 import pytest
 import pytest_asyncio
+
+from tests import api_routes
 
 httpx = pytest.importorskip("httpx")
 
@@ -17,8 +18,11 @@ from tests.fullstack.helpers import (
     ATTACHMENT_SERVER_URL,
     CLIENT_TENANT1_URL,
     MAILHOG_TENANT1_API,
+    MAILHOG_TENANT1_SMTP,
     MINIO_URL,
     get_msg_status,
+    trigger_dispatch,
+    wait_for_message_status,
     wait_for_messages,
 )
 
@@ -47,7 +51,7 @@ class TestLargeFileStorage:
             "id": "test-tenant-largefile",
             "name": "Large File Test Tenant",
             "client_base_url": CLIENT_TENANT1_URL,
-            "client_sync_path": "/proxy_sync",
+            "client_sync_path": api_routes.CLIENT_SYNC_PATH,
             "client_auth": {"method": "none"},
             "active": True,
             "large_file_config": {
@@ -58,18 +62,18 @@ class TestLargeFileStorage:
                 "file_ttl_days": 30,
             },
         }
-        resp = await api_client.post("/tenant", json=tenant_data)
+        resp = await api_client.post(api_routes.TENANT, json=tenant_data)
         assert resp.status_code in (200, 201, 409), resp.text
 
         # Create account for this tenant
         account_data = {
             "id": "account-largefile",
             "tenant_id": "test-tenant-largefile",
-            "host": "localhost",
-            "port": 1025,
+            "host": MAILHOG_TENANT1_SMTP[0],
+            "port": MAILHOG_TENANT1_SMTP[1],
             "use_tls": False,
         }
-        resp = await api_client.post("/account", json=account_data)
+        resp = await api_client.post(api_routes.ACCOUNT, json=account_data)
         assert resp.status_code in (200, 201, 409), resp.text
 
         return tenant_data
@@ -81,7 +85,7 @@ class TestLargeFileStorage:
             "id": "test-tenant-reject-large",
             "name": "Reject Large Files Tenant",
             "client_base_url": CLIENT_TENANT1_URL,
-            "client_sync_path": "/proxy_sync",
+            "client_sync_path": api_routes.CLIENT_SYNC_PATH,
             "client_auth": {"method": "none"},
             "active": True,
             "large_file_config": {
@@ -90,17 +94,17 @@ class TestLargeFileStorage:
                 "action": "reject",
             },
         }
-        resp = await api_client.post("/tenant", json=tenant_data)
+        resp = await api_client.post(api_routes.TENANT, json=tenant_data)
         assert resp.status_code in (200, 201, 409), resp.text
 
         account_data = {
             "id": "account-reject-large",
             "tenant_id": "test-tenant-reject-large",
-            "host": "localhost",
-            "port": 1025,
+            "host": MAILHOG_TENANT1_SMTP[0],
+            "port": MAILHOG_TENANT1_SMTP[1],
             "use_tls": False,
         }
-        resp = await api_client.post("/account", json=account_data)
+        resp = await api_client.post(api_routes.ACCOUNT, json=account_data)
         assert resp.status_code in (200, 201, 409), resp.text
 
         return tenant_data
@@ -112,7 +116,7 @@ class TestLargeFileStorage:
             "id": "test-tenant-warn-large",
             "name": "Warn Large Files Tenant",
             "client_base_url": CLIENT_TENANT1_URL,
-            "client_sync_path": "/proxy_sync",
+            "client_sync_path": api_routes.CLIENT_SYNC_PATH,
             "client_auth": {"method": "none"},
             "active": True,
             "large_file_config": {
@@ -121,17 +125,17 @@ class TestLargeFileStorage:
                 "action": "warn",
             },
         }
-        resp = await api_client.post("/tenant", json=tenant_data)
+        resp = await api_client.post(api_routes.TENANT, json=tenant_data)
         assert resp.status_code in (200, 201, 409), resp.text
 
         account_data = {
             "id": "account-warn-large",
             "tenant_id": "test-tenant-warn-large",
-            "host": "localhost",
-            "port": 1025,
+            "host": MAILHOG_TENANT1_SMTP[0],
+            "port": MAILHOG_TENANT1_SMTP[1],
             "use_tls": False,
         }
-        resp = await api_client.post("/account", json=account_data)
+        resp = await api_client.post(api_routes.ACCOUNT, json=account_data)
         assert resp.status_code in (200, 201, 409), resp.text
 
         return tenant_data
@@ -146,6 +150,7 @@ class TestLargeFileStorage:
         # Use small.txt from attachment server (< 1 MB)
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-largefile",
             "account_id": "account-largefile",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -160,20 +165,19 @@ class TestLargeFileStorage:
             ],
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-largefile")
-        await asyncio.sleep(3)
+        await trigger_dispatch(api_client, tenant_id="test-tenant-largefile")
 
         # Check message was sent
-        resp = await api_client.get("/messages?tenant_id=test-tenant-largefile")
-        all_msgs = resp.json().get("messages", [])
-        found = [m for m in all_msgs if m.get("id") == msg_id]
-
-        assert len(found) > 0
-        assert get_msg_status(found[0]) == "sent", f"Expected sent, got {get_msg_status(found[0])}"
+        # A large attachment is fetched over HTTP and uploaded to MinIO before
+        # the send, so this one needs more room than the default.
+        sent = await wait_for_message_status(
+            api_client, msg_id, ("sent",), tenant_id="test-tenant-largefile", timeout=90.0
+        )
+        assert sent, f"message {msg_id} never reached sent"
 
         # Check MailHog - email should have the attachment (not a link)
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1, timeout=10)
@@ -189,7 +193,6 @@ class TestLargeFileStorage:
                 assert len(parts) >= 1, "Email should have attachment"
                 break
 
-    @pytest.mark.skip(reason="Flaky in CI: messages stay pending. See issue #69")
     async def test_large_attachment_rewritten_to_link(
         self, api_client, setup_large_file_tenant
     ):
@@ -200,6 +203,7 @@ class TestLargeFileStorage:
         # Use large-file.bin from attachment server (> 1 MB)
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-largefile",
             "account_id": "account-largefile",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -215,21 +219,19 @@ class TestLargeFileStorage:
             ],
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-largefile")
-        await asyncio.sleep(5)
+        await trigger_dispatch(api_client, tenant_id="test-tenant-largefile")
 
         # Check message was sent
-        resp = await api_client.get("/messages?tenant_id=test-tenant-largefile")
-        all_msgs = resp.json().get("messages", [])
-        found = [m for m in all_msgs if m.get("id") == msg_id]
-
-        assert len(found) > 0
-        msg_status = get_msg_status(found[0])
-        assert msg_status == "sent", f"Expected sent, got {msg_status}"
+        # A large attachment is fetched over HTTP and uploaded to MinIO before
+        # the send, so this one needs more room than the default.
+        sent = await wait_for_message_status(
+            api_client, msg_id, ("sent",), tenant_id="test-tenant-largefile", timeout=90.0
+        )
+        assert sent, f"message {msg_id} never reached sent"
 
         # Check MailHog - email should have a download link in the body
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1, timeout=10)
@@ -246,7 +248,6 @@ class TestLargeFileStorage:
                 ), f"Email body should contain download link info. Body: {body[:500]}"
                 break
 
-    @pytest.mark.skip(reason="Flaky in CI: messages stay pending. See issue #69")
     async def test_large_attachment_reject_action(
         self, api_client, setup_reject_tenant
     ):
@@ -256,6 +257,7 @@ class TestLargeFileStorage:
 
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-reject-large",
             "account_id": "account-reject-large",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -270,25 +272,20 @@ class TestLargeFileStorage:
             ],
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-reject-large")
-        await asyncio.sleep(3)
+        await trigger_dispatch(api_client, tenant_id="test-tenant-reject-large")
 
         # Check message status - should be error (rejected)
-        resp = await api_client.get("/messages?tenant_id=test-tenant-reject-large")
-        all_msgs = resp.json().get("messages", [])
-        found = [m for m in all_msgs if m.get("id") == msg_id]
-
-        assert len(found) > 0
-        msg_status = get_msg_status(found[0])
-        # Should be error because attachment was rejected
-        assert msg_status == "error", f"Expected error (rejected), got {msg_status}"
+        rejected = await wait_for_message_status(
+            api_client, msg_id, ("error",), tenant_id="test-tenant-reject-large"
+        )
+        assert rejected, f"message {msg_id} never reached error (rejected)"
 
         # Check last_error mentions size limit
-        last_error = found[0].get("error", "")
+        last_error = rejected.get("error", "")
         assert "large" in last_error.lower() or "size" in last_error.lower() or "limit" in last_error.lower(), \
             f"Error should mention size/limit. Got: {last_error}"
 
@@ -301,6 +298,7 @@ class TestLargeFileStorage:
 
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-warn-large",
             "account_id": "account-warn-large",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -315,28 +313,20 @@ class TestLargeFileStorage:
             ],
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger dispatch and wait for processing
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-warn-large")
+        await trigger_dispatch(api_client, tenant_id="test-tenant-warn-large")
 
-        # Wait for message to be processed (poll status)
-        for _ in range(15):
-            await asyncio.sleep(1)
-            resp = await api_client.get("/messages?tenant_id=test-tenant-warn-large")
-            all_msgs = resp.json().get("messages", [])
-            found = [m for m in all_msgs if m.get("id") == msg_id]
-            if found and get_msg_status(found[0]) in ("sent", "error"):
-                break
-
-        # Check message was sent (warning is just logged)
-        assert len(found) > 0, f"Message {msg_id} not found"
-        msg_status = get_msg_status(found[0])
         # With warn action, the message should be sent even if attachment is large
-        assert msg_status == "sent", f"Expected sent (with warning), got {msg_status}. Error: {found[0].get('error', 'none')}"
+        settled = await wait_for_message_status(
+            api_client, msg_id, ("sent", "error"), tenant_id="test-tenant-warn-large"
+        )
+        assert settled, f"message {msg_id} never left pending"
+        assert get_msg_status(settled) == "sent", \
+            f"Expected sent (with warning). Error: {settled.get('error', 'none')}"
 
-    @pytest.mark.skip(reason="Flaky in CI: messages stay pending. See issue #69")
     async def test_mixed_attachments_partial_rewrite(
         self, api_client, setup_large_file_tenant
     ):
@@ -346,6 +336,7 @@ class TestLargeFileStorage:
 
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-largefile",
             "account_id": "account-largefile",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -366,20 +357,19 @@ class TestLargeFileStorage:
             ],
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger dispatch for the tenant that owns this account
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-largefile")
-        await asyncio.sleep(5)
+        await trigger_dispatch(api_client, tenant_id="test-tenant-largefile")
 
         # Check message was sent
-        resp = await api_client.get("/messages?tenant_id=test-tenant-largefile")
-        all_msgs = resp.json().get("messages", [])
-        found = [m for m in all_msgs if m.get("id") == msg_id]
-
-        assert len(found) > 0
-        assert get_msg_status(found[0]) == "sent"
+        # A large attachment is fetched over HTTP and uploaded to MinIO before
+        # the send, so this one needs more room than the default.
+        sent = await wait_for_message_status(
+            api_client, msg_id, ("sent",), tenant_id="test-tenant-largefile", timeout=90.0
+        )
+        assert sent, f"message {msg_id} never reached sent"
 
         # Check MailHog - should have small attachment AND download link for large
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1, timeout=10)
@@ -408,7 +398,6 @@ class TestLargeFileStorage:
                 # If it fails, the test still passes the main assertion about download link
                 break
 
-    @pytest.mark.skip(reason="Flaky in CI: messages stay pending. See issue #69")
     async def test_verify_file_uploaded_to_minio(
         self, api_client, setup_large_file_tenant
     ):
@@ -418,6 +407,7 @@ class TestLargeFileStorage:
 
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-largefile",
             "account_id": "account-largefile",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -432,18 +422,18 @@ class TestLargeFileStorage:
             ],
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-largefile")
-        await asyncio.sleep(5)
+        await trigger_dispatch(api_client, tenant_id="test-tenant-largefile")
 
         # Verify message was sent
-        resp = await api_client.get("/messages?tenant_id=test-tenant-largefile")
-        all_msgs = resp.json().get("messages", [])
-        found = [m for m in all_msgs if m.get("id") == msg_id]
-        assert len(found) > 0
-        assert get_msg_status(found[0]) == "sent"
+        # A large attachment is fetched over HTTP and uploaded to MinIO before
+        # the send, so this one needs more room than the default.
+        sent = await wait_for_message_status(
+            api_client, msg_id, ("sent",), tenant_id="test-tenant-largefile", timeout=90.0
+        )
+        assert sent, f"message {msg_id} never reached sent"
 
         # Check MinIO has files in the bucket
         # We use the MinIO mc CLI or direct S3 API
@@ -478,11 +468,11 @@ class TestTenantLargeFileConfigApi:
             },
         }
 
-        resp = await api_client.post("/tenant", json=tenant_data)
+        resp = await api_client.post(api_routes.TENANT, json=tenant_data)
         assert resp.status_code in (200, 201), resp.text
 
         # Verify by getting tenant details
-        resp = await api_client.get(f"/tenant/{tenant_data['id']}")
+        resp = await api_client.get(api_routes.tenant(tenant_data['id']))
         assert resp.status_code == 200
         tenant = resp.json()
 
@@ -503,11 +493,11 @@ class TestTenantLargeFileConfigApi:
             },
         }
 
-        resp = await api_client.put("/tenant/test-tenant-1", json=update_data)
+        resp = await api_client.put(api_routes.tenant("test-tenant-1"), json=update_data)
         assert resp.status_code == 200
 
         # Verify
-        resp = await api_client.get("/tenant/test-tenant-1")
+        resp = await api_client.get(api_routes.tenant("test-tenant-1"))
         assert resp.status_code == 200
         tenant = resp.json()
 
@@ -519,7 +509,7 @@ class TestTenantLargeFileConfigApi:
     async def test_disable_large_file_config(self, api_client, setup_test_tenants):
         """Can disable large_file_config on a tenant."""
         # First enable
-        await api_client.put("/tenant/test-tenant-2", json={
+        await api_client.put(api_routes.tenant("test-tenant-2"), json={
             "large_file_config": {
                 "enabled": True,
                 "max_size_mb": 3.0,
@@ -528,7 +518,7 @@ class TestTenantLargeFileConfigApi:
         })
 
         # Then disable
-        resp = await api_client.put("/tenant/test-tenant-2", json={
+        resp = await api_client.put(api_routes.tenant("test-tenant-2"), json={
             "large_file_config": {
                 "enabled": False,
             },
@@ -536,7 +526,7 @@ class TestTenantLargeFileConfigApi:
         assert resp.status_code == 200
 
         # Verify
-        resp = await api_client.get("/tenant/test-tenant-2")
+        resp = await api_client.get(api_routes.tenant("test-tenant-2"))
         tenant = resp.json()
         lfc = tenant.get("large_file_config", {})
         assert lfc.get("enabled") is False

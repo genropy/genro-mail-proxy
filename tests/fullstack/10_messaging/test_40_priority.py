@@ -9,10 +9,12 @@ import time
 
 import pytest
 
+from tests import api_routes
 from tests.fullstack.helpers import (
     MAILHOG_TENANT1_API,
     clear_mailhog,
     trigger_dispatch,
+    wait_for_message_status,
     wait_for_messages,
 )
 
@@ -32,6 +34,7 @@ class TestPriorityHandling:
         messages = [
             {
                 "id": f"prio-low-{ts}",
+                "tenant_id": "test-tenant-1",
                 "account_id": "test-account-1",
                 "from": "sender@test.com",
                 "to": ["recipient@example.com"],
@@ -41,6 +44,7 @@ class TestPriorityHandling:
             },
             {
                 "id": f"prio-high-{ts}",
+                "tenant_id": "test-tenant-1",
                 "account_id": "test-account-1",
                 "from": "sender@test.com",
                 "to": ["recipient@example.com"],
@@ -50,6 +54,7 @@ class TestPriorityHandling:
             },
             {
                 "id": f"prio-immediate-{ts}",
+                "tenant_id": "test-tenant-1",
                 "account_id": "test-account-1",
                 "from": "sender@test.com",
                 "to": ["recipient@example.com"],
@@ -59,10 +64,14 @@ class TestPriorityHandling:
             },
         ]
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": messages})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": messages})
         assert resp.status_code == 200
 
         await trigger_dispatch(api_client)
+
+        for msg in messages:
+            sent = await wait_for_message_status(api_client, msg["id"], ("sent",))
+            assert sent, f"message {msg['id']} never reached sent"
 
         msgs = await wait_for_messages(MAILHOG_TENANT1_API, 3)
         assert len(msgs) == 3

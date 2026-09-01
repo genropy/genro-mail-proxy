@@ -100,19 +100,8 @@ Issues = "https://github.com/genropy/genro-mail-proxy/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["src/mail_proxy"]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-norecursedirs = ["_build", "docs/_build", "docs", ".git"]
-addopts = "-v --cov=mail_proxy --cov-report=term-missing"
-markers = [
-    "network: marks tests as requiring network access (deselect with '-m \"not network\"')",
-    "fullstack: marks tests as requiring full Docker infrastructure (PostgreSQL, MailHog, MinIO)",
-    "db: marks tests as database integration tests using testcontainers",
-    "bounce_e2e: marks tests as bounce end-to-end tests requiring Dovecot IMAP",
-    "chaos: marks tests with non-deterministic/random behavior",
-    "retention: marks tests for message retention and cleanup features",
-    "rate_limit: marks tests for account-level rate limiting",
-]
+# pytest configuration lives in pytest.ini, which pytest reads in preference
+# to this file: a [tool.pytest.ini_options] table here would never be applied.
 
 [tool.black]
 line-length = 100

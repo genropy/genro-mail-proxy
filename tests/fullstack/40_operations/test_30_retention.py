@@ -12,15 +12,16 @@ These tests verify the retention policy enforcement:
 
 from __future__ import annotations
 
-import asyncio
 import time
 
 import pytest
 
+from tests import api_routes
 from tests.fullstack.helpers import (
     MAILHOG_TENANT1_API,
     clear_mailhog,
-    wait_for_messages,
+    trigger_dispatch,
+    wait_for_message_status,
 )
 
 pytestmark = [pytest.mark.fullstack, pytest.mark.asyncio, pytest.mark.retention]
@@ -55,6 +56,7 @@ class TestRetentionCleanup:
         # Create message
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -62,24 +64,24 @@ class TestRetentionCleanup:
             "body": "This message should be cleaned up.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # Send the message
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(3)
+        await trigger_dispatch(api_client)
 
         # Verify message was sent
-        await wait_for_messages(MAILHOG_TENANT1_API, 1)
+        sent = await wait_for_message_status(api_client, msg_id, ("sent",))
+        assert sent, f"message {msg_id} never reached sent"
 
         # Check message exists and is sent
-        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
+        resp = await api_client.get(api_routes.messages(tenant_id="test-tenant-1"))
         messages = resp.json().get("messages", [])
         found = [m for m in messages if m.get("id") == msg_id]
         assert len(found) > 0, "Message should exist before cleanup"
 
         # Trigger cleanup
-        resp = await api_client.post("/commands/cleanup-messages?tenant_id=test-tenant-1", json={})
+        resp = await api_client.post(api_routes.cleanup_messages(tenant_id="test-tenant-1"), json={})
         assert resp.status_code == 200, f"Cleanup failed: {resp.text}"
 
         # After cleanup, very old reported messages should be removed
@@ -102,6 +104,7 @@ class TestRetentionCleanup:
         # Create message in tenant-1
         msg1 = {
             "id": f"retention-t1-{ts}",
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -112,6 +115,7 @@ class TestRetentionCleanup:
         # Create message in tenant-2
         msg2 = {
             "id": f"retention-t2-{ts}",
+            "tenant_id": "test-tenant-2",
             "account_id": "test-account-2",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -119,18 +123,18 @@ class TestRetentionCleanup:
             "body": "Message for tenant 2.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [msg1]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [msg1]})
         assert resp.status_code == 200
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [msg2]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [msg2]})
         assert resp.status_code == 200
 
         # Trigger cleanup for tenant-1 only
-        resp = await api_client.post("/commands/cleanup-messages?tenant_id=test-tenant-1", json={})
+        resp = await api_client.post(api_routes.cleanup_messages(tenant_id="test-tenant-1"), json={})
         assert resp.status_code == 200, f"Cleanup failed: {resp.text}"
 
         # Verify tenant-2 message still exists
-        resp = await api_client.get("/messages?tenant_id=test-tenant-2")
+        resp = await api_client.get(api_routes.messages(tenant_id="test-tenant-2"))
         messages = resp.json().get("messages", [])
         found = [m for m in messages if m.get("id") == f"retention-t2-{ts}"]
         assert len(found) > 0, "Tenant-2 message should not be affected by tenant-1 cleanup"
@@ -149,6 +153,7 @@ class TestRetentionCleanup:
         # Create message but don't trigger dispatch (so it stays pending/unreported)
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -156,17 +161,17 @@ class TestRetentionCleanup:
             "body": "This message should NOT be cleaned up.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # DO NOT dispatch - message stays pending/unreported
 
         # Trigger cleanup
-        resp = await api_client.post("/commands/cleanup-messages?tenant_id=test-tenant-1", json={})
+        resp = await api_client.post(api_routes.cleanup_messages(tenant_id="test-tenant-1"), json={})
         assert resp.status_code == 200, f"Cleanup failed: {resp.text}"
 
         # Verify message still exists (unreported messages preserved)
-        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
+        resp = await api_client.get(api_routes.messages(tenant_id="test-tenant-1"))
         messages = resp.json().get("messages", [])
         found = [m for m in messages if m.get("id") == msg_id]
         assert len(found) > 0, "Unreported message should NOT be cleaned up"
@@ -185,6 +190,7 @@ class TestRetentionCleanup:
         # Create message
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -192,7 +198,7 @@ class TestRetentionCleanup:
             "body": "This bounced message should NOT be cleaned up.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # Note: To fully test this, we'd need to:
@@ -203,17 +209,17 @@ class TestRetentionCleanup:
         # 5. Verify message still exists
 
         # For now, just verify message exists before cleanup
-        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
+        resp = await api_client.get(api_routes.messages(tenant_id="test-tenant-1"))
         messages = resp.json().get("messages", [])
         found = [m for m in messages if m.get("id") == msg_id]
         assert len(found) > 0, "Message should exist"
 
         # Trigger cleanup
-        resp = await api_client.post("/commands/cleanup-messages?tenant_id=test-tenant-1", json={})
+        resp = await api_client.post(api_routes.cleanup_messages(tenant_id="test-tenant-1"), json={})
         assert resp.status_code == 200, f"Cleanup failed: {resp.text}"
 
         # Verify message still exists
-        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
+        resp = await api_client.get(api_routes.messages(tenant_id="test-tenant-1"))
         messages = resp.json().get("messages", [])
         found = [m for m in messages if m.get("id") == msg_id]
         assert len(found) > 0, "Bounced unreported message should NOT be cleaned up"

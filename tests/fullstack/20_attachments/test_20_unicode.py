@@ -5,16 +5,17 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import time
 
 import pytest
 
+from tests import api_routes
 from tests.fullstack.helpers import (
     MAILHOG_TENANT1_API,
     clear_mailhog,
-    get_msg_status,
+    trigger_dispatch,
+    wait_for_message_status,
     wait_for_messages,
 )
 
@@ -33,6 +34,7 @@ class TestUnicodeEncoding:
 
         message = {
             "id": f"emoji-subject-{ts}",
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -40,11 +42,13 @@ class TestUnicodeEncoding:
             "body": "Testing emoji in subject line.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(3)
+        await trigger_dispatch(api_client)
+
+        sent = await wait_for_message_status(api_client, f"emoji-subject-{ts}", ("sent",))
+        assert sent, f"message emoji-subject-{ts} never reached sent"
 
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
         assert len(messages) >= 1
@@ -58,7 +62,6 @@ class TestUnicodeEncoding:
     async def test_emoji_in_body(self, api_client, setup_test_tenants):
         """Emails with emoji in body should be sent correctly."""
         await clear_mailhog(MAILHOG_TENANT1_API)
-        await asyncio.sleep(0.5)  # Give MailHog time to clear
 
         ts = int(time.time())
         msg_id = f"emoji-body-{ts}"
@@ -78,6 +81,7 @@ class TestUnicodeEncoding:
 
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -85,20 +89,15 @@ class TestUnicodeEncoding:
             "body": emoji_body,
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger dispatch and wait for processing
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
+        await trigger_dispatch(api_client)
 
-        # Poll for message status to confirm it was processed
-        for _ in range(20):
-            await asyncio.sleep(1)
-            resp = await api_client.get("/messages?tenant_id=test-tenant-1")
-            all_msgs = resp.json().get("messages", [])
-            found = [m for m in all_msgs if m.get("id") == msg_id]
-            if found and found[0].get("sent_ts"):
-                break
+        # Confirm the proxy processed it before looking in MailHog
+        sent = await wait_for_message_status(api_client, msg_id, ("sent",))
+        assert sent, f"message {msg_id} never reached sent"
 
         # Wait for message in MailHog
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1, timeout=10)
@@ -127,6 +126,7 @@ class TestUnicodeEncoding:
 
         message = {
             "id": f"international-{ts}",
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -134,11 +134,13 @@ class TestUnicodeEncoding:
             "body": international_body,
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(3)
+        await trigger_dispatch(api_client)
+
+        sent = await wait_for_message_status(api_client, f"international-{ts}", ("sent",))
+        assert sent, f"message international-{ts} never reached sent"
 
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
         assert len(messages) >= 1
@@ -151,6 +153,7 @@ class TestUnicodeEncoding:
 
         message = {
             "id": f"unicode-filename-{ts}",
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -163,20 +166,16 @@ class TestUnicodeEncoding:
             }],
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(3)
+        await trigger_dispatch(api_client)
 
-        # Should be sent without error
-        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
-        all_msgs = resp.json().get("messages", [])
-        found = [m for m in all_msgs if m.get("id") == f"unicode-filename-{ts}"]
-
-        if found:
-            # Should be sent or have meaningful error (not crash)
-            assert get_msg_status(found[0]) in ("sent", "error", "deferred")
+        # Should be sent or have a meaningful error, never stay pending
+        msg = await wait_for_message_status(
+            api_client, f"unicode-filename-{ts}", ("sent", "error", "deferred")
+        )
+        assert msg, f"message unicode-filename-{ts} never left pending"
 
 
 # ============================================

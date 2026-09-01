@@ -5,14 +5,16 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 
 import pytest
 
+from tests import api_routes
 from tests.fullstack.helpers import (
     MAILHOG_TENANT1_API,
     clear_mailhog,
+    trigger_dispatch,
+    wait_for_message_status,
     wait_for_messages,
 )
 
@@ -38,7 +40,7 @@ class TestSecurityInputSanitization:
 
         for pattern in injection_patterns:
             # These should either fail validation or be treated as literal strings
-            resp = await api_client.get(f"/messages?tenant_id={pattern}")
+            resp = await api_client.get(api_routes.messages(tenant_id=pattern))
             # Should not cause server error (500)
             assert resp.status_code != 500, f"SQL injection caused server error: {pattern}"
 
@@ -52,7 +54,7 @@ class TestSecurityInputSanitization:
 
         # Try deleting with injection IDs
         resp = await api_client.post(
-            "/commands/delete-messages?tenant_id=test-tenant-1",
+            api_routes.delete_messages(tenant_id="test-tenant-1"),
             json={"ids": injection_ids}
         )
         # Should not cause server error
@@ -68,6 +70,7 @@ class TestSecurityInputSanitization:
 
         message = {
             "id": f"xss-test-{ts}",
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -75,11 +78,12 @@ class TestSecurityInputSanitization:
             "body": xss_body,
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(3)
+        await trigger_dispatch(api_client)
+        sent = await wait_for_message_status(api_client, f"xss-test-{ts}", ("sent",))
+        assert sent, f"message xss-test-{ts} never reached sent"
 
         # Verify the message was sent with literal content (not sanitized)
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
@@ -97,6 +101,7 @@ class TestSecurityInputSanitization:
         # Try path traversal in storage_path
         message = {
             "id": f"path-traversal-{ts}",
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -109,7 +114,7 @@ class TestSecurityInputSanitization:
             }],
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         # Should either reject or handle safely
         assert resp.status_code != 500, "Path traversal caused server error"
 
@@ -122,6 +127,7 @@ class TestSecurityInputSanitization:
 
         message = {
             "id": f"oversized-{ts}",
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -129,7 +135,7 @@ class TestSecurityInputSanitization:
             "body": large_body,
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         # Should either reject (413/422) or accept with warning
         # Server should not crash
         assert resp.status_code != 500, "Oversized payload caused server error"

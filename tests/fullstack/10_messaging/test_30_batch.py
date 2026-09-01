@@ -10,11 +10,13 @@ import time
 
 import pytest
 
+from tests import api_routes
 from tests.fullstack.helpers import (
     MAILHOG_TENANT1_API,
     clear_mailhog,
     get_msg_status,
     trigger_dispatch,
+    wait_for_message_status,
     wait_for_messages,
 )
 
@@ -33,6 +35,7 @@ class TestBatchOperations:
         for i in range(5):
             messages.append({
                 "id": f"batch-{ts}-{i}",
+                "tenant_id": "test-tenant-1",
                 "account_id": "test-account-1",
                 "from": "sender@test.com",
                 "to": [f"recipient{i}@example.com"],
@@ -40,12 +43,16 @@ class TestBatchOperations:
                 "body": f"Batch message content {i}",
             })
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": messages})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": messages})
         assert resp.status_code == 200
         data = resp.json()
         assert data.get("queued") == 5
 
         await trigger_dispatch(api_client)
+
+        for msg in messages:
+            sent = await wait_for_message_status(api_client, msg["id"], ("sent",))
+            assert sent, f"message {msg['id']} never reached sent"
 
         msgs = await wait_for_messages(MAILHOG_TENANT1_API, 5, timeout=15)
         assert len(msgs) == 5
@@ -59,6 +66,7 @@ class TestBatchOperations:
 
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -67,17 +75,17 @@ class TestBatchOperations:
         }
 
         # First send - should be queued and sent
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
         assert resp.json().get("queued") == 1
 
         # Trigger dispatch and wait for message to be sent
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
+        await api_client.post(api_routes.run_now(tenant_id="test-tenant-1"))
         await wait_for_messages(MAILHOG_TENANT1_API, 1, timeout=10)
 
         # Second send with same ID - should be rejected as "already sent"
         message["body"] = "Updated message"
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         data = resp.json()
         # Should be rejected because message was already sent (sent_ts IS NOT NULL)
         rejected = data.get("rejected", [])
@@ -102,6 +110,7 @@ class TestBatchCodeOperations:
         messages = [
             {
                 "id": f"batch-msg-{ts}-{i}",
+                "tenant_id": "test-tenant-1",
                 "account_id": "test-account-1",
                 "from": "sender@test.com",
                 "to": [f"recipient{i}@example.com"],
@@ -112,11 +121,11 @@ class TestBatchCodeOperations:
             for i in range(5)
         ]
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": messages})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": messages})
         assert resp.status_code == 200
 
         # Verify messages were queued
-        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
+        resp = await api_client.get(api_routes.messages(tenant_id="test-tenant-1"))
         assert resp.status_code == 200
         all_msgs = resp.json().get("messages", [])
         batch_msgs = [m for m in all_msgs if m.get("batch_code") == batch_code]
@@ -130,6 +139,7 @@ class TestBatchCodeOperations:
         messages = [
             {
                 "id": f"suspend-batch-msg-{ts}-{i}",
+                "tenant_id": "test-tenant-1",
                 "account_id": "test-account-1",
                 "from": "sender@test.com",
                 "to": [f"recipient{i}@example.com"],
@@ -140,12 +150,12 @@ class TestBatchCodeOperations:
             for i in range(3)
         ]
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": messages})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": messages})
         assert resp.status_code == 200
 
         # Suspend only this batch
         resp = await api_client.post(
-            f"/commands/suspend?tenant_id=test-tenant-1&batch_code={batch_code}"
+            api_routes.suspend(tenant_id="test-tenant-1", batch_code=batch_code)
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -161,6 +171,7 @@ class TestBatchCodeOperations:
         messages = [
             {
                 "id": f"activate-batch-msg-{ts}-{i}",
+                "tenant_id": "test-tenant-1",
                 "account_id": "test-account-1",
                 "from": "sender@test.com",
                 "to": [f"recipient{i}@example.com"],
@@ -171,18 +182,18 @@ class TestBatchCodeOperations:
             for i in range(3)
         ]
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": messages})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": messages})
         assert resp.status_code == 200
 
         # Suspend first
         resp = await api_client.post(
-            f"/commands/suspend?tenant_id=test-tenant-1&batch_code={batch_code}"
+            api_routes.suspend(tenant_id="test-tenant-1", batch_code=batch_code)
         )
         assert resp.status_code == 200
 
         # Then activate
         resp = await api_client.post(
-            f"/commands/activate?tenant_id=test-tenant-1&batch_code={batch_code}"
+            api_routes.activate(tenant_id="test-tenant-1", batch_code=batch_code)
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -200,6 +211,7 @@ class TestBatchCodeOperations:
         messages_a = [
             {
                 "id": f"batch-a-msg-{ts}-{i}",
+                "tenant_id": "test-tenant-1",
                 "account_id": "test-account-1",
                 "from": "sender@test.com",
                 "to": [f"recipient{i}@example.com"],
@@ -213,6 +225,7 @@ class TestBatchCodeOperations:
         messages_b = [
             {
                 "id": f"batch-b-msg-{ts}-{i}",
+                "tenant_id": "test-tenant-1",
                 "account_id": "test-account-1",
                 "from": "sender@test.com",
                 "to": [f"recipient{i}@example.com"],
@@ -223,20 +236,25 @@ class TestBatchCodeOperations:
             for i in range(2)
         ]
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": messages_a + messages_b})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": messages_a + messages_b})
         assert resp.status_code == 200
 
         # Suspend only batch A
         resp = await api_client.post(
-            f"/commands/suspend?tenant_id=test-tenant-1&batch_code={batch_a}"
+            api_routes.suspend(tenant_id="test-tenant-1", batch_code=batch_a)
         )
         assert resp.status_code == 200
 
         # Batch B messages should still be sendable
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(3)
+        await trigger_dispatch(api_client)
 
-        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
+        # Batch B settling is the proof the cycle ran, so batch A staying
+        # pending afterwards means something.
+        for msg in messages_b:
+            sent = await wait_for_message_status(api_client, msg["id"], ("sent",))
+            assert sent, f"non-suspended message {msg['id']} should have been sent"
+
+        resp = await api_client.get(api_routes.messages(tenant_id="test-tenant-1"))
         all_msgs = resp.json().get("messages", [])
 
         batch_a_msgs = [m for m in all_msgs if m.get("batch_code") == batch_a]
@@ -260,6 +278,7 @@ class TestBatchCodeOperations:
         messages = [
             {
                 "id": f"no-send-msg-{ts}-{i}",
+                "tenant_id": "test-tenant-1",
                 "account_id": "test-account-1",
                 "from": "sender@test.com",
                 "to": [f"recipient{i}@example.com"],
@@ -270,21 +289,22 @@ class TestBatchCodeOperations:
             for i in range(2)
         ]
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": messages})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": messages})
         assert resp.status_code == 200
 
         # Suspend before sending
         resp = await api_client.post(
-            f"/commands/suspend?tenant_id=test-tenant-1&batch_code={batch_code}"
+            api_routes.suspend(tenant_id="test-tenant-1", batch_code=batch_code)
         )
         assert resp.status_code == 200
 
-        # Try to send
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
+        # Try to send. This assertion is negative — the messages must NOT move —
+        # so there is no state to poll for: the wait has to be a fixed one.
+        await trigger_dispatch(api_client)
         await asyncio.sleep(3)
 
         # Messages should still be pending (not sent because batch is suspended)
-        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
+        resp = await api_client.get(api_routes.messages(tenant_id="test-tenant-1"))
         all_msgs = resp.json().get("messages", [])
         batch_msgs = [m for m in all_msgs if m.get("batch_code") == batch_code]
 

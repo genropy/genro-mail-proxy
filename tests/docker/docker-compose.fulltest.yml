@@ -6,7 +6,7 @@
 # - S3 storage (MinIO)
 # - IMAP server (Dovecot for bounce testing)
 # - Error-simulating SMTP servers
-# - Echo servers (simulate client webhooks)
+# - Programmable fake clients (the outbound protocol, one per tenant)
 #
 # The mailproxy service itself runs LOCALLY (not in Docker).
 # This allows testing against current code without rebuilding containers.
@@ -19,6 +19,23 @@
 #      uvicorn mail_proxy.server:app --host 0.0.0.0 --port 8000
 #   3. Run tests: pytest tests/fullstack/
 #   4. For bounce tests: docker compose --profile bounce up -d
+#
+# Every published port is overridable through a GMP_TEST_* variable, so the stack
+# can run beside another one holding the default ports. The same variables drive
+# tests/fullstack/helpers.py; unset, they reproduce the ports listed below.
+#
+#   GMP_TEST_DB_PORT             5433   GMP_TEST_MAILHOG1_SMTP_PORT   1025
+#   GMP_TEST_MINIO_PORT          9000   GMP_TEST_MAILHOG1_API_PORT    8025
+#   GMP_TEST_MINIO_CONSOLE_PORT  9001   GMP_TEST_MAILHOG2_SMTP_PORT   1026
+#   GMP_TEST_CLIENT1_PORT        8081   GMP_TEST_MAILHOG2_API_PORT    8026
+#   GMP_TEST_CLIENT2_PORT        8082   GMP_TEST_SMTP_REJECT_PORT     1027
+#   GMP_TEST_ATTACHMENTS_PORT    8083   GMP_TEST_SMTP_TEMPFAIL_PORT   1028
+#   GMP_TEST_DOVECOT_IMAP_PORT  10143   GMP_TEST_SMTP_TIMEOUT_PORT    1029
+#   GMP_TEST_MAILPROXY_PORT      8000   GMP_TEST_SMTP_RATELIMIT_PORT  1030
+#   GMP_TEST_HOST           localhost   GMP_TEST_SMTP_RANDOM_PORT     1031
+#
+# GMP_TEST_MAILPROXY_PORT and GMP_TEST_HOST are read by the tests only: the
+# mailproxy runs locally, outside this compose.
 #
 # Note: PostgreSQL uses port 5433 (not 5432) to avoid conflicts with local postgres
 
@@ -35,7 +52,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "5433:5432"  # Use 5433 to avoid conflict with local postgres
+      - "${GMP_TEST_DB_PORT:-5433}:5432"  # 5433 avoids the local postgres
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mailproxy"]
       interval: 5s
@@ -56,8 +73,8 @@ services:
     volumes:
       - minio-data:/data
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # Console
+      - "${GMP_TEST_MINIO_PORT:-9000}:9000"   # S3 API
+      - "${GMP_TEST_MINIO_CONSOLE_PORT:-9001}:9001"   # Console
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 5s
@@ -87,17 +104,28 @@ services:
   # ============================================
   mailhog-tenant1:
     image: mailhog/mailhog:latest
+    # MailHog's RSS tracks the bytes it has EVER received: clearing the mailbox
+    # returns nothing (measured, 2.1 GiB before and after a DELETE), so one full
+    # suite run takes tenant1 from 16 MiB to 1.56 GiB. The session fixture
+    # restarts these two services to reset that; the cap and the policy are the
+    # containment for a run that grows past it, so a spike kills MailHog alone
+    # instead of the largest process on the Docker VM.
+    mem_limit: 2g
+    restart: unless-stopped
     ports:
-      - "1025:1025"   # SMTP
-      - "8025:8025"   # Web UI / API
+      - "${GMP_TEST_MAILHOG1_SMTP_PORT:-1025}:1025"   # SMTP
+      - "${GMP_TEST_MAILHOG1_API_PORT:-8025}:8025"   # Web UI / API
     networks:
       - testnet
 
   mailhog-tenant2:
     image: mailhog/mailhog:latest
+    # Bounded for the same reason as tenant1, above.
+    mem_limit: 2g
+    restart: unless-stopped
     ports:
-      - "1026:1025"   # SMTP
-      - "8026:8025"   # Web UI / API
+      - "${GMP_TEST_MAILHOG2_SMTP_PORT:-1026}:1025"   # SMTP
+      - "${GMP_TEST_MAILHOG2_API_PORT:-8026}:8025"   # Web UI / API
     networks:
       - testnet
 
@@ -110,7 +138,7 @@ services:
     build:
       context: ./error-smtp
     ports:
-      - "1027:1025"
+      - "${GMP_TEST_SMTP_REJECT_PORT:-1027}:1025"
     environment:
       - SMTP_ERROR_MODE=reject_all
     networks:
@@ -121,7 +149,7 @@ services:
     build:
       context: ./error-smtp
     ports:
-      - "1028:1025"
+      - "${GMP_TEST_SMTP_TEMPFAIL_PORT:-1028}:1025"
     environment:
       - SMTP_ERROR_MODE=temp_fail
     networks:
@@ -132,7 +160,7 @@ services:
     build:
       context: ./error-smtp
     ports:
-      - "1029:1025"
+      - "${GMP_TEST_SMTP_TIMEOUT_PORT:-1029}:1025"
     environment:
       - SMTP_ERROR_MODE=timeout
       - SMTP_TIMEOUT_SECONDS=30
@@ -144,7 +172,7 @@ services:
     build:
       context: ./error-smtp
     ports:
-      - "1030:1025"
+      - "${GMP_TEST_SMTP_RATELIMIT_PORT:-1030}:1025"
     environment:
       - SMTP_ERROR_MODE=rate_limit
       - SMTP_RATE_LIMIT=3
@@ -156,7 +184,7 @@ services:
     build:
       context: ./error-smtp
     ports:
-      - "1031:1025"
+      - "${GMP_TEST_SMTP_RANDOM_PORT:-1031}:1025"
     environment:
       - SMTP_ERROR_MODE=random
     networks:
@@ -173,7 +201,7 @@ services:
     profiles:
       - bounce
     ports:
-      - "10143:31143"
+      - "${GMP_TEST_DOVECOT_IMAP_PORT:-10143}:31143"
     volumes:
       - ./dovecot/etc:/etc/dovecot:ro
       - dovecot-mail:/srv/vmail
@@ -187,23 +215,24 @@ services:
       - testnet
 
   # ============================================
-  # CLIENT ENDPOINTS (Echo servers for delivery reports)
+  # CLIENT ENDPOINTS (programmable fake Genropy clients)
   # ============================================
+  # Serve the outbound protocol (proxy_sync, proxy_get_attachments) answering
+  # what each test programmed, and a control surface the tests drive.
+  # See programmable-client/server.py.
   client-tenant1:
-    image: mendhak/http-https-echo:latest
+    build:
+      context: ./programmable-client
     ports:
-      - "8081:8080"
-    environment:
-      - HTTP_PORT=8080
+      - "${GMP_TEST_CLIENT1_PORT:-8081}:8080"
     networks:
       - testnet
 
   client-tenant2:
-    image: mendhak/http-https-echo:latest
+    build:
+      context: ./programmable-client
     ports:
-      - "8082:8080"
-    environment:
-      - HTTP_PORT=8080
+      - "${GMP_TEST_CLIENT2_PORT:-8082}:8080"
     networks:
       - testnet
 
@@ -217,7 +246,7 @@ services:
     volumes:
       - ./test-attachments:/data:ro
     ports:
-      - "8083:8080"
+      - "${GMP_TEST_ATTACHMENTS_PORT:-8083}:8080"
     networks:
       - testnet
 

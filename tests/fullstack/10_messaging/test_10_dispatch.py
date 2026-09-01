@@ -9,10 +9,12 @@ import time
 
 import pytest
 
+from tests import api_routes
 from tests.fullstack.helpers import (
     MAILHOG_TENANT1_API,
     clear_mailhog,
     trigger_dispatch,
+    wait_for_message_status,
     wait_for_messages,
 )
 
@@ -29,16 +31,20 @@ class TestBasicMessageDispatch:
         msg_id = f"simple-text-{int(time.time())}"
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
             "subject": "Simple Text Email",
             "body": "This is a simple text email.",
         }
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         await trigger_dispatch(api_client)
+
+        sent = await wait_for_message_status(api_client, msg_id, ("sent",))
+        assert sent, f"message {msg_id} never reached sent"
 
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
         assert len(messages) >= 1
@@ -53,6 +59,7 @@ class TestBasicMessageDispatch:
         msg_id = f"html-email-{int(time.time())}"
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -60,10 +67,13 @@ class TestBasicMessageDispatch:
             "body": "<html><body><h1>Hello!</h1><p>HTML content.</p></body></html>",
             "content_type": "html",
         }
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         await trigger_dispatch(api_client)
+
+        sent = await wait_for_message_status(api_client, msg_id, ("sent",))
+        assert sent, f"message {msg_id} never reached sent"
 
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
         assert len(messages) >= 1
@@ -75,6 +85,7 @@ class TestBasicMessageDispatch:
         msg_id = f"cc-bcc-{int(time.time())}"
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -83,10 +94,13 @@ class TestBasicMessageDispatch:
             "subject": "CC/BCC Test",
             "body": "Email with CC and BCC.",
         }
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         await trigger_dispatch(api_client)
+
+        sent = await wait_for_message_status(api_client, msg_id, ("sent",))
+        assert sent, f"message {msg_id} never reached sent"
 
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
         assert len(messages) >= 1
@@ -98,6 +112,7 @@ class TestBasicMessageDispatch:
         msg_id = f"custom-headers-{int(time.time())}"
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -109,10 +124,13 @@ class TestBasicMessageDispatch:
                 "Reply-To": "reply@test.com",
             },
         }
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         await trigger_dispatch(api_client)
+
+        sent = await wait_for_message_status(api_client, msg_id, ("sent",))
+        assert sent, f"message {msg_id} never reached sent"
 
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
         assert len(messages) >= 1

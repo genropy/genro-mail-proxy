@@ -1,6 +1,17 @@
-# Fullstack Integration Tests
+# Fullstack Integration Tests — the stress suite
 
-End-to-end tests that validate genro-mail-proxy against real services.
+End-to-end tests that validate genro-mail-proxy against real services:
+real SMTP delivery, attachments, bounce handling, rate limiting, and the
+outbound client protocol, on the Docker compose stack. Every test here
+carries the `fullstack` marker (deselect with `-m "not fullstack"`).
+
+The HTTP contract alone — routing, auth, validation, response shapes for
+all 26 routes — is covered without Docker by `tests/local_e2e`, which boots
+the real app in-process on a temporary SQLite database. Run that suite for
+transport changes; run this one for delivery behaviour and load.
+
+Both suites build every URL from `tests/api_routes.py`, the single module
+that holds the route paths.
 
 ## Prerequisites
 
@@ -220,7 +231,9 @@ curl -X DELETE http://localhost:8025/api/v1/messages
 
 1. Place tests in the appropriate numbered group
 
-2. Use `pytestmark` to set markers:
+2. Use `pytestmark` to set markers, **in the test module itself** — pytest
+   reads `pytestmark` in modules and classes only, never in a `conftest.py`,
+   so a package-wide marker declared there silently marks nothing:
 
    ```python
    pytestmark = [pytest.mark.fullstack, pytest.mark.asyncio]
@@ -236,3 +249,64 @@ curl -X DELETE http://localhost:8025/api/v1/messages
    await asyncio.sleep(2)  # Wait for pending dispatches
    await clear_mailhog(MAILHOG_TENANT1_API)
    ```
+
+## Measured Behaviour of the Stack
+
+Everything in this section was measured, not inferred. It is recorded because
+each item cost real time to discover and none of it is visible by reading the
+code.
+
+### MailHog memory cannot be bounded from the test side
+
+MailHog's resident memory tracks the cumulative bytes it has ever received,
+not the messages it currently holds:
+
+- `DELETE /api/v1/messages` frees nothing — 2.113 GiB resident before the
+  call and 2.113 GiB after.
+- `MH_MAXMESSAGES` does not exist. There is no message-count flag to bind to.
+- `MH_STORAGE=maildir` is about three times worse, not better: 2.116 GiB
+  against memory storage's 641.7 MiB on identical load, because every list
+  call re-reads and re-decodes every file. It also needs `MH_MAILDIR_PATH`
+  under a writable path (`/maildir` panics — the image runs non-root), and it
+  returns messages in filesystem order, which is independent evidence that
+  reading MailHog by index was always wrong.
+- Clearing mailboxes periodically is marginally *worse* than never clearing:
+  1.186 GiB when cleared every 20 messages, 1.003 GiB when never cleared.
+
+The only bound is container lifetime plus a hard cap. One full run takes
+tenant1 from 15.87 MiB to 1.561 GiB; three runs without a restart is about
+4.7 GiB on a 7.653 GiB Docker VM, so the OOM kill is arithmetic, not a
+mystery. Hence `mem_limit: 2g` on both MailHog services (28% over the
+measured peak), `restart: unless-stopped` for containment, and a session
+fixture that restarts the containers instead of emptying them — a restart
+returns resident memory to about 15 MiB, so only one run's ingest must fit.
+
+**Mailpit is the durable fix**: it has a real message cap where MailHog has
+none. Adopting it edits every helper that speaks the MailHog API, so it was
+kept out of the 0.7.6 line deliberately.
+
+### `docker compose up -d` silently rebinds the stack to the default ports
+
+Every published port in `docker-compose.fulltest.yml` reads a `GMP_TEST_*`
+variable with the old literal as its default. So bringing the stack up
+*without those variables exported* rebinds it to the defaults, while the test
+process — which reads the same variables — still talks to the alternate ports.
+The symptom is a wall of identical `ConnectError` failures, and it cost three
+wasted full runs before anyone checked the bindings.
+
+`docker compose restart` does **not** re-evaluate port bindings, which is why
+the session fixture restarts rather than recreates.
+
+### `RestartCount` counts only abnormal deaths
+
+`docker compose restart` does not increment a container's `RestartCount` (it
+stays at 0 after restarting both MailHogs), while the `restart:` policy does
+increment it when a container dies abnormally. That is what makes
+`RestartCount` usable as a health criterion: the session fixture's deliberate
+restarts are invisible to it, so a non-zero count means a real death.
+
+### Restart by service name, never by container name
+
+The container names here (`docker-mailhog-tenant1-1`) are what they are only
+because the compose project takes the name of its directory. Address services
+by their compose service name.

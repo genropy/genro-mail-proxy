@@ -5,11 +5,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 
 import pytest
 import pytest_asyncio
+
+from tests import api_routes
 
 httpx = pytest.importorskip("httpx")
 
@@ -19,10 +20,10 @@ from tests.fullstack.helpers import (
     clear_mailhog,
     create_dsn_bounce_email,
     get_imap_message_count,
-    get_msg_status,
     inject_bounce_email_to_imap,
     is_dovecot_available,
     trigger_dispatch,
+    wait_for_message_status,
     wait_for_messages,
 )
 
@@ -39,6 +40,7 @@ class TestBounceDetection:
 
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -46,23 +48,26 @@ class TestBounceDetection:
             "body": "Testing X-Genro-Mail-ID header presence.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(3)
+        await trigger_dispatch(api_client)
+        sent = await wait_for_message_status(api_client, msg_id, ("sent",))
+        assert sent, f"message {msg_id} never reached sent"
 
         # Check MailHog for the sent message
         mailhog_resp = httpx.get(f"{MAILHOG_TENANT1_API}/api/v2/messages")
-        if mailhog_resp.status_code == 200:
-            messages = mailhog_resp.json().get("items", [])
-            for msg in messages:
-                if msg.get("Content", {}).get("Headers", {}).get("Subject", [""])[0] == "Bounce Header Test":
-                    headers = msg.get("Content", {}).get("Headers", {})
-                    # X-Genro-Mail-ID should be present
-                    assert "X-Genro-Mail-Id" in headers or "X-Genro-Mail-ID" in headers, \
-                        f"X-Genro-Mail-ID header not found in sent email. Headers: {list(headers.keys())}"
-                    break
+        assert mailhog_resp.status_code == 200
+        delivered = [
+            m for m in mailhog_resp.json().get("items", [])
+            if m.get("Content", {}).get("Headers", {}).get("Subject", [""])[0] == "Bounce Header Test"
+        ]
+        assert delivered, "the sent email is not in MailHog"
+
+        headers = delivered[0].get("Content", {}).get("Headers", {})
+        # X-Genro-Mail-ID should be present
+        assert "X-Genro-Mail-Id" in headers or "X-Genro-Mail-ID" in headers, \
+            f"X-Genro-Mail-ID header not found in sent email. Headers: {list(headers.keys())}"
 
     async def test_bounce_fields_in_message_list(self, api_client, setup_test_tenants):
         """Message list can include bounce fields when bounce is detected.
@@ -75,16 +80,17 @@ class TestBounceDetection:
         ts = int(time.time())
         message = {
             "id": f"bounce-fields-test-{ts}",
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
             "subject": "Bounce Fields Test",
             "body": "Testing bounce fields presence.",
         }
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
-        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
+        resp = await api_client.get(api_routes.messages(tenant_id="test-tenant-1"))
         assert resp.status_code == 200
 
         data = resp.json()
@@ -103,6 +109,7 @@ class TestBounceDetection:
 
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -110,11 +117,11 @@ class TestBounceDetection:
             "body": "This message can be tracked for bounces.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # The message should be retrievable by ID for bounce correlation
-        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
+        resp = await api_client.get(api_routes.messages(tenant_id="test-tenant-1"))
         assert resp.status_code == 200
         all_msgs = resp.json().get("messages", [])
         found = [m for m in all_msgs if m.get("id") == msg_id]
@@ -127,6 +134,7 @@ class TestBounceDetection:
         messages = [
             {
                 "id": f"multi-bounce-{ts}-{i}",
+                "tenant_id": "test-tenant-1",
                 "account_id": "test-account-1",
                 "from": "sender@test.com",
                 "to": ["recipient@example.com"],
@@ -136,28 +144,30 @@ class TestBounceDetection:
             for i in range(3)
         ]
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": messages})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": messages})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(5)
+        await trigger_dispatch(api_client)
+        for msg in messages:
+            sent = await wait_for_message_status(api_client, msg["id"], ("sent",))
+            assert sent, f"message {msg['id']} never reached sent"
 
         # Check MailHog for unique headers
         mailhog_resp = httpx.get(f"{MAILHOG_TENANT1_API}/api/v2/messages")
-        if mailhog_resp.status_code == 200:
-            items = mailhog_resp.json().get("items", [])
-            mail_ids = []
-            for msg in items:
-                subject = msg.get("Content", {}).get("Headers", {}).get("Subject", [""])[0]
-                if "Multi Bounce Test" in subject:
-                    headers = msg.get("Content", {}).get("Headers", {})
-                    mail_id = headers.get("X-Genro-Mail-Id", headers.get("X-Genro-Mail-ID", [None]))[0]
-                    if mail_id:
-                        mail_ids.append(mail_id)
+        assert mailhog_resp.status_code == 200
 
-            # All mail IDs should be unique
-            if mail_ids:
-                assert len(mail_ids) == len(set(mail_ids)), "X-Genro-Mail-ID headers should be unique"
+        mail_ids = []
+        for msg in mailhog_resp.json().get("items", []):
+            subject = msg.get("Content", {}).get("Headers", {}).get("Subject", [""])[0]
+            if "Multi Bounce Test" in subject:
+                headers = msg.get("Content", {}).get("Headers", {})
+                mail_id = headers.get("X-Genro-Mail-Id", headers.get("X-Genro-Mail-ID", [None]))[0]
+                if mail_id:
+                    mail_ids.append(mail_id)
+
+        assert len(mail_ids) == 3, f"Expected 3 tracked emails in MailHog, got {len(mail_ids)}"
+        # All mail IDs should be unique
+        assert len(mail_ids) == len(set(mail_ids)), "X-Genro-Mail-ID headers should be unique"
 
     async def test_bounce_header_with_custom_headers(self, api_client, setup_test_tenants):
         """X-Genro-Mail-ID should be present even with custom headers."""
@@ -165,6 +175,7 @@ class TestBounceDetection:
 
         message = {
             "id": f"custom-header-bounce-{ts}",
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -176,24 +187,27 @@ class TestBounceDetection:
             },
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(3)
+        await trigger_dispatch(api_client)
+        sent = await wait_for_message_status(api_client, f"custom-header-bounce-{ts}", ("sent",))
+        assert sent, f"message custom-header-bounce-{ts} never reached sent"
 
         # Verify both custom headers and X-Genro-Mail-ID are present
         mailhog_resp = httpx.get(f"{MAILHOG_TENANT1_API}/api/v2/messages")
-        if mailhog_resp.status_code == 200:
-            items = mailhog_resp.json().get("items", [])
-            for msg in items:
-                subject = msg.get("Content", {}).get("Headers", {}).get("Subject", [""])[0]
-                if subject == "Custom Header Bounce Test":
-                    headers = msg.get("Content", {}).get("Headers", {})
-                    # Both custom and system headers should be present
-                    has_mail_id = "X-Genro-Mail-Id" in headers or "X-Genro-Mail-ID" in headers
-                    assert has_mail_id, "X-Genro-Mail-ID should coexist with custom headers"
-                    break
+        assert mailhog_resp.status_code == 200
+        delivered = [
+            m for m in mailhog_resp.json().get("items", [])
+            if m.get("Content", {}).get("Headers", {}).get("Subject", [""])[0]
+            == "Custom Header Bounce Test"
+        ]
+        assert delivered, "the sent email is not in MailHog"
+
+        headers = delivered[0].get("Content", {}).get("Headers", {})
+        # Both custom and system headers should be present
+        has_mail_id = "X-Genro-Mail-Id" in headers or "X-Genro-Mail-ID" in headers
+        assert has_mail_id, "X-Genro-Mail-ID should coexist with custom headers"
 
 
 # ============================================
@@ -343,7 +357,6 @@ class TestBounceEndToEnd:
         soft_info = parser.parse(soft_bounce)
         assert soft_info.bounce_type == "soft"
 
-    @pytest.mark.skip(reason="Flaky in CI: messages stay pending. See issue #69")
     async def test_message_sent_includes_tracking_header(
         self, api_client, setup_bounce_tenant
     ):
@@ -351,7 +364,7 @@ class TestBounceEndToEnd:
         await clear_mailhog(MAILHOG_TENANT1_API)
 
         # Verify bounce-account exists
-        resp = await api_client.get("/accounts?tenant_id=bounce-tenant")
+        resp = await api_client.get(api_routes.accounts(tenant_id="bounce-tenant"))
         accounts = resp.json().get("accounts", [])
         bounce_acc = next((a for a in accounts if a.get("id") == "bounce-account"), None)
         assert bounce_acc is not None, f"bounce-account not found. Accounts: {accounts}"
@@ -360,6 +373,7 @@ class TestBounceEndToEnd:
         msg_id = f"track-header-{ts}"
         message = {
             "id": msg_id,
+            "tenant_id": "bounce-tenant",
             "account_id": "bounce-account",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -367,29 +381,25 @@ class TestBounceEndToEnd:
             "body": "Testing X-Genro-Mail-ID header.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
         data = resp.json()
         assert data.get("queued", 0) >= 1, f"Message not queued: {data}"
 
         # Verify message is in DB before dispatch
-        resp = await api_client.get(f"/messages?tenant_id=bounce-tenant")
+        resp = await api_client.get(api_routes.messages(tenant_id="bounce-tenant"))
         pre_dispatch = resp.json().get("messages", [])
         pre_msg = next((m for m in pre_dispatch if m.get("id") == msg_id), None)
         assert pre_msg is not None, f"Message {msg_id} not in DB before dispatch"
 
         await trigger_dispatch(api_client, "bounce-tenant")
 
-        # Wait a bit more and retry dispatch
-        await asyncio.sleep(3)
-        await trigger_dispatch(api_client, "bounce-tenant")
-
         # Verify message was sent via API
-        resp = await api_client.get(f"/messages?tenant_id=bounce-tenant")
-        all_msgs = resp.json().get("messages", [])
-        our_msg = next((m for m in all_msgs if m.get("id") == msg_id), None)
-        assert our_msg is not None, f"Message {msg_id} not found in API response"
-        assert our_msg.get("sent_ts") is not None, f"Message not sent. Account: {bounce_acc}. Message: {our_msg}"
+        our_msg = await wait_for_message_status(
+            api_client, msg_id, ("sent",), tenant_id="bounce-tenant"
+        )
+        assert our_msg is not None, \
+            f"Message {msg_id} never reached sent. Account: {bounce_acc}"
 
         # Check MailHog for the sent email
         emails = await wait_for_messages(MAILHOG_TENANT1_API, 1, timeout=15)
@@ -409,7 +419,6 @@ class TestBounceEndToEnd:
 
         assert found_email is not None, f"Email with X-Genro-Mail-ID={msg_id} not found in {len(emails)} emails"
 
-    @pytest.mark.skip(reason="Flaky in CI: messages stay pending. See issue #69")
     async def test_bounce_updates_message_record(self, api_client, setup_bounce_tenant):
         """Bounce detected by BounceReceiver updates message record.
 
@@ -417,7 +426,7 @@ class TestBounceEndToEnd:
         Full end-to-end testing requires BounceReceiver to be running and polling.
         """
         # Verify bounce-account exists
-        resp = await api_client.get("/accounts?tenant_id=bounce-tenant")
+        resp = await api_client.get(api_routes.accounts(tenant_id="bounce-tenant"))
         accounts = resp.json().get("accounts", [])
         bounce_acc = next((a for a in accounts if a.get("id") == "bounce-account"), None)
         assert bounce_acc is not None, f"bounce-account not found. Accounts: {accounts}"
@@ -429,6 +438,7 @@ class TestBounceEndToEnd:
         await clear_mailhog(MAILHOG_TENANT1_API)
         message = {
             "id": msg_id,
+            "tenant_id": "bounce-tenant",
             "account_id": "bounce-account",
             "from": "sender@test.com",
             "to": ["will-bounce@example.com"],
@@ -436,24 +446,21 @@ class TestBounceEndToEnd:
             "body": "This will simulate a bounce.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         await trigger_dispatch(api_client, "bounce-tenant")
-        await asyncio.sleep(3)
-        await trigger_dispatch(api_client, "bounce-tenant")
 
         # 2. Verify message was sent
-        resp = await api_client.get("/messages?tenant_id=bounce-tenant")
-        messages = resp.json().get("messages", [])
-        found = [m for m in messages if m.get("id") == msg_id]
-        assert len(found) == 1
-        assert get_msg_status(found[0]) == "sent", f"Message not sent. Account: {bounce_acc}. Message: {found[0]}"
+        sent = await wait_for_message_status(
+            api_client, msg_id, ("sent",), tenant_id="bounce-tenant"
+        )
+        assert sent is not None, f"Message never sent. Account: {bounce_acc}"
 
         # 3. Verify message has bounce fields available
         # (They should be None before bounce is detected)
-        assert "bounce_type" in found[0] or found[0].get("bounce_type") is None
-        assert "bounce_code" in found[0] or found[0].get("bounce_code") is None
+        assert sent.get("bounce_type") is None
+        assert sent.get("bounce_code") is None
 
     async def test_multiple_bounces_correlation(self):
         """Multiple bounce emails are correlated to correct messages."""

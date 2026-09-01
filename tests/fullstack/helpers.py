@@ -1,12 +1,18 @@
 # Copyright 2025 Softwell S.r.l.
 # Licensed under the Apache License, Version 2.0
 
-"""Helper functions and constants for fullstack integration tests."""
+"""Helper functions and constants for fullstack integration tests.
+
+Every service address is overridable through a ``GMP_TEST_*`` environment
+variable; the defaults reproduce the ports the compose stack publishes.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import imaplib
+import os
 import time
 from datetime import datetime, timezone
 from email.message import Message
@@ -19,27 +25,37 @@ import uuid
 
 import httpx
 
+from tests import api_routes
+
 # ============================================
 # SERVICE URLs AND CONFIGURATION
 # ============================================
 
-MAILPROXY_URL = "http://localhost:8000"
+
+def _env_port(name: str, default: int) -> int:
+    """Host port of a test service, overridable by environment."""
+    return int(os.environ.get(name, default))
+
+
+TEST_HOST = os.environ.get("GMP_TEST_HOST", "localhost")
+
+MAILPROXY_URL = f"http://{TEST_HOST}:{_env_port('GMP_TEST_MAILPROXY_PORT', 8000)}"
 MAILPROXY_TOKEN = "test-api-token"
 
-MAILHOG_TENANT1_SMTP = ("localhost", 1025)
-MAILHOG_TENANT1_API = "http://localhost:8025"
-MAILHOG_TENANT2_SMTP = ("localhost", 1026)
-MAILHOG_TENANT2_API = "http://localhost:8026"
+MAILHOG_TENANT1_SMTP = (TEST_HOST, _env_port("GMP_TEST_MAILHOG1_SMTP_PORT", 1025))
+MAILHOG_TENANT1_API = f"http://{TEST_HOST}:{_env_port('GMP_TEST_MAILHOG1_API_PORT', 8025)}"
+MAILHOG_TENANT2_SMTP = (TEST_HOST, _env_port("GMP_TEST_MAILHOG2_SMTP_PORT", 1026))
+MAILHOG_TENANT2_API = f"http://{TEST_HOST}:{_env_port('GMP_TEST_MAILHOG2_API_PORT', 8026)}"
 
-CLIENT_TENANT1_URL = "http://localhost:8081"
-CLIENT_TENANT2_URL = "http://localhost:8082"
-ATTACHMENT_SERVER_URL = "http://localhost:8083"
+CLIENT_TENANT1_URL = f"http://{TEST_HOST}:{_env_port('GMP_TEST_CLIENT1_PORT', 8081)}"
+CLIENT_TENANT2_URL = f"http://{TEST_HOST}:{_env_port('GMP_TEST_CLIENT2_PORT', 8082)}"
+ATTACHMENT_SERVER_URL = f"http://{TEST_HOST}:{_env_port('GMP_TEST_ATTACHMENTS_PORT', 8083)}"
 
-MINIO_URL = "http://localhost:9000"
+MINIO_URL = f"http://{TEST_HOST}:{_env_port('GMP_TEST_MINIO_PORT', 9000)}"
 
 # IMAP server for bounce testing (Dovecot)
-DOVECOT_IMAP_HOST = "localhost"
-DOVECOT_IMAP_PORT = 10143  # Non-SSL IMAP
+DOVECOT_IMAP_HOST = TEST_HOST
+DOVECOT_IMAP_PORT = _env_port("GMP_TEST_DOVECOT_IMAP_PORT", 10143)  # Non-SSL IMAP
 DOVECOT_BOUNCE_USER = "bounces@localhost"
 DOVECOT_BOUNCE_PASS = "bouncepass"
 DOVECOT_POLL_INTERVAL = 2  # Fast polling for tests
@@ -58,15 +74,15 @@ def is_dovecot_available() -> bool:
 
 # Error-simulating SMTP servers (Docker network names and external ports)
 SMTP_REJECT_HOST = "smtp-reject"
-SMTP_REJECT_PORT = 1027
+SMTP_REJECT_PORT = _env_port("GMP_TEST_SMTP_REJECT_PORT", 1027)
 SMTP_TEMPFAIL_HOST = "smtp-tempfail"
-SMTP_TEMPFAIL_PORT = 1028
+SMTP_TEMPFAIL_PORT = _env_port("GMP_TEST_SMTP_TEMPFAIL_PORT", 1028)
 SMTP_TIMEOUT_HOST = "smtp-timeout"
-SMTP_TIMEOUT_PORT = 1029
+SMTP_TIMEOUT_PORT = _env_port("GMP_TEST_SMTP_TIMEOUT_PORT", 1029)
 SMTP_RATELIMIT_HOST = "smtp-ratelimit"
-SMTP_RATELIMIT_PORT = 1030
+SMTP_RATELIMIT_PORT = _env_port("GMP_TEST_SMTP_RATELIMIT_PORT", 1030)
 SMTP_RANDOM_HOST = "smtp-random"
-SMTP_RANDOM_PORT = 1031
+SMTP_RANDOM_PORT = _env_port("GMP_TEST_SMTP_RANDOM_PORT", 1031)
 
 
 # ============================================
@@ -106,9 +122,12 @@ async def wait_for_messages(
 # ============================================
 
 async def trigger_dispatch(api_client, tenant_id: str = "test-tenant-1") -> None:
-    """Trigger message dispatch for a specific tenant."""
-    await api_client.post("/commands/run-now", params={"tenant_id": tenant_id})
-    await asyncio.sleep(2)  # Wait for processing
+    """Trigger message dispatch for a specific tenant.
+
+    Returns as soon as the proxy accepts the command. Wait for the outcome
+    with ``wait_for_message_status``, never with a fixed sleep.
+    """
+    await api_client.post(api_routes.run_now(tenant_id))
 
 
 def get_msg_status(msg: dict[str, Any]) -> str:
@@ -128,6 +147,28 @@ def get_msg_status(msg: dict[str, Any]) -> str:
     if msg.get("deferred_ts"):
         return "deferred"
     return "pending"
+
+
+async def wait_for_message_status(
+    api_client,
+    msg_id: str,
+    statuses: tuple[str, ...],
+    tenant_id: str = "test-tenant-1",
+    timeout: float = 30.0,
+) -> dict[str, Any] | None:
+    """Wait until a queued message reaches one of the expected statuses.
+
+    Polls GET /messages instead of sleeping for the length of a dispatch
+    cycle. Returns the message dict, or None if the timeout expires.
+    """
+    start = time.time()
+    while time.time() - start < timeout:
+        resp = await api_client.get(api_routes.messages(tenant_id=tenant_id))
+        found = [m for m in resp.json().get("messages", []) if m.get("id") == msg_id]
+        if found and get_msg_status(found[0]) in statuses:
+            return found[0]
+        await asyncio.sleep(0.5)
+    return None
 
 
 # ============================================
@@ -281,7 +322,7 @@ async def wait_for_bounce(
     """
     start = time.time()
     while time.time() - start < timeout:
-        resp = await api_client.get(f"/messages?tenant_id={tenant_id}")
+        resp = await api_client.get(api_routes.messages(tenant_id=tenant_id))
         messages = resp.json().get("messages", [])
         found = [m for m in messages if m.get("id") == msg_id]
         if found and found[0].get("bounce_ts"):
@@ -474,16 +515,67 @@ async def wait_for_pec_event(
 ) -> dict[str, Any] | None:
     """Wait for a PEC event to be recorded for a message.
 
-    Polls the API until the specified event type is found or timeout.
-    Returns the event dict if found, None otherwise.
+    Reads the event history the message list carries with
+    ``include_history=true``. Returns the event dict if found, None otherwise.
     """
     start = time.time()
     while time.time() - start < timeout:
-        resp = await api_client.get(f"/messages/{msg_id}/events?tenant_id={tenant_id}")
+        resp = await api_client.get(
+            api_routes.messages(tenant_id=tenant_id, include_history=True)
+        )
         if resp.status_code == 200:
-            events = resp.json().get("events", [])
-            for event in events:
-                if event.get("event_type") == event_type:
-                    return event
-        await asyncio.sleep(2)
+            for msg in resp.json().get("messages", []):
+                if msg.get("id") != msg_id:
+                    continue
+                for event in msg.get("history") or []:
+                    if event.get("event_type") == event_type:
+                        return event
+        await asyncio.sleep(0.5)
     return None
+
+
+# ============================================
+# PROGRAMMABLE CLIENT CONTROL
+# ============================================
+
+class ClientControl:
+    """Drives the control surface of one programmable fake client.
+
+    The fake client answers ``/proxy_sync`` and ``/proxy_get_attachments``
+    with what a test queued here, in order, and records every call the proxy
+    made. See tests/docker/programmable-client/server.py.
+    """
+
+    def __init__(self, base_url: str):
+        self.base_url = base_url
+
+    async def _post(self, path: str, payload: dict[str, Any]) -> None:
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=10.0) as client:
+            resp = await client.post(path, json=payload)
+            resp.raise_for_status()
+
+    async def queue_sync_response(
+        self, body: dict[str, Any], status: int = 200
+    ) -> None:
+        """Queue one answer for the next /proxy_sync call."""
+        await self._post(api_routes.CONTROL_SYNC_RESPONSE, {"status": status, "json": body})
+
+    async def queue_attachment_response(
+        self, content: bytes | None = None, status: int = 200
+    ) -> None:
+        """Queue one answer for the next attachment fetch — bytes, or a bare status."""
+        payload: dict[str, Any] = {"status": status}
+        if content is not None:
+            payload["content_base64"] = base64.b64encode(content).decode()
+        await self._post(api_routes.CONTROL_ATTACHMENT_RESPONSE, payload)
+
+    async def get_call_history(self) -> list[dict[str, Any]]:
+        """Every call the fake client received since the last reset."""
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=10.0) as client:
+            resp = await client.get(api_routes.CONTROL_CALLS)
+            resp.raise_for_status()
+            return resp.json().get("calls", [])
+
+    async def reset(self) -> None:
+        """Drop the queued answers and the call history."""
+        await self._post(api_routes.CONTROL_RESET, {})

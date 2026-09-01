@@ -5,17 +5,18 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 
 import pytest
 
+from tests import api_routes
 from tests.fullstack.helpers import (
     MAILHOG_TENANT1_API,
     SMTP_REJECT_HOST,
-    SMTP_REJECT_PORT,
     clear_mailhog,
     get_msg_status,
+    trigger_dispatch,
+    wait_for_message_status,
     wait_for_messages,
 )
 
@@ -40,6 +41,7 @@ class TestDeliveryReports:
 
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -47,27 +49,20 @@ class TestDeliveryReports:
             "body": "Testing delivery report callback.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger dispatch and wait for delivery
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(3)
+        await trigger_dispatch(api_client)
 
         # Verify message was sent
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
         assert len(messages) >= 1
 
         # Check message status - should be sent and reported
-        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
-        all_msgs = resp.json().get("messages", [])
-        found = [m for m in all_msgs if m.get("id") == msg_id]
-
-        if found:
-            msg = found[0]
-            assert get_msg_status(msg) == "sent"
-            # After delivery cycle, reported_ts should be set
-            # (depends on report_interval configuration)
+        msg = await wait_for_message_status(api_client, msg_id, ("sent",))
+        assert msg, f"message {msg_id} never reached sent"
+        assert get_msg_status(msg) == "sent"
 
     async def test_delivery_report_sent_on_error(
         self, api_client, setup_test_tenants
@@ -81,13 +76,14 @@ class TestDeliveryReports:
             "port": 1025,
             "use_tls": False,
         }
-        await api_client.post("/account", json=account_data)
+        await api_client.post(api_routes.ACCOUNT, json=account_data)
 
         ts = int(time.time())
         msg_id = f"report-error-{ts}"
 
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-1",
             "account_id": "account-report-reject",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -95,21 +91,15 @@ class TestDeliveryReports:
             "body": "This should fail and be reported.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(3)
+        await trigger_dispatch(api_client)
 
         # Check message status - should be error
-        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
-        all_msgs = resp.json().get("messages", [])
-        found = [m for m in all_msgs if m.get("id") == msg_id]
-
-        if found:
-            msg = found[0]
-            assert get_msg_status(msg) in ("error", "deferred")
+        msg = await wait_for_message_status(api_client, msg_id, ("error", "deferred"))
+        assert msg, f"message {msg_id} never reached error or deferred"
 
     async def test_mixed_delivery_report(
         self, api_client, setup_test_tenants
@@ -125,13 +115,14 @@ class TestDeliveryReports:
             "port": 1025,
             "use_tls": False,
         }
-        await api_client.post("/account", json=account_data)
+        await api_client.post(api_routes.ACCOUNT, json=account_data)
 
         ts = int(time.time())
 
         messages = [
             {
                 "id": f"mixed-success-{ts}",
+                "tenant_id": "test-tenant-1",
                 "account_id": "test-account-1",
                 "from": "sender@test.com",
                 "to": ["recipient@example.com"],
@@ -140,6 +131,7 @@ class TestDeliveryReports:
             },
             {
                 "id": f"mixed-error-{ts}",
+                "tenant_id": "test-tenant-1",
                 "account_id": "account-mixed-reject",
                 "from": "sender@test.com",
                 "to": ["recipient@example.com"],
@@ -148,24 +140,20 @@ class TestDeliveryReports:
             },
         ]
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": messages})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": messages})
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(3)
+        await trigger_dispatch(api_client)
 
         # Check results
-        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
-        all_msgs = resp.json().get("messages", [])
+        success_msg = await wait_for_message_status(api_client, f"mixed-success-{ts}", ("sent",))
+        assert success_msg, f"message mixed-success-{ts} never reached sent"
 
-        success_msg = [m for m in all_msgs if m.get("id") == f"mixed-success-{ts}"]
-        error_msg = [m for m in all_msgs if m.get("id") == f"mixed-error-{ts}"]
-
-        if success_msg:
-            assert get_msg_status(success_msg[0]) == "sent"
-        if error_msg:
-            assert get_msg_status(error_msg[0]) in ("error", "deferred")
+        error_msg = await wait_for_message_status(
+            api_client, f"mixed-error-{ts}", ("error", "deferred")
+        )
+        assert error_msg, f"message mixed-error-{ts} never reached error or deferred"
 
 
 # ============================================

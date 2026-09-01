@@ -5,14 +5,15 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from tests import api_routes
 from tests.fullstack.helpers import (
-    get_msg_status,
+    trigger_dispatch,
+    wait_for_message_status,
 )
 
 pytestmark = [pytest.mark.fullstack, pytest.mark.asyncio]
@@ -26,7 +27,7 @@ class TestServiceControl:
         tenant_id = "test-tenant-1"
 
         # Suspend all batches for tenant
-        resp = await api_client.post(f"/commands/suspend?tenant_id={tenant_id}")
+        resp = await api_client.post(api_routes.suspend(tenant_id=tenant_id))
         assert resp.status_code == 200
         data = resp.json()
         assert data.get("ok") is True
@@ -34,7 +35,7 @@ class TestServiceControl:
         assert data.get("suspended_batches") == ["*"]
 
         # Activate all batches for tenant
-        resp = await api_client.post(f"/commands/activate?tenant_id={tenant_id}")
+        resp = await api_client.post(api_routes.activate(tenant_id=tenant_id))
         assert resp.status_code == 200
         data = resp.json()
         assert data.get("ok") is True
@@ -48,7 +49,7 @@ class TestServiceControl:
 
         # Suspend specific batch
         resp = await api_client.post(
-            f"/commands/suspend?tenant_id={tenant_id}&batch_code={batch_code}"
+            api_routes.suspend(tenant_id=tenant_id, batch_code=batch_code)
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -58,7 +59,7 @@ class TestServiceControl:
 
         # Activate specific batch
         resp = await api_client.post(
-            f"/commands/activate?tenant_id={tenant_id}&batch_code={batch_code}"
+            api_routes.activate(tenant_id=tenant_id, batch_code=batch_code)
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -67,7 +68,7 @@ class TestServiceControl:
 
     async def test_suspend_requires_tenant_id(self, api_client):
         """Suspend without tenant_id returns validation error."""
-        resp = await api_client.post("/commands/suspend")
+        resp = await api_client.post(api_routes.suspend())
         assert resp.status_code == 422  # FastAPI validation error
         data = resp.json()
         # FastAPI returns detail with validation error info
@@ -89,6 +90,7 @@ class TestExtendedSuspendActivate:
         messages = [
             {
                 "id": f"count-suspend-{ts}-{i}",
+                "tenant_id": "test-tenant-1",
                 "account_id": "test-account-1",
                 "from": "sender@test.com",
                 "to": ["recipient@example.com"],
@@ -98,10 +100,10 @@ class TestExtendedSuspendActivate:
             for i in range(5)
         ]
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": messages})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": messages})
         assert resp.status_code == 200
 
-        resp = await api_client.post("/commands/suspend?tenant_id=test-tenant-1")
+        resp = await api_client.post(api_routes.suspend(tenant_id="test-tenant-1"))
         assert resp.status_code == 200
         data = resp.json()
         assert data.get("ok") is True
@@ -110,7 +112,7 @@ class TestExtendedSuspendActivate:
         assert data["pending_messages"] >= 5
 
         # Cleanup: activate again
-        await api_client.post("/commands/activate?tenant_id=test-tenant-1")
+        await api_client.post(api_routes.activate(tenant_id="test-tenant-1"))
 
     async def test_activate_returns_activated_count(self, api_client, setup_test_tenants):
         """Activate should return count of activated messages."""
@@ -119,6 +121,7 @@ class TestExtendedSuspendActivate:
         messages = [
             {
                 "id": f"count-activate-{ts}-{i}",
+                "tenant_id": "test-tenant-1",
                 "account_id": "test-account-1",
                 "from": "sender@test.com",
                 "to": ["recipient@example.com"],
@@ -128,14 +131,14 @@ class TestExtendedSuspendActivate:
             for i in range(5)
         ]
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": messages})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": messages})
         assert resp.status_code == 200
 
         # Suspend first
-        await api_client.post("/commands/suspend?tenant_id=test-tenant-1")
+        await api_client.post(api_routes.suspend(tenant_id="test-tenant-1"))
 
         # Then activate
-        resp = await api_client.post("/commands/activate?tenant_id=test-tenant-1")
+        resp = await api_client.post(api_routes.activate(tenant_id="test-tenant-1"))
         assert resp.status_code == 200
         data = resp.json()
         assert data.get("ok") is True
@@ -148,6 +151,7 @@ class TestExtendedSuspendActivate:
 
         message = {
             "id": f"idempotent-suspend-{ts}",
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -155,12 +159,12 @@ class TestExtendedSuspendActivate:
             "body": "Testing idempotent suspend.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # Call suspend multiple times
         for _ in range(3):
-            resp = await api_client.post("/commands/suspend?tenant_id=test-tenant-1")
+            resp = await api_client.post(api_routes.suspend(tenant_id="test-tenant-1"))
             assert resp.status_code == 200
             assert resp.json().get("ok") is True
 
@@ -169,7 +173,7 @@ class TestExtendedSuspendActivate:
         assert "*" in data.get("suspended_batches", [])
 
         # Cleanup
-        await api_client.post("/commands/activate?tenant_id=test-tenant-1")
+        await api_client.post(api_routes.activate(tenant_id="test-tenant-1"))
 
     async def test_activate_idempotent(self, api_client, setup_test_tenants):
         """Calling activate multiple times should be safe."""
@@ -177,6 +181,7 @@ class TestExtendedSuspendActivate:
 
         message = {
             "id": f"idempotent-activate-{ts}",
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -184,15 +189,15 @@ class TestExtendedSuspendActivate:
             "body": "Testing idempotent activate.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # Suspend first
-        await api_client.post("/commands/suspend?tenant_id=test-tenant-1")
+        await api_client.post(api_routes.suspend(tenant_id="test-tenant-1"))
 
         # Call activate multiple times
         for _ in range(3):
-            resp = await api_client.post("/commands/activate?tenant_id=test-tenant-1")
+            resp = await api_client.post(api_routes.activate(tenant_id="test-tenant-1"))
             assert resp.status_code == 200
             assert resp.json().get("ok") is True
 
@@ -203,6 +208,7 @@ class TestExtendedSuspendActivate:
         # Add messages to both tenants
         msg_tenant1 = {
             "id": f"isolation-suspend-t1-{ts}",
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -212,6 +218,7 @@ class TestExtendedSuspendActivate:
 
         msg_tenant2 = {
             "id": f"isolation-suspend-t2-{ts}",
+            "tenant_id": "test-tenant-2",
             "account_id": "test-account-2",
             "from": "sender@test2.com",
             "to": ["recipient@example.com"],
@@ -219,11 +226,11 @@ class TestExtendedSuspendActivate:
             "body": "Testing tenant isolation.",
         }
 
-        await api_client.post("/commands/add-messages", json={"messages": [msg_tenant1]})
-        await api_client.post("/commands/add-messages", json={"messages": [msg_tenant2]})
+        await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [msg_tenant1]})
+        await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [msg_tenant2]})
 
         # Suspend only tenant 1
-        resp = await api_client.post("/commands/suspend?tenant_id=test-tenant-1")
+        resp = await api_client.post(api_routes.suspend(tenant_id="test-tenant-1"))
         assert resp.status_code == 200
 
         # Verify tenant 1 is suspended
@@ -231,19 +238,17 @@ class TestExtendedSuspendActivate:
         assert "*" in data.get("suspended_batches", [])
 
         # Tenant 2 messages should still be sendable
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-2")
-        await asyncio.sleep(3)
+        await trigger_dispatch(api_client, tenant_id="test-tenant-2")
 
         # Check tenant 2 was processed (not suspended)
-        resp = await api_client.get("/messages?tenant_id=test-tenant-2")
-        t2_msgs = resp.json().get("messages", [])
-        t2_found = [m for m in t2_msgs if m.get("id") == f"isolation-suspend-t2-{ts}"]
-        if t2_found:
-            # Tenant 2 should not be suspended
-            assert get_msg_status(t2_found[0]) != "suspended"
+        t2_msg = await wait_for_message_status(
+            api_client, f"isolation-suspend-t2-{ts}", ("sent", "deferred", "error"),
+            tenant_id="test-tenant-2",
+        )
+        assert t2_msg, "the non-suspended tenant's message should have been processed"
 
         # Cleanup
-        await api_client.post("/commands/activate?tenant_id=test-tenant-1")
+        await api_client.post(api_routes.activate(tenant_id="test-tenant-1"))
 
     async def test_suspend_with_deferred_messages(self, api_client, setup_test_tenants):
         """Suspend should also affect deferred messages."""
@@ -252,6 +257,7 @@ class TestExtendedSuspendActivate:
 
         message = {
             "id": f"deferred-suspend-{ts}",
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -260,11 +266,11 @@ class TestExtendedSuspendActivate:
             "send_after": future_time.isoformat(),
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # Suspend tenant
-        resp = await api_client.post("/commands/suspend?tenant_id=test-tenant-1")
+        resp = await api_client.post(api_routes.suspend(tenant_id="test-tenant-1"))
         assert resp.status_code == 200
 
         # Verify tenant is suspended
@@ -272,7 +278,7 @@ class TestExtendedSuspendActivate:
         assert "*" in data.get("suspended_batches", [])
 
         # Cleanup
-        await api_client.post("/commands/activate?tenant_id=test-tenant-1")
+        await api_client.post(api_routes.activate(tenant_id="test-tenant-1"))
 
     async def test_activate_resumes_deferred_timing(self, api_client, setup_test_tenants):
         """After activate, deferred messages should resume with original timing."""
@@ -281,6 +287,7 @@ class TestExtendedSuspendActivate:
 
         message = {
             "id": f"resume-deferred-{ts}",
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -289,15 +296,15 @@ class TestExtendedSuspendActivate:
             "send_after": future_time.isoformat(),
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # Suspend then activate
-        await api_client.post("/commands/suspend?tenant_id=test-tenant-1")
-        await api_client.post("/commands/activate?tenant_id=test-tenant-1")
+        await api_client.post(api_routes.suspend(tenant_id="test-tenant-1"))
+        await api_client.post(api_routes.activate(tenant_id="test-tenant-1"))
 
         # After activate, suspended_batches should be empty
-        resp = await api_client.post("/commands/activate?tenant_id=test-tenant-1")
+        resp = await api_client.post(api_routes.activate(tenant_id="test-tenant-1"))
         data = resp.json()
         assert data.get("suspended_batches") == []
 

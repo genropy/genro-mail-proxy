@@ -29,6 +29,7 @@ import time
 
 import pytest
 
+from tests import api_routes
 from tests.fullstack.helpers import (
     MAILHOG_TENANT1_API,
     clear_imap_mailbox,
@@ -44,7 +45,20 @@ pytestmark = [
     pytest.mark.bounce_e2e,
 ]
 
+# Bounce correlation is broken in the proxy itself: the dispatcher stamps
+# X-Genro-Mail-ID with the client message id while BounceReceiver correlates by
+# the internal pk, and the bounce event is never projected onto bounce_ts /
+# bounce_type. See https://github.com/genropy/genro-mail-proxy/issues/103.
+# strict=True on purpose: when the fix lands these XPASS, pytest reports that as
+# an error, and the marker below has to come off. Do NOT make them pass by
+# injecting a DSN keyed by the pk — that would certify a path that does not work.
+BOUNCE_CORRELATION_BROKEN = pytest.mark.xfail(
+    strict=True,
+    reason="bounce correlation broken in the proxy (issue #103)",
+)
 
+
+@BOUNCE_CORRELATION_BROKEN
 class TestBounceLivePolling:
     """Test live bounce detection via IMAP polling.
 
@@ -73,6 +87,7 @@ class TestBounceLivePolling:
         # Send message
         message = {
             "id": msg_id,
+            "tenant_id": "bounce-tenant",
             "account_id": "bounce-account",
             "from": "sender@test.com",
             "to": [recipient],
@@ -80,11 +95,11 @@ class TestBounceLivePolling:
             "body": "This message will bounce.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/commands/run-now?tenant_id=bounce-tenant")
+        await api_client.post(api_routes.run_now(tenant_id="bounce-tenant"))
         await asyncio.sleep(2)
 
         # Inject DSN bounce into IMAP
@@ -101,7 +116,7 @@ class TestBounceLivePolling:
         assert bounced, f"Message {msg_id} should be marked as bounced"
 
         # Verify bounce details
-        resp = await api_client.get(f"/messages?tenant_id=bounce-tenant")
+        resp = await api_client.get(api_routes.messages(tenant_id="bounce-tenant"))
         if resp.status_code == 200:
             messages = resp.json().get("messages", [])
             found = [m for m in messages if m.get("id") == msg_id]
@@ -120,6 +135,7 @@ class TestBounceLivePolling:
 
         message = {
             "id": msg_id,
+            "tenant_id": "bounce-tenant",
             "account_id": "bounce-account",
             "from": "sender@test.com",
             "to": [recipient],
@@ -127,10 +143,10 @@ class TestBounceLivePolling:
             "body": "This message will soft bounce.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now?tenant_id=bounce-tenant")
+        await api_client.post(api_routes.run_now(tenant_id="bounce-tenant"))
         await asyncio.sleep(2)
 
         # Inject soft bounce DSN
@@ -145,7 +161,7 @@ class TestBounceLivePolling:
         bounced = await wait_for_bounce(api_client, msg_id, "bounce-tenant", timeout=10)
         assert bounced, f"Message {msg_id} should be marked as bounced"
 
-        resp = await api_client.get(f"/messages?tenant_id=bounce-tenant")
+        resp = await api_client.get(api_routes.messages(tenant_id="bounce-tenant"))
         if resp.status_code == 200:
             messages = resp.json().get("messages", [])
             found = [m for m in messages if m.get("id") == msg_id]
@@ -164,6 +180,7 @@ class TestBounceLivePolling:
 
         message = {
             "id": msg_id,
+            "tenant_id": "bounce-tenant",
             "account_id": "bounce-account",
             "from": "sender@test.com",
             "to": [recipient],
@@ -171,10 +188,10 @@ class TestBounceLivePolling:
             "body": "Testing bounce in delivery report.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now?tenant_id=bounce-tenant")
+        await api_client.post(api_routes.run_now(tenant_id="bounce-tenant"))
         await asyncio.sleep(2)
 
         # Inject bounce
@@ -190,11 +207,11 @@ class TestBounceLivePolling:
         await wait_for_bounce(api_client, msg_id, "bounce-tenant", timeout=10)
 
         # Trigger delivery report cycle
-        await api_client.post("/commands/run-now?tenant_id=bounce-tenant")
+        await api_client.post(api_routes.run_now(tenant_id="bounce-tenant"))
         await asyncio.sleep(2)
 
         # Check that message has bounce info
-        resp = await api_client.get(f"/messages?tenant_id=bounce-tenant")
+        resp = await api_client.get(api_routes.messages(tenant_id="bounce-tenant"))
         if resp.status_code == 200:
             messages = resp.json().get("messages", [])
             found = [m for m in messages if m.get("id") == msg_id]
@@ -216,6 +233,7 @@ class TestBounceLivePolling:
         messages = [
             {
                 "id": msg_id,
+                "tenant_id": "bounce-tenant",
                 "account_id": "bounce-account",
                 "from": "sender@test.com",
                 "to": [recipient],
@@ -225,10 +243,10 @@ class TestBounceLivePolling:
             for i, (msg_id, recipient) in enumerate(zip(msg_ids, recipients))
         ]
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": messages})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": messages})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now?tenant_id=bounce-tenant")
+        await api_client.post(api_routes.run_now(tenant_id="bounce-tenant"))
         await asyncio.sleep(2)
 
         # Inject all bounces at once
@@ -245,7 +263,7 @@ class TestBounceLivePolling:
         await asyncio.sleep(8)  # Allow 3-4 poll cycles
 
         # Check how many bounces were detected
-        resp = await api_client.get(f"/messages?tenant_id=bounce-tenant")
+        resp = await api_client.get(api_routes.messages(tenant_id="bounce-tenant"))
         assert resp.status_code == 200
         messages = resp.json().get("messages", [])
 
@@ -269,6 +287,7 @@ class TestBounceLivePolling:
 
         message = {
             "id": msg_id,
+            "tenant_id": "bounce-tenant",
             "account_id": "bounce-account",
             "from": "sender@test.com",
             "to": [recipient],
@@ -276,10 +295,10 @@ class TestBounceLivePolling:
             "body": "Testing UID tracking prevents reprocessing.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now?tenant_id=bounce-tenant")
+        await api_client.post(api_routes.run_now(tenant_id="bounce-tenant"))
         await asyncio.sleep(2)
 
         # Inject bounce
@@ -296,7 +315,7 @@ class TestBounceLivePolling:
         assert bounced, f"Message {msg_id} should be marked as bounced"
 
         # Get bounce_ts
-        resp = await api_client.get(f"/messages?tenant_id=bounce-tenant")
+        resp = await api_client.get(api_routes.messages(tenant_id="bounce-tenant"))
         messages = resp.json().get("messages", [])
         found = [m for m in messages if m.get("id") == msg_id]
         assert found
@@ -306,7 +325,7 @@ class TestBounceLivePolling:
         # Wait for another poll cycle - bounce_ts should not change
         await asyncio.sleep(4)
 
-        resp = await api_client.get(f"/messages?tenant_id=bounce-tenant")
+        resp = await api_client.get(api_routes.messages(tenant_id="bounce-tenant"))
         messages = resp.json().get("messages", [])
         found = [m for m in messages if m.get("id") == msg_id]
         assert found

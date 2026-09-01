@@ -17,6 +17,8 @@ import time
 import pytest
 import pytest_asyncio
 
+from tests import api_routes
+
 httpx = pytest.importorskip("httpx")
 
 from tests.fullstack.helpers import (
@@ -31,7 +33,7 @@ from tests.fullstack.helpers import (
     wait_for_messages,
 )
 
-pytestmark = [pytest.mark.fullstack, pytest.mark.asyncio]
+pytestmark = [pytest.mark.fullstack, pytest.mark.asyncio, pytest.mark.pec]
 
 
 class TestPecReceiptParsing:
@@ -188,7 +190,7 @@ class TestPecAccountSetup:
     async def test_create_pec_account(self, api_client, setup_pec_tenant):
         """Can create and retrieve a PEC account."""
         # The fixture already created the account, verify it exists
-        resp = await api_client.get("/accounts?tenant_id=pec-tenant")
+        resp = await api_client.get(api_routes.accounts(tenant_id="pec-tenant"))
         assert resp.status_code == 200
 
         accounts = resp.json().get("accounts", [])
@@ -200,7 +202,7 @@ class TestPecAccountSetup:
 
     async def test_pec_account_has_imap_config(self, api_client, setup_pec_tenant):
         """PEC account has IMAP configuration for receipt polling."""
-        resp = await api_client.get("/accounts?tenant_id=pec-tenant")
+        resp = await api_client.get(api_routes.accounts(tenant_id="pec-tenant"))
         accounts = resp.json().get("accounts", [])
         pec_account = next((a for a in accounts if a.get("id") == "pec-account"), None)
 
@@ -227,11 +229,11 @@ class TestPecMessageFlow:
             "body": "This is a PEC test message.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # Verify message is marked as PEC
-        resp = await api_client.get(f"/messages?tenant_id=pec-tenant")
+        resp = await api_client.get(api_routes.messages(tenant_id="pec-tenant"))
         messages = resp.json().get("messages", [])
         found = [m for m in messages if m.get("id") == msg_id]
         assert len(found) == 1
@@ -255,7 +257,7 @@ class TestPecMessageFlow:
             "body": "Testing PEC tracking header.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         await trigger_dispatch(api_client, "pec-tenant")
@@ -293,10 +295,10 @@ class TestPecMessageFlow:
             "body": "This is a regular test message.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
-        resp = await api_client.get(f"/messages?tenant_id=test-tenant-1")
+        resp = await api_client.get(api_routes.messages(tenant_id="test-tenant-1"))
         messages = resp.json().get("messages", [])
         found = [m for m in messages if m.get("id") == msg_id]
         assert len(found) == 1
@@ -346,7 +348,7 @@ class TestPecReceiptProcessing:
             "body": "Testing acceptance receipt.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # 2. Dispatch the message
@@ -388,7 +390,7 @@ class TestPecReceiptProcessing:
             "body": "Testing delivery receipt.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         await trigger_dispatch(api_client, "pec-tenant")
@@ -429,7 +431,7 @@ class TestPecReceiptProcessing:
             "body": "Testing failure receipt.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         await trigger_dispatch(api_client, "pec-tenant")

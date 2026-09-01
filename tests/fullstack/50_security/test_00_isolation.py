@@ -9,11 +9,13 @@ import time
 
 import pytest
 
+from tests import api_routes
 from tests.fullstack.helpers import (
     MAILHOG_TENANT1_API,
     MAILHOG_TENANT2_API,
     clear_mailhog,
     trigger_dispatch,
+    wait_for_message_status,
     wait_for_messages,
 )
 
@@ -35,6 +37,7 @@ class TestTenantIsolation:
         # Message for tenant 1
         msg1 = {
             "id": f"isolation-t1-{ts}",
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@tenant1.com",
             "to": ["recipient@example.com"],
@@ -45,6 +48,7 @@ class TestTenantIsolation:
         # Message for tenant 2
         msg2 = {
             "id": f"isolation-t2-{ts}",
+            "tenant_id": "test-tenant-2",
             "account_id": "test-account-2",
             "from": "sender@tenant2.com",
             "to": ["recipient@example.com"],
@@ -52,12 +56,19 @@ class TestTenantIsolation:
             "body": "This should go to tenant 2 SMTP.",
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [msg1, msg2]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [msg1, msg2]})
         assert resp.status_code == 200
 
         # Trigger dispatch for both tenants
         await trigger_dispatch(api_client, tenant_id="test-tenant-1")
         await trigger_dispatch(api_client, tenant_id="test-tenant-2")
+
+        sent1 = await wait_for_message_status(api_client, msg1["id"], ("sent",))
+        assert sent1, f"message {msg1['id']} never reached sent"
+        sent2 = await wait_for_message_status(
+            api_client, msg2["id"], ("sent",), tenant_id="test-tenant-2"
+        )
+        assert sent2, f"message {msg2['id']} never reached sent"
 
         # Verify isolation - filter by subject to avoid interference from other tests
         msgs_t1 = await wait_for_messages(MAILHOG_TENANT1_API, 1)
@@ -86,18 +97,25 @@ class TestTenantIsolation:
         # Add message for tenant 1
         message = {
             "id": f"run-now-test-{ts}",
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@tenant1.com",
             "to": ["recipient@example.com"],
             "subject": "Run Now Test",
             "body": "Message triggered by run-now.",
         }
-        await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
+        assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
+        await trigger_dispatch(api_client)
+        sent = await wait_for_message_status(api_client, f"run-now-test-{ts}", ("sent",))
+        assert sent, f"message run-now-test-{ts} never reached sent"
 
-        # Verify message was sent
+        # Verify message was sent. Scoped by subject, never by position: the
+        # mailbox also holds whatever earlier tests dispatched, and MailHog's
+        # order is not a guarantee — under maildir storage it is filesystem
+        # order, so [0] is not even the newest message.
         msgs = await wait_for_messages(MAILHOG_TENANT1_API, 1, timeout=10)
-        assert len(msgs) >= 1
-        assert msgs[0]["Content"]["Headers"]["Subject"][0] == "Run Now Test"
+        subjects = [m["Content"]["Headers"]["Subject"][0] for m in msgs]
+        assert "Run Now Test" in subjects, f"run-now message not in MailHog; got {subjects}"

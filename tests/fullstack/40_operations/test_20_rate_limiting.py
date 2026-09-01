@@ -12,20 +12,43 @@ These tests verify rate limiting functionality:
 
 from __future__ import annotations
 
-import asyncio
 import time
 
 import pytest
+import pytest_asyncio
 
+from tests import api_routes
 from tests.fullstack.helpers import (
     MAILHOG_TENANT1_API,
+    MAILHOG_TENANT1_SMTP,
     clear_mailhog,
     get_mailhog_messages,
     get_msg_status,
-    wait_for_messages,
+    trigger_dispatch,
+    wait_for_message_status,
 )
 
 pytestmark = [pytest.mark.fullstack, pytest.mark.asyncio, pytest.mark.rate_limit]
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def drained_queue(api_client):
+    """Leave test-tenant-1's queue empty before each rate-limit test.
+
+    Every test here counts how many of ITS messages a dispatch cycle sends
+    under a per-account limit, but the cycle works the tenant's whole queue,
+    which other files fill and nobody empties until the next run (140 messages
+    at the end of a full run). With foreign work in front of them the five
+    messages under test can still be pending when the wait expires, which is
+    how this file's flake reads: "never left pending", not a wrong count.
+    """
+    resp = await api_client.get(api_routes.messages(tenant_id="test-tenant-1"))
+    if resp.status_code == 200:
+        ids = [m["id"] for m in resp.json().get("messages", [])]
+        if ids:
+            await api_client.post(
+                api_routes.delete_messages(tenant_id="test-tenant-1"), json={"ids": ids}
+            )
 
 
 class TestAccountRateLimiting:
@@ -48,8 +71,6 @@ class TestAccountRateLimiting:
         3. Trigger dispatch
         4. Verify only 3 sent, 2 deferred
         """
-        # Wait for any pending dispatches to complete before starting
-        await asyncio.sleep(2)
         await clear_mailhog(MAILHOG_TENANT1_API)
 
         ts = int(time.time())
@@ -58,12 +79,12 @@ class TestAccountRateLimiting:
         account_data = {
             "id": f"ratelimit-account-{ts}",
             "tenant_id": "test-tenant-1",
-            "host": "localhost",
-            "port": 1025,
+            "host": MAILHOG_TENANT1_SMTP[0],
+            "port": MAILHOG_TENANT1_SMTP[1],
             "use_tls": False,
             "limit_per_minute": 3,
         }
-        resp = await api_client.post("/account", json=account_data)
+        resp = await api_client.post(api_routes.ACCOUNT, json=account_data)
         if resp.status_code == 422:
             pytest.skip("Rate limit configuration not supported in account schema")
         assert resp.status_code in (200, 201)
@@ -72,6 +93,7 @@ class TestAccountRateLimiting:
         messages = [
             {
                 "id": f"ratelimit-{ts}-{i}",
+                "tenant_id": "test-tenant-1",
                 "account_id": f"ratelimit-account-{ts}",
                 "from": "sender@test.com",
                 "to": ["recipient@example.com"],
@@ -81,32 +103,31 @@ class TestAccountRateLimiting:
             for i in range(5)
         ]
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": messages})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": messages})
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(3)
+        await trigger_dispatch(api_client)
+
+        # Every message must leave pending before the counts mean anything
+        test_msgs = [
+            await wait_for_message_status(api_client, m["id"], ("sent", "deferred", "error"))
+            for m in messages
+        ]
+        assert all(test_msgs), "every rate-limited message should leave pending"
 
         # Check how many were actually sent to MailHog
         mailhog_messages = await get_mailhog_messages(MAILHOG_TENANT1_API)
-        rate_limit_msgs = [
+        sent_count = len([
             m for m in mailhog_messages
             if f"ratelimit-{ts}" in m.get("Content", {}).get("Headers", {}).get("Subject", [""])[0]
-        ]
-        sent_count = len(rate_limit_msgs)
-
-        # Check message statuses
-        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
-        all_messages = resp.json().get("messages", [])
-        test_msgs = [m for m in all_messages if m.get("id", "").startswith(f"ratelimit-{ts}")]
+        ])
 
         sent_msgs = [m for m in test_msgs if get_msg_status(m) == "sent"]
-        deferred_msgs = [m for m in test_msgs if get_msg_status(m) == "deferred"]
 
         # Should have 3 sent, 2 deferred (or pending for next cycle)
         assert sent_count <= 3, f"Expected max 3 sent due to rate limit, got {sent_count}"
-        assert len(sent_msgs) <= 3, f"Expected max 3 with 'sent' status"
+        assert len(sent_msgs) <= 3, "Expected max 3 with 'sent' status"
 
     async def test_rate_limit_per_hour(
         self, api_client, setup_test_tenants
@@ -123,21 +144,22 @@ class TestAccountRateLimiting:
         account_data = {
             "id": f"ratelimit-hour-{ts}",
             "tenant_id": "test-tenant-1",
-            "host": "localhost",
-            "port": 1025,
+            "host": MAILHOG_TENANT1_SMTP[0],
+            "port": MAILHOG_TENANT1_SMTP[1],
             "use_tls": False,
             "limit_per_hour": 100,
         }
-        resp = await api_client.post("/account", json=account_data)
+        resp = await api_client.post(api_routes.ACCOUNT, json=account_data)
         if resp.status_code == 422:
             pytest.skip("Per-hour rate limit configuration not supported")
         assert resp.status_code in (200, 201)
 
         # Verify account was created with rate limit
-        resp = await api_client.get(f"/account?id={account_data['id']}")
-        if resp.status_code == 200:
-            account = resp.json()
-            assert account.get("limit_per_hour") == 100
+        resp = await api_client.get(api_routes.accounts(tenant_id="test-tenant-1"))
+        assert resp.status_code == 200
+        accounts = [a for a in resp.json().get("accounts", []) if a.get("id") == account_data["id"]]
+        assert accounts, f"account {account_data['id']} not listed for the tenant"
+        assert accounts[0].get("limit_per_hour") == 100
 
     async def test_rate_limit_reject_behavior(
         self, api_client, setup_test_tenants
@@ -155,13 +177,13 @@ class TestAccountRateLimiting:
         account_data = {
             "id": f"ratelimit-reject-{ts}",
             "tenant_id": "test-tenant-1",
-            "host": "localhost",
-            "port": 1025,
+            "host": MAILHOG_TENANT1_SMTP[0],
+            "port": MAILHOG_TENANT1_SMTP[1],
             "use_tls": False,
             "limit_per_minute": 2,
             "limit_behavior": "reject",  # reject vs defer
         }
-        resp = await api_client.post("/account", json=account_data)
+        resp = await api_client.post(api_routes.ACCOUNT, json=account_data)
         if resp.status_code == 422:
             pytest.skip("Rate limit reject mode not supported")
         assert resp.status_code in (200, 201)
@@ -170,6 +192,7 @@ class TestAccountRateLimiting:
         messages = [
             {
                 "id": f"ratelimit-reject-{ts}-{i}",
+                "tenant_id": "test-tenant-1",
                 "account_id": f"ratelimit-reject-{ts}",
                 "from": "sender@test.com",
                 "to": ["recipient@example.com"],
@@ -179,17 +202,18 @@ class TestAccountRateLimiting:
             for i in range(4)
         ]
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": messages})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": messages})
         assert resp.status_code == 200
 
         # Trigger dispatch
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(3)
+        await trigger_dispatch(api_client)
 
         # Check message statuses
-        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
-        all_messages = resp.json().get("messages", [])
-        test_msgs = [m for m in all_messages if m.get("id", "").startswith(f"ratelimit-reject-{ts}")]
+        test_msgs = [
+            await wait_for_message_status(api_client, m["id"], ("sent", "deferred", "error"))
+            for m in messages
+        ]
+        assert all(test_msgs), "every message should leave pending"
 
         sent_msgs = [m for m in test_msgs if get_msg_status(m) == "sent"]
         error_msgs = [m for m in test_msgs if get_msg_status(m) == "error"]
@@ -219,12 +243,12 @@ class TestAccountRateLimiting:
         account_data = {
             "id": f"ratelimit-reset-{ts}",
             "tenant_id": "test-tenant-1",
-            "host": "localhost",
-            "port": 1025,
+            "host": MAILHOG_TENANT1_SMTP[0],
+            "port": MAILHOG_TENANT1_SMTP[1],
             "use_tls": False,
             "limit_per_minute": 2,
         }
-        resp = await api_client.post("/account", json=account_data)
+        resp = await api_client.post(api_routes.ACCOUNT, json=account_data)
         if resp.status_code == 422:
             pytest.skip("Rate limit configuration not supported")
         assert resp.status_code in (200, 201)
@@ -233,6 +257,7 @@ class TestAccountRateLimiting:
         batch1 = [
             {
                 "id": f"ratelimit-reset-b1-{ts}-{i}",
+                "tenant_id": "test-tenant-1",
                 "account_id": f"ratelimit-reset-{ts}",
                 "from": "sender@test.com",
                 "to": ["recipient@example.com"],
@@ -242,11 +267,14 @@ class TestAccountRateLimiting:
             for i in range(2)
         ]
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": batch1})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": batch1})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(2)
+        await trigger_dispatch(api_client)
+
+        for msg in batch1:
+            settled = await wait_for_message_status(api_client, msg["id"], ("sent",))
+            assert settled, f"message {msg['id']} never reached sent"
 
         # Both should be sent
         mailhog_messages = await get_mailhog_messages(MAILHOG_TENANT1_API)
@@ -267,8 +295,6 @@ class TestAccountRateLimiting:
 
         Account A hitting its limit should not affect Account B.
         """
-        # Wait for any pending dispatches from previous tests to complete
-        await asyncio.sleep(2)
         await clear_mailhog(MAILHOG_TENANT1_API)
 
         ts = int(time.time())
@@ -277,32 +303,33 @@ class TestAccountRateLimiting:
         account_a = {
             "id": f"ratelimit-a-{ts}",
             "tenant_id": "test-tenant-1",
-            "host": "localhost",
-            "port": 1025,
+            "host": MAILHOG_TENANT1_SMTP[0],
+            "port": MAILHOG_TENANT1_SMTP[1],
             "use_tls": False,
             "limit_per_minute": 2,
         }
         account_b = {
             "id": f"ratelimit-b-{ts}",
             "tenant_id": "test-tenant-1",
-            "host": "localhost",
-            "port": 1025,
+            "host": MAILHOG_TENANT1_SMTP[0],
+            "port": MAILHOG_TENANT1_SMTP[1],
             "use_tls": False,
             "limit_per_minute": 5,
         }
 
-        resp = await api_client.post("/account", json=account_a)
+        resp = await api_client.post(api_routes.ACCOUNT, json=account_a)
         if resp.status_code == 422:
             pytest.skip("Rate limit configuration not supported")
         assert resp.status_code in (200, 201)
 
-        resp = await api_client.post("/account", json=account_b)
+        resp = await api_client.post(api_routes.ACCOUNT, json=account_b)
         assert resp.status_code in (200, 201)
 
         # Queue 4 messages for account A (over limit)
         msgs_a = [
             {
                 "id": f"ratelimit-a-{ts}-{i}",
+                "tenant_id": "test-tenant-1",
                 "account_id": f"ratelimit-a-{ts}",
                 "from": "sender@test.com",
                 "to": ["recipient@example.com"],
@@ -316,6 +343,7 @@ class TestAccountRateLimiting:
         msgs_b = [
             {
                 "id": f"ratelimit-b-{ts}-{i}",
+                "tenant_id": "test-tenant-1",
                 "account_id": f"ratelimit-b-{ts}",
                 "from": "sender@test.com",
                 "to": ["recipient@example.com"],
@@ -325,11 +353,16 @@ class TestAccountRateLimiting:
             for i in range(4)
         ]
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": msgs_a + msgs_b})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": msgs_a + msgs_b})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(3)
+        await trigger_dispatch(api_client)
+
+        for msg in msgs_a + msgs_b:
+            settled = await wait_for_message_status(
+                api_client, msg["id"], ("sent", "deferred", "error")
+            )
+            assert settled, f"message {msg['id']} never left pending"
 
         # Check MailHog
         mailhog_messages = await get_mailhog_messages(MAILHOG_TENANT1_API)

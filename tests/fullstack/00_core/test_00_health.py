@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import pytest
 
+from tests import api_routes
+
 httpx = pytest.importorskip("httpx")
 
 from tests.fullstack.helpers import MAILPROXY_URL
@@ -20,7 +22,7 @@ class TestHealthAndBasics:
     async def test_health_endpoint_no_auth(self):
         """Health endpoint should work without auth."""
         async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{MAILPROXY_URL}/health")
+            resp = await client.get(f"{MAILPROXY_URL}{api_routes.HEALTH}")
             assert resp.status_code == 200
             data = resp.json()
             assert data.get("status") == "ok"
@@ -28,12 +30,12 @@ class TestHealthAndBasics:
     async def test_status_endpoint_requires_auth(self):
         """Status endpoint should require authentication."""
         async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{MAILPROXY_URL}/status")
+            resp = await client.get(f"{MAILPROXY_URL}{api_routes.STATUS}")
             assert resp.status_code == 401
 
     async def test_status_endpoint_with_auth(self, api_client):
         """Status endpoint should work with valid token."""
-        resp = await api_client.get("/status")
+        resp = await api_client.get(api_routes.STATUS)
         assert resp.status_code == 200
         data = resp.json()
         assert data.get("ok") is True
@@ -42,7 +44,7 @@ class TestHealthAndBasics:
         """Invalid token should be rejected."""
         async with httpx.AsyncClient() as client:
             resp = await client.get(
-                f"{MAILPROXY_URL}/status",
+                f"{MAILPROXY_URL}{api_routes.STATUS}",
                 headers={"X-API-Token": "wrong-token"},
             )
             assert resp.status_code == 401

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import pytest
 
+from tests import api_routes
+
 httpx = pytest.importorskip("httpx")
 
 from tests.fullstack.helpers import (
@@ -26,7 +28,7 @@ class TestInfrastructureCheck:
 
     async def test_postgresql_connection(self, api_client):
         """Verify PostgreSQL is being used."""
-        resp = await api_client.get("/status")
+        resp = await api_client.get(api_routes.STATUS)
         assert resp.status_code == 200
         # Service should be running with PostgreSQL
 

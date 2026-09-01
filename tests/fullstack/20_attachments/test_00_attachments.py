@@ -5,18 +5,18 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import time
 
 import pytest
 
+from tests import api_routes
 from tests.fullstack.helpers import (
     ATTACHMENT_SERVER_URL,
     MAILHOG_TENANT1_API,
     clear_mailhog,
-    get_msg_status,
     trigger_dispatch,
+    wait_for_message_status,
     wait_for_messages,
 )
 
@@ -29,7 +29,6 @@ class TestAttachmentsBase64:
     async def test_base64_attachment(self, api_client, setup_test_tenants):
         """Send email with base64-encoded attachment."""
         await clear_mailhog(MAILHOG_TENANT1_API)
-        await asyncio.sleep(0.5)
 
         ts = int(time.time())
         msg_id = f"base64-att-{ts}"
@@ -38,6 +37,7 @@ class TestAttachmentsBase64:
 
         message = {
             "id": msg_id,
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -50,20 +50,15 @@ class TestAttachmentsBase64:
             }],
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
         # Trigger dispatch
         await trigger_dispatch(api_client)
 
         # Poll for message to be sent
-        for _ in range(15):
-            await asyncio.sleep(1)
-            resp = await api_client.get("/messages?tenant_id=test-tenant-1")
-            all_msgs = resp.json().get("messages", [])
-            found = [m for m in all_msgs if m.get("id") == msg_id]
-            if found and found[0].get("sent_ts"):
-                break
+        sent = await wait_for_message_status(api_client, msg_id, ("sent",))
+        assert sent, f"message {msg_id} never reached sent"
 
         # Wait for message in MailHog
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1, timeout=10)
@@ -90,6 +85,7 @@ class TestHttpAttachmentFetch:
 
         message = {
             "id": f"http-fetch-{ts}",
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -102,23 +98,18 @@ class TestHttpAttachmentFetch:
             }],
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(5)
+        await trigger_dispatch(api_client)
+
+        # Check message status
+        msg = await wait_for_message_status(api_client, f"http-fetch-{ts}", ("sent",))
+        assert msg, f"message http-fetch-{ts} never reached sent"
 
         # Verify message was sent
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
         assert len(messages) >= 1
-
-        # Check message status
-        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
-        all_msgs = resp.json().get("messages", [])
-        found = [m for m in all_msgs if m.get("id") == f"http-fetch-{ts}"]
-
-        if found:
-            assert get_msg_status(found[0]) == "sent"
 
     async def test_fetch_multiple_http_attachments(self, api_client, setup_test_tenants):
         """Can fetch multiple attachments from HTTP URLs."""
@@ -128,6 +119,7 @@ class TestHttpAttachmentFetch:
 
         message = {
             "id": f"multi-http-{ts}",
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -147,11 +139,10 @@ class TestHttpAttachmentFetch:
             ],
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(5)
+        await trigger_dispatch(api_client)
 
         messages = await wait_for_messages(MAILHOG_TENANT1_API, 1)
         assert len(messages) >= 1
@@ -163,6 +154,7 @@ class TestHttpAttachmentFetch:
         # Use a non-existent URL that will timeout or fail
         message = {
             "id": f"http-timeout-{ts}",
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -175,20 +167,16 @@ class TestHttpAttachmentFetch:
             }],
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         assert resp.status_code == 200
 
-        await api_client.post("/commands/run-now?tenant_id=test-tenant-1")
-        await asyncio.sleep(5)
+        await trigger_dispatch(api_client)
 
         # Message should fail gracefully (not crash the server)
-        resp = await api_client.get("/messages?tenant_id=test-tenant-1")
-        all_msgs = resp.json().get("messages", [])
-        found = [m for m in all_msgs if m.get("id") == f"http-timeout-{ts}"]
-
-        if found:
-            # Should be error or deferred, not sent
-            assert get_msg_status(found[0]) in ("error", "deferred")
+        msg = await wait_for_message_status(
+            api_client, f"http-timeout-{ts}", ("error", "deferred")
+        )
+        assert msg, f"message http-timeout-{ts} never reached error or deferred"
 
     async def test_http_attachment_invalid_url(self, api_client, setup_test_tenants):
         """Invalid HTTP URLs should be handled gracefully."""
@@ -196,6 +184,7 @@ class TestHttpAttachmentFetch:
 
         message = {
             "id": f"invalid-url-{ts}",
+            "tenant_id": "test-tenant-1",
             "account_id": "test-account-1",
             "from": "sender@test.com",
             "to": ["recipient@example.com"],
@@ -208,7 +197,7 @@ class TestHttpAttachmentFetch:
             }],
         }
 
-        resp = await api_client.post("/commands/add-messages", json={"messages": [message]})
+        resp = await api_client.post(api_routes.ADD_MESSAGES, json={"messages": [message]})
         # Should either reject immediately or fail during processing
         # Server should not crash
         assert resp.status_code != 500

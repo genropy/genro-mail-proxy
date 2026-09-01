@@ -1,7 +1,7 @@
 """Docker-based integration tests for multi-tenant email flow.
 
 These tests require Docker and docker-compose to be installed.
-Run with: pytest tests/test_docker_integration.py -v -m docker
+Run with: pytest tests/fullstack/00_core/test_05_docker_integration.py -v
 
 The tests use MailHog containers for capturing SMTP emails and
 HTTP echo servers for simulating tenant client endpoints.
@@ -14,21 +14,25 @@ import pytest
 import pytest_asyncio
 
 # Skip all tests if httpx is not available
+from tests import api_routes
+
 httpx = pytest.importorskip("httpx")
 
-# Mark all tests in this module as docker tests
-pytestmark = [pytest.mark.docker, pytest.mark.asyncio]
+from tests.fullstack.helpers import (
+    CLIENT_TENANT1_URL,
+    CLIENT_TENANT2_URL,
+    MAILHOG_TENANT1_API,
+    MAILHOG_TENANT1_SMTP,
+    MAILHOG_TENANT2_API,
+    MAILHOG_TENANT2_SMTP,
+)
+
+# Mark all tests in this module as fullstack tests
+pytestmark = [pytest.mark.fullstack, pytest.mark.asyncio]
 
 # Docker compose file path (uses the same fullstack compose)
 COMPOSE_FILE = Path(__file__).parent.parent.parent / "docker" / "docker-compose.fulltest.yml"
 
-# Service URLs when running locally with docker-compose
-MAILHOG_TENANT1_SMTP = ("localhost", 1025)
-MAILHOG_TENANT1_API = "http://localhost:8025"
-MAILHOG_TENANT2_SMTP = ("localhost", 1026)
-MAILHOG_TENANT2_API = "http://localhost:8026"
-CLIENT_TENANT1_URL = "http://localhost:8081"
-CLIENT_TENANT2_URL = "http://localhost:8082"
 
 
 def docker_compose_available() -> bool:
@@ -162,7 +166,7 @@ async def setup_tenants(mail_proxy_core):
         "id": "tenant1",
         "name": "Tenant 1",
         "client_base_url": CLIENT_TENANT1_URL,
-        "client_sync_path": "/proxy_sync",
+        "client_sync_path": api_routes.CLIENT_SYNC_PATH,
         "client_auth": {"method": "none"},
         "active": True,
     })
@@ -179,7 +183,7 @@ async def setup_tenants(mail_proxy_core):
         "id": "tenant2",
         "name": "Tenant 2",
         "client_base_url": CLIENT_TENANT2_URL,
-        "client_sync_path": "/proxy_sync",
+        "client_sync_path": api_routes.CLIENT_SYNC_PATH,
         "client_auth": {"method": "bearer", "token": "tenant2-secret"},
         "active": True,
     })
