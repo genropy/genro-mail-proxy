@@ -1,10 +1,38 @@
 """Shared pytest fixtures for mail_proxy tests."""
 
 import asyncio
+import inspect
 import types
 from typing import Any
+from unittest.mock import Mock
 
+import aiohttp
+import aioresponses.core as aioresponses_core
 import pytest
+from aiohttp.abc import AbstractStreamWriter
+
+# aioresponses builds an aiohttp.ClientResponse by hand and does not pass the
+# stream_writer argument that aiohttp 3.14 made mandatory. Fill it in from a
+# subclass, so the tests using aioresponses keep working. The check is on the
+# real signature: on aiohttp < 3.14 nothing is patched, and the patch retires
+# itself as soon as aioresponses ships its own support.
+if "stream_writer" in inspect.signature(aiohttp.ClientResponse.__init__).parameters:
+
+    class _StreamWriterResponse(aiohttp.ClientResponse):
+        """ClientResponse supplying the stream_writer aioresponses omits."""
+
+        def __init__(self, *args, **kwargs):
+            kwargs.setdefault("stream_writer", Mock(spec=AbstractStreamWriter))
+            super().__init__(*args, **kwargs)
+
+    _build_response = aioresponses_core.RequestMatch._build_response
+
+    def _build_response_with_stream_writer(self, *args, **kwargs):
+        if kwargs.get("response_class") is None:
+            kwargs["response_class"] = _StreamWriterResponse
+        return _build_response(self, *args, **kwargs)
+
+    aioresponses_core.RequestMatch._build_response = _build_response_with_stream_writer
 
 
 @pytest.fixture(scope="session")
