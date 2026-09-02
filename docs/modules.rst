@@ -10,7 +10,12 @@ Core
    :undoc-members:
    :show-inheritance:
 
-.. automodule:: mail_proxy.api
+.. automodule:: mail_proxy.mail_proxy_application
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: mail_proxy.http_schema
    :members:
    :undoc-members:
    :show-inheritance:

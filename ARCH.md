@@ -226,3 +226,55 @@ This document records key architectural decisions for genro-mail-proxy.
 - Positive: Standard observability
 - Positive: Grafana dashboards out of the box
 - Negative: Metrics endpoint must be secured in production
+
+## ADR-011: API Version as a Path Segment
+
+**Date**: 2026-09-01
+
+**Status**: Accepted
+
+**Context**: The 0.7.7 transport swap replaces FastAPI with genro-asgi while
+preserving the v1 HTTP contract. The release after it introduces a new contract
+shape (one path per action). Both have to be served without duplicating logic,
+and four production sites call the old paths today.
+
+genro-asgi resolves a request on its path alone — the verb never enters the
+selection — so a version cannot be negotiated by header dispatch, and three v1
+addresses that answer several verbs (`/tenant/{id}`, `/tenant/{id}/api-key`,
+`/instance`) cannot be split into separate handlers while their URLs stand.
+
+**Decision**: The version is a path segment. The application mounts on
+`mailproxy` and carries one branch per version:
+
+```
+GET /mailproxy/v1/tenant/pansotti
+GET /mailproxy/v2/tenant/get/pansotti
+```
+
+- `v1` is a single RoutingClass declaring all 26 routes of the current
+  contract. It receives the application and calls the workers on it
+  (`self.application.sender.send(...)`).
+- `v2` is a sibling branch carrying the one-path-per-action shape.
+- Both versions live in the same process and call the same classes behind
+  them. Those classes are not RoutingClass instances and are not mounted, so
+  they have no path: the only addresses that exist are the ones the version's
+  class declares.
+
+**Rationale**:
+- Switching a caller to another version is a configuration change, not a code
+  change. The Genropy client builds its URL as
+  `f"{self.proxy_url.rstrip('/')}{path}"` (`Main._request`, genropy
+  `resources/services/mailproxy/mailproxy.py`), and `proxy_url` comes from the
+  instanceconfig — so pointing a site at `http://host/mailproxy/v1` is enough.
+- Each site moves when its own configuration moves. No big-bang cutover.
+- Nothing behind the version class is addressable, so the exposed surface is
+  exactly the declared contract.
+
+**Consequences**:
+- Positive: v1 and v2 coexist with one implementation behind them.
+- Positive: a version can be retired by deleting one branch.
+- Negative: the first jump is not configuration-only. The sites currently call
+  `/tenant/...` with no prefix, an address the new application does not serve,
+  so that configuration change must ship with the new image.
+- Negative: the three multi-verb v1 addresses keep a handler that reads
+  `request.method` and dispatches. Declared stopgap: they are deleted with v1.

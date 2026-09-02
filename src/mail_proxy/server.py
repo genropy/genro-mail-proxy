@@ -1,9 +1,12 @@
 # Copyright 2025 Softwell S.r.l. - SPDX-License-Identifier: Apache-2.0
 """ASGI application entry point for uvicorn.
 
-This module provides a pre-configured FastAPI application that reads
-configuration from the database and initializes the MailProxy
-service automatically.
+This module builds the genro-asgi application from the environment and the
+database and hands it to an ``AsgiServer``, which is the ASGI callable uvicorn
+serves. The v1 contract answers under ``/mailproxy/v1`` (ADR-011).
+
+The auth middleware is off: ``MailProxyApplication`` resolves ``X-API-Token``
+itself, before dispatch, against the tenants table.
 
 Usage:
     uvicorn mail_proxy.server:app --host 0.0.0.0 --port 8000
@@ -34,13 +37,13 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from typing import Any
 
-from fastapi import FastAPI
+from genro_asgi import AsgiServer
 
-from .api import create_app
+from .bounce import BounceConfig
 from .core import MailProxy
+from .mail_proxy_application import MailProxyApplication
 
 _logger = logging.getLogger(__name__)
 
@@ -175,8 +178,6 @@ async def _configure_bounce_from_db() -> None:
         _logger.warning("Bounce enabled but imap_host not configured")
         return
 
-    from .bounce import BounceConfig
-
     config = BounceConfig(
         host=host,
         port=bounce_config.get("imap_port") or 993,
@@ -191,36 +192,33 @@ async def _configure_bounce_from_db() -> None:
     await _core._start_bounce_receiver()
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Application lifespan handler - starts and stops the core service.
+class ServerApplication(MailProxyApplication):
+    """The application this module boots: v1 plus the environment seeding.
 
-    Signal handling is delegated to tini (Docker init) and uvicorn.
-    When uvicorn receives SIGTERM/SIGINT, it triggers the lifespan shutdown
-    which calls _core.stop() to gracefully terminate background tasks.
+    ``MailProxyApplication.on_startup`` starts the engine. This subclass adds
+    what only a deployment knows: seeding the instance row from ``GMP_BOUNCE_*``
+    the first time, and starting the bounce receiver on whatever the database
+    then holds. Signal handling is left to tini and uvicorn — a SIGTERM reaches
+    the server's lifespan, which runs ``on_shutdown`` and stops the engine.
     """
-    _logger.info("Starting mail-proxy service...")
-    await _core.start()
 
-    # Initialize instance config from env vars if needed
-    await _initialize_instance_from_env()
+    async def on_startup(self) -> None:
+        _logger.info("Starting mail-proxy service...")
+        await super().on_startup()
+        await _initialize_instance_from_env()
+        await _configure_bounce_from_db()
+        _logger.info("Mail-proxy service started")
 
-    # Configure bounce from DB (after potential env var initialization)
-    await _configure_bounce_from_db()
-
-    _logger.info("Mail-proxy service started")
-
-    try:
-        yield
-    finally:
+    async def on_shutdown(self) -> None:
         _logger.info("Stopping mail-proxy service...")
-        await _core.stop()
+        await super().on_shutdown()
         _logger.info("Mail-proxy service stopped")
 
 
-# Create the configured application
-app = create_app(
-    _core,
-    api_token=_api_token,
-    lifespan=lifespan,
-)
+def build_server(**kwargs: Any) -> AsgiServer:
+    """Build the ASGI callable uvicorn serves: the server owning the application."""
+    application = ServerApplication(core=_core, api_token=_api_token)
+    return AsgiServer(applications=[application], middleware={"auth": False}, **kwargs)
+
+
+app = build_server()

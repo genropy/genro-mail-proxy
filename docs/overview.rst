@@ -12,8 +12,10 @@ The service is composed of the following building blocks:
 * **MailProxy** – orchestrates scheduling, rate limiting, persistence and
   delivery.  It exposes a coroutine-based API (`handle_command`) used by the
   HTTP layer.
-* **REST API** – defined in :mod:`mail_proxy.api`, built with FastAPI
-  and protected by the ``X-API-Token`` header.
+* **REST API** – served by :mod:`mail_proxy.mail_proxy_application`, built on
+  genro-asgi and protected by the ``X-API-Token`` header. The routes live in
+  :mod:`mail_proxy.routers`, the request and response shapes in
+  :mod:`mail_proxy.http_schema`.
 * **AttachmentManager** – fetches attachments from multiple sources (HTTP endpoints,
   URLs, base64, filesystem) with optional MD5-based caching.
 * **MailProxyDb** – stores tenants, SMTP accounts, the unified ``messages`` table, and
