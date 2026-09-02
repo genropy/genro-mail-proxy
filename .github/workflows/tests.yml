@@ -2,9 +2,15 @@ name: Tests
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
+
+# One run per ref: a new push supersedes the run still going on the same
+# branch, so the queue does not fill up with obsolete runs.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
